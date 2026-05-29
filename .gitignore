@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Session state (conversation history, tool outputs)
+state/*
+!state/.gitkeep
+
+# Claude Code session
+.ccb/
+
+# Config with API keys
+config/model.json
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
