@@ -31,7 +31,7 @@ function convertMessages(messages: Message[]): Array<{ role: string; content: st
 
 export function createOpenAiClient(baseUrl: string, apiKey: string, model: string): LlmClient {
   return {
-    async *streamChat(messages: Message[], tools?: ToolDefinition[]): AsyncGenerator<LlmStreamEvent, void, unknown> {
+    async *streamChat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<LlmStreamEvent, void, unknown> {
       const body: Record<string, unknown> = {
         model,
         messages: convertMessages(messages),
@@ -48,6 +48,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        signal,
       })
 
       if (!res.ok || !res.body) {

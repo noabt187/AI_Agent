@@ -11,6 +11,7 @@ export class Orchestrator {
   private askConfirm?: AskConfirmFn
   private askInput?: AskInputFn
   private agent = new Agent()
+  private abortController?: AbortController
 
   constructor(sessionId: string, initialState?: WorldState) {
     this.state = initialState ?? {
@@ -43,6 +44,13 @@ export class Orchestrator {
 
   setAskConfirm(fn: AskConfirmFn) { this.askConfirm = fn }
   setAskInput(fn: AskInputFn) { this.askInput = fn }
+
+  abort() {
+    if (this.abortController) {
+      this.abortController.abort()
+      this.abortController = undefined
+    }
+  }
 
   async persist(): Promise<void> {
     await saveOrchestratorState(this.state.sessionId, this.state)
@@ -110,7 +118,9 @@ export class Orchestrator {
     }
 
     // Run Agent
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state)
+    this.abortController = new AbortController()
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal)
+    this.abortController = undefined
 
     // Handle result
     switch (result.action) {
@@ -169,7 +179,9 @@ export class Orchestrator {
     await this.persist()
 
     // Call Agent again to proceed to next step
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state)
+    this.abortController = new AbortController()
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal)
+    this.abortController = undefined
 
     switch (result.action) {
       case 'chat':

@@ -57,7 +57,7 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean; tools?: ToolDefinition[] },
+    options?: { uuid?: string; isMeta?: boolean; tools?: ToolDefinition[]; signal?: AbortSignal },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const content = toTextPrompt(prompt)
     const userUuid = options?.uuid ?? newUuid()
@@ -72,7 +72,7 @@ export class QueryEngine {
 
     await this.appendMessage(userMessage)
 
-    const terminal = yield* this.queryLoop(options?.tools)
+    const terminal = yield* this.queryLoop(options?.tools, options?.signal)
 
     if (terminal.type === 'error') {
       const errMsg = {
@@ -87,8 +87,8 @@ export class QueryEngine {
     }
   }
 
-  async *continueFromToolResults(tools?: ToolDefinition[]): AsyncGenerator<SDKMessage, void, unknown> {
-    const terminal = yield* this.queryLoop(tools)
+  async *continueFromToolResults(tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<SDKMessage, void, unknown> {
+    const terminal = yield* this.queryLoop(tools, signal)
 
     if (terminal.type === 'error') {
       const errMsg = {
@@ -103,7 +103,7 @@ export class QueryEngine {
     }
   }
 
-  async *queryLoop(tools?: ToolDefinition[]): AsyncGenerator<SDKMessage, Terminal, unknown> {
+  async *queryLoop(tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<SDKMessage, Terminal, unknown> {
     const { state } = this
 
     const assistantUuid = newUuid()
@@ -112,7 +112,7 @@ export class QueryEngine {
     let toolCalls: LlmToolCall[] = []
 
     try {
-      for await (const evt of this.llmClient.streamChat(state.messages, tools)) {
+      for await (const evt of this.llmClient.streamChat(state.messages, tools, signal)) {
         if (evt.type === 'delta') {
           acc += evt.text
           yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: evt.text, createdAt }

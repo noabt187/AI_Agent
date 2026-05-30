@@ -159,6 +159,7 @@ export class Agent {
     sessionId: string,
     userInput: string,
     state: WorldState,
+    signal?: AbortSignal,
   ): Promise<AgentResult> {
     const cfg = await loadModelConfig()
     const llm = createLlmClient(cfg)
@@ -193,16 +194,18 @@ export class Agent {
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
-    for await (const evt of engine.submitMessage(userInput, { tools })) {
+    for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
       if (evt.kind === 'delta') fullText += evt.delta
       if (evt.kind === 'tool_calls') toolCalls = evt.toolCalls
     }
 
     // Tool call loop
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+      if (signal?.aborted) break
       if (toolCalls.length === 0) break
 
       for (const tc of toolCalls) {
+        if (signal?.aborted) break
         let args: Record<string, string>
         try { args = JSON.parse(tc.arguments) } catch { continue }
 
@@ -210,12 +213,18 @@ export class Agent {
         await engine.appendToolResult(tc.id, tc.name, result)
       }
 
+      if (signal?.aborted) break
       fullText = ''
       toolCalls = []
-      for await (const evt of engine.continueFromToolResults(tools)) {
+      for await (const evt of engine.continueFromToolResults(tools, signal)) {
         if (evt.kind === 'delta') fullText += evt.delta
         if (evt.kind === 'tool_calls') toolCalls = evt.toolCalls
       }
+    }
+
+    // Abort check
+    if (signal?.aborted) {
+      return { action: 'chat', message: '[已中断] 操作被用户取消。' }
     }
 
     // Parse final response
