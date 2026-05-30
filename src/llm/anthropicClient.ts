@@ -18,7 +18,7 @@ function convertMessages(messages: Message[]): Array<{ role: 'user' | 'assistant
 
 export function createAnthropicClient(baseUrl: string, apiKey: string, model: string): LlmClient {
   return {
-    async *streamChat(messages: Message[], _tools?: ToolDefinition[]): AsyncGenerator<LlmStreamEvent, void, unknown> {
+    async *streamChat(messages: Message[], _tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<LlmStreamEvent, void, unknown> {
       const systemMessage = messages.find((m) => m.role === 'system')
 
       const body: Record<string, unknown> = {
@@ -39,6 +39,7 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        signal,
       })
 
       if (!res.ok || !res.body) {

@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 import { resolve } from 'node:path'
 import { readdir, stat, mkdir } from 'node:fs/promises'
+import { emitKeypressEvents } from 'node:readline'
 import { Orchestrator } from '../src/orchestrator/orchestrator.js'
 
 const stateDir = resolve(process.cwd(), 'state')
@@ -54,11 +55,24 @@ async function main() {
     process.exit(0)
   })
 
+  // ESC key → abort current agent operation
+  emitKeypressEvents(stdin)
+  if (stdin.isTTY) {
+    stdin.setRawMode(true)
+    stdin.on('keypress', (_str, key) => {
+      if (key && key.name === 'escape') {
+        orchestrator.abort()
+        console.log('\n[中断] 正在停止当前操作...')
+      }
+    })
+  }
+
   console.log('Orchestrator 测试启动。')
   console.log('- 输入普通聊天：Agent 直接对话')
   console.log('- 输入代码需求：Agent 自主分析需求、设计方案、生成代码')
   console.log('- 输入"设置目录"：修改可操作文件目录')
   console.log('- 输入"取消"：清除当前任务')
+  console.log('- 按 ESC 中断当前操作')
   console.log('- 输入 /exit 或按 Ctrl+C 退出')
 
   while (true) {

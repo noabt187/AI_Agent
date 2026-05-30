@@ -27,5 +27,5 @@ export type ToolDefinition = {
 }
 
 export type LlmClient = {
-  streamChat(messages: Message[], tools?: ToolDefinition[]): AsyncGenerator<LlmStreamEvent, void, unknown>
+  streamChat(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<LlmStreamEvent, void, unknown>
 }
