@@ -1,7 +1,12 @@
+import { exec } from 'node:child_process'
+import { access } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import type { WorldState } from './types.js'
 import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
+
+const execAsync = promisify(exec)
 
 export type AskConfirmFn = (question: string) => Promise<boolean>
 export type AskInputFn = (question: string) => Promise<string>
@@ -92,6 +97,10 @@ export class Orchestrator {
     }
     if (userInput === '设置目录') {
       await this.handleSetDirectory()
+      return
+    }
+    if (userInput.startsWith('/revert')) {
+      await this.handleRevert(userInput)
       return
     }
 
@@ -224,6 +233,74 @@ export class Orchestrator {
         await this.persist()
         console.log(`[操作目录已更新] ${this.state.allowedPaths.join(', ')}`)
       }
+    }
+  }
+
+  // ── Revert ──────────────────────────────────────────────────────────
+
+  private async handleRevert(input: string) {
+    const parts = input.split(/\s+/)
+    if (parts.length < 3) {
+      console.log('\n[用法] /revert <项目路径> <GitHub仓库地址>')
+      console.log('[示例] /revert D:\\my_test\\conduit-realworld-example-app https://github.com/xxx/xxx.git')
+      return
+    }
+
+    const projectPath = parts[1]
+    const githubRepoUrl = parts[2]
+
+    // 验证目录存在
+    try {
+      await access(projectPath)
+    } catch {
+      console.log(`\n[错误] 目录不存在: ${projectPath}`)
+      return
+    }
+
+    // 验证是 git 仓库
+    try {
+      await access(`${projectPath}/.git`)
+    } catch {
+      console.log(`\n[错误] 该目录不是 git 仓库: ${projectPath}`)
+      return
+    }
+
+    try {
+      // 1. fetch 远程最新版本
+      console.log(`\n[revert] 正在拉取远程最新版本...`)
+      await execAsync(`git fetch ${githubRepoUrl}`, { cwd: projectPath })
+
+      // 2. diff 展示改动
+      const { stdout: diffOutput } = await execAsync('git diff HEAD', { cwd: projectPath })
+      if (!diffOutput.trim()) {
+        console.log('[revert] 没有检测到本地改动，无需回退。')
+        return
+      }
+
+      const diffLines = diffOutput.split('\n')
+      const truncated = diffLines.length > 200
+      const displayDiff = truncated ? diffLines.slice(0, 200).join('\n') : diffOutput
+
+      console.log('\n[revert] 本地改动如下：')
+      console.log(displayDiff)
+      if (truncated) {
+        console.log(`\n... 共 ${diffLines.length} 行，已截断`)
+      }
+
+      // 3. 确认回退
+      if (this.askConfirm) {
+        const confirmed = await this.askConfirm('\n确认丢弃以上所有改动？')
+        if (!confirmed) {
+          console.log('[revert] 已取消。')
+          return
+        }
+      }
+
+      // 4. checkout 丢弃改动
+      await execAsync('git checkout .', { cwd: projectPath })
+      console.log('[revert] 已回退到 GitHub 最新版本。')
+    } catch (err) {
+      console.error(`[revert] 执行失败:`, err instanceof Error ? err.message : err)
     }
   }
 

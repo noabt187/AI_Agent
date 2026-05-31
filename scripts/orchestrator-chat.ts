@@ -72,6 +72,7 @@ async function main() {
   console.log('- 输入代码需求：Agent 自主分析需求、设计方案、生成代码')
   console.log('- 输入"设置目录"：修改可操作文件目录')
   console.log('- 输入"取消"：清除当前任务')
+  console.log('- 输入 /revert <项目路径> <GitHub仓库地址>：回退项目代码到 GitHub 版本')
   console.log('- 按 ESC 中断当前操作')
   console.log('- 输入 /exit 或按 Ctrl+C 退出')
 
