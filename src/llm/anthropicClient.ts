@@ -47,20 +47,32 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
         return
       }
 
+      let inputTokens = 0
+      let outputTokens = 0
+
       for await (const line of parseSseLines(res.body)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (!data) continue
         try {
           const parsed = JSON.parse(data)
+          if (parsed.type === 'message_start' && parsed.message?.usage) {
+            inputTokens = parsed.message.usage.input_tokens ?? 0
+          }
           if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
             const text = parsed.delta?.text
             if (typeof text === 'string' && text) {
               yield { type: 'delta', text }
             }
           }
+          if (parsed.type === 'message_delta' && parsed.usage) {
+            outputTokens = parsed.usage.output_tokens ?? 0
+          }
           if (parsed.type === 'message_stop') {
-            yield { type: 'done' }
+            const usage = (inputTokens > 0 || outputTokens > 0)
+              ? { promptTokens: inputTokens, completionTokens: outputTokens }
+              : undefined
+            yield { type: 'done', usage }
           }
         } catch {
           continue

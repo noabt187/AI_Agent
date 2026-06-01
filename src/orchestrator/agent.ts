@@ -1,13 +1,15 @@
 import { resolve } from 'node:path'
 import { QueryEngine } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
+import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from './nodes/tools.js'
 import { loadSkills, getActiveSkills } from '../skills/index.js'
 import type { AgentEventHandler, WorldState, AgentResult } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
-const MAX_TOOL_ITERATIONS = 20
+const MAX_TOOL_ITERATIONS = 30
+const MAX_TOOL_RETRIES = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
@@ -60,7 +62,7 @@ ${activeSkillTexts.join('\n\n')}`
 
 // ── WorldState Context ─────────────────────────────────────────────
 
-export function buildWorldStateContext(state: WorldState): string {
+function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
 
   if (state.goal) parts.push(`用户目标: ${state.goal}`)
@@ -70,7 +72,6 @@ export function buildWorldStateContext(state: WorldState): string {
       : state.confirmedRequirement
     parts.push(`需求已确认: ${preview}`)
   }
-  if (state.projectPath) parts.push(`项目路径: ${state.projectPath}`)
 
   if (state.designTasks?.length) {
     const completed = state.completedTaskIds.length
@@ -161,9 +162,10 @@ export class Agent {
     state: WorldState,
     signal?: AbortSignal,
     onEvent?: AgentEventHandler,
+    onMetric?: MetricCallback,
   ): Promise<AgentResult> {
     const cfg = await loadModelConfig()
-    const llm = createLlmClient(cfg)
+    const llm = createLlmClient(cfg, onMetric)
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
@@ -209,6 +211,8 @@ export class Agent {
     }
 
     // Tool call loop
+    const toolFailureCounts = new Map<string, number>()
+
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       if (signal?.aborted) break
       if (toolCalls.length === 0) break
@@ -218,9 +222,24 @@ export class Agent {
         let args: Record<string, string>
         try { args = JSON.parse(tc.arguments) } catch { continue }
 
+        // 检查该工具+参数组合是否已失败超过上限
+        const failureKey = `${tc.name}:${tc.arguments}`
+        const failCount = toolFailureCounts.get(failureKey) ?? 0
+        if (failCount >= MAX_TOOL_RETRIES) {
+          await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
+          continue
+        }
+
         const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write')
         await onEvent?.({ type: 'tool_result', name: tc.name, result })
         await engine.appendToolResult(tc.id, tc.name, result)
+
+        // 记录失败
+        if (result.startsWith('工具执行错误')) {
+          toolFailureCounts.set(failureKey, failCount + 1)
+        } else {
+          toolFailureCounts.delete(failureKey)  // 成功则重置计数
+        }
       }
 
       if (signal?.aborted) break
@@ -243,6 +262,27 @@ export class Agent {
     // Abort check
     if (signal?.aborted) {
       return { action: 'chat', message: '[已中断] 操作被用户取消。' }
+    }
+
+    // 达到迭代上限 — 让 LLM 基于已有结果生成最终回答
+    if (toolCalls.length > 0) {
+      const prevText = fullText
+      fullText = ''
+      toolCalls = []
+      try {
+        for await (const evt of engine.submitMessage(
+          `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
+          { tools: [], signal },
+        )) {
+          if (evt.kind === 'delta') fullText += evt.delta
+        }
+      } catch (err) {
+        console.error('[Agent] 最终总结 LLM 调用失败:', err)
+      }
+      // 如果总结调用失败或为空，用之前累积的文字
+      if (!fullText.trim() && prevText.trim()) {
+        fullText = prevText
+      }
     }
 
     // Parse final response

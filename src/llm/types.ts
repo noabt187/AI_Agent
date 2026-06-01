@@ -1,9 +1,9 @@
 import type { Message } from '../types/index.js'
 
-export type LlmStreamDelta = { type: 'delta'; text: string }
-export type LlmStreamToolCalls = { type: 'tool_calls'; toolCalls: LlmToolCall[] }
-export type LlmStreamDone = { type: 'done' }
-export type LlmStreamError = { type: 'error'; error: string }
+type LlmStreamDelta = { type: 'delta'; text: string }
+type LlmStreamToolCalls = { type: 'tool_calls'; toolCalls: LlmToolCall[] }
+type LlmStreamDone = { type: 'done'; usage?: { promptTokens: number; completionTokens: number } }
+type LlmStreamError = { type: 'error'; error: string }
 
 export type LlmStreamEvent = LlmStreamDelta | LlmStreamDone | LlmStreamError | LlmStreamToolCalls
 
