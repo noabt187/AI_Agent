@@ -36,6 +36,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
         model,
         messages: convertMessages(messages),
         stream: true,
+        stream_options: { include_usage: true },
       }
       if (tools && tools.length > 0) {
         body.tools = tools
@@ -60,16 +61,27 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
 
       // Accumulate tool calls by index (streaming chunks)
       const toolCallsAcc = new Map<number, { id: string; name: string; arguments: string }>()
+      let usage: { promptTokens: number; completionTokens: number } | undefined
 
       for await (const line of parseSseLines(res.body)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (data === '[DONE]') {
-          yield { type: 'done' }
+          yield { type: 'done', usage }
           break
         }
         try {
           const parsed = JSON.parse(data)
+
+          // Usage chunk (choices is empty array, usage present)
+          if (parsed.usage && (!parsed.choices || parsed.choices.length === 0)) {
+            usage = {
+              promptTokens: parsed.usage.prompt_tokens ?? 0,
+              completionTokens: parsed.usage.completion_tokens ?? 0,
+            }
+            continue
+          }
+
           const delta = parsed.choices?.[0]?.delta
           if (!delta) {
             if (parsed.choices?.[0]?.finish_reason) {
@@ -85,7 +97,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
                 }
                 toolCallsAcc.clear()
               }
-              yield { type: 'done' }
+              yield { type: 'done', usage }
             }
             continue
           }
@@ -124,7 +136,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
               toolCallsAcc.clear()
             }
             if (parsed.choices[0].finish_reason !== 'tool_calls') {
-              yield { type: 'done' }
+              yield { type: 'done', usage }
             }
           }
         } catch {

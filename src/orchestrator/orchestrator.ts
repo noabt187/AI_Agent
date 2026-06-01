@@ -5,11 +5,12 @@ import type { WorldState } from './types.js'
 import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
+import { createMetricRecorder, formatStats } from '../context/monitor.js'
 
 const execAsync = promisify(exec)
 
-export type AskConfirmFn = (question: string) => Promise<boolean>
-export type AskInputFn = (question: string) => Promise<string>
+type AskConfirmFn = (question: string) => Promise<boolean>
+type AskInputFn = (question: string) => Promise<string>
 
 export class Orchestrator {
   state: WorldState
@@ -17,16 +18,17 @@ export class Orchestrator {
   private askInput?: AskInputFn
   private agent = new Agent()
   private abortController?: AbortController
+  private metricRecorder: (metric: import('../llm/monitoredClient.js').LlmCallMetric) => void
 
   constructor(sessionId: string, initialState?: WorldState) {
     this.state = initialState ?? {
       sessionId,
       allowedPaths: [],
-      writeMode: 'auto',
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
     }
+    this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
   static async load(sessionId: string): Promise<Orchestrator> {
@@ -40,7 +42,6 @@ export class Orchestrator {
     return new Orchestrator(sessionId, persisted ?? {
       sessionId,
       allowedPaths: [],
-      writeMode: 'auto',
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
@@ -103,6 +104,11 @@ export class Orchestrator {
       await this.handleRevert(userInput)
       return
     }
+    if (userInput === '/stats') {
+      const report = await formatStats(this.state.sessionId)
+      console.log(`\n${report}`)
+      return
+    }
 
     // Handle confirmation response
     if (this.isConfirmationInput(userInput) && this.state.pendingConfirm) {
@@ -128,7 +134,7 @@ export class Orchestrator {
 
     // Run Agent
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, this.metricRecorder)
     this.abortController = undefined
 
     // Handle result
@@ -189,7 +195,7 @@ export class Orchestrator {
 
     // Call Agent again to proceed to next step
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, this.metricRecorder)
     this.abortController = undefined
 
     switch (result.action) {
@@ -309,7 +315,6 @@ export class Orchestrator {
   private async handleCancel() {
     this.state.goal = undefined
     this.state.confirmedRequirement = undefined
-    this.state.requirementDocument = undefined
     this.state.designTasks = undefined
     this.state.completedTaskIds = []
     this.state.failedTaskIds = []

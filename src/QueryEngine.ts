@@ -105,46 +105,71 @@ export class QueryEngine {
 
   async *queryLoop(tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<SDKMessage, Terminal, unknown> {
     const { state } = this
+    const MAX_RETRIES = 5
 
     const assistantUuid = newUuid()
     const createdAt = Date.now()
     let acc = ''
     let toolCalls: LlmToolCall[] = []
 
-    try {
-      for await (const evt of this.llmClient.streamChat(state.messages, tools, signal)) {
-        if (evt.type === 'delta') {
-          acc += evt.text
-          yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: evt.text, createdAt }
-          continue
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let lastError = ''
+      acc = ''
+      toolCalls = []
+
+      try {
+        for await (const evt of this.llmClient.streamChat(state.messages, tools, signal)) {
+          if (evt.type === 'delta') {
+            acc += evt.text
+            yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: evt.text, createdAt }
+            continue
+          }
+          if (evt.type === 'tool_calls') {
+            toolCalls = evt.toolCalls
+            yield { kind: 'tool_calls', toolCalls }
+            continue
+          }
+          if (evt.type === 'error') {
+            lastError = evt.error
+            break
+          }
+          if (evt.type === 'done') {
+            lastError = ''
+            break
+          }
         }
-        if (evt.type === 'tool_calls') {
-          toolCalls = evt.toolCalls
-          yield { kind: 'tool_calls', toolCalls }
-          continue
-        }
-        if (evt.type === 'error') {
-          return { type: 'error', error: evt.error }
-        }
-        if (evt.type === 'done') {
-          break
-        }
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e.message : String(e)
       }
 
-      if (toolCalls.length > 0) {
-        // Assistant responded with tool calls — save with toolCalls metadata
-        const toolCallMessage: Message = {
-          uuid: assistantUuid,
-          role: 'assistant',
-          content: acc.trim() || '',
-          createdAt,
-          toolCalls,
-        }
-        await this.appendMessage(toolCallMessage)
-        yield { kind: 'message', ...toolCallMessage }
-        return { type: 'completed' }
+      // 成功（无错误）
+      if (!lastError) break
+
+      // 非 429 错误或已用尽重试次数
+      if (!lastError.includes('429') || attempt >= MAX_RETRIES) {
+        return { type: 'error', error: lastError }
       }
 
+      // 429 限流，等待后重试
+      const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000)
+      yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: `\n[限流，${waitMs / 1000}秒后重试 (${attempt + 1}/${MAX_RETRIES})]...`, createdAt }
+      await new Promise((r) => setTimeout(r, waitMs))
+    }
+
+    if (toolCalls.length > 0) {
+      const toolCallMessage: Message = {
+        uuid: assistantUuid,
+        role: 'assistant',
+        content: acc.trim() || '',
+        createdAt,
+        toolCalls,
+      }
+      await this.appendMessage(toolCallMessage)
+      yield { kind: 'message', ...toolCallMessage }
+      return { type: 'completed' }
+    }
+
+    if (acc.trim().length > 0) {
       const finalMessage: Message = {
         uuid: assistantUuid,
         role: 'assistant' as const,
@@ -152,20 +177,9 @@ export class QueryEngine {
         createdAt,
       }
       await this.appendMessage(finalMessage)
-
       yield { kind: 'message', ...finalMessage }
-      return { type: 'completed' }
-    } catch (e: unknown) {
-      if (acc.trim().length > 0) {
-        const partialMessage = {
-          uuid: assistantUuid,
-          role: 'assistant' as const,
-          content: acc,
-          createdAt,
-        }
-        await this.appendMessage(partialMessage)
-      }
-      return { type: 'error', error: e instanceof Error ? e.message : String(e) }
     }
+
+    return { type: 'completed' }
   }
 }

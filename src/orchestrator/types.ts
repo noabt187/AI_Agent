@@ -1,22 +1,3 @@
-import type { LlmToolCall } from '../llm/types.js'
-
-export type WriteMode = 'auto' | 'batch' | 'per_file'
-
-export type RequirementDocument = {
-  title: string
-  summary: string
-  relatedFiles: string[]
-  details: {
-    target?: string
-    location?: string
-    appearance?: string
-    behavior?: string
-    data?: string
-    constraints?: string
-    [key: string]: string | string[] | undefined
-  }
-}
-
 export type DesignTask = {
   id: string
   title: string
@@ -30,15 +11,10 @@ export type DesignTask = {
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
-  writeMode: WriteMode
 
   // User intent
   goal?: string
   confirmedRequirement?: string
-  requirementDocument?: RequirementDocument
-
-  // Project context
-  projectPath?: string
 
   // Task tracking
   designTasks?: DesignTask[]
