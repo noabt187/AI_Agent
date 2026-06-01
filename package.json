@@ -3,12 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "orchestrator": "tsx scripts/orchestrator-chat.ts"
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "orchestrator": "tsx scripts/orchestrator-chat.ts",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "tsx src/server/server.ts",
+    "dev:web": "npm --workspace web run dev",
+    "build:web": "npm --workspace web run build"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",
+    "concurrently": "^9.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
