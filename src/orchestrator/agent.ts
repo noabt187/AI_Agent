@@ -4,7 +4,7 @@ import { createLlmClient } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from './nodes/tools.js'
 import { loadSkills, getActiveSkills } from '../skills/index.js'
-import type { WorldState, AgentResult } from './types.js'
+import type { AgentEventHandler, WorldState, AgentResult } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 20
@@ -160,6 +160,7 @@ export class Agent {
     userInput: string,
     state: WorldState,
     signal?: AbortSignal,
+    onEvent?: AgentEventHandler,
   ): Promise<AgentResult> {
     const cfg = await loadModelConfig()
     const llm = createLlmClient(cfg)
@@ -195,8 +196,16 @@ export class Agent {
     let toolCalls: LlmToolCall[] = []
 
     for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
-      if (evt.kind === 'delta') fullText += evt.delta
-      if (evt.kind === 'tool_calls') toolCalls = evt.toolCalls
+      if (evt.kind === 'delta') {
+        fullText += evt.delta
+        await onEvent?.({ type: 'delta', text: evt.delta })
+      }
+      if (evt.kind === 'tool_calls') {
+        toolCalls = evt.toolCalls
+        for (const tc of toolCalls) {
+          await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
+        }
+      }
     }
 
     // Tool call loop
@@ -210,6 +219,7 @@ export class Agent {
         try { args = JSON.parse(tc.arguments) } catch { continue }
 
         const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write')
+        await onEvent?.({ type: 'tool_result', name: tc.name, result })
         await engine.appendToolResult(tc.id, tc.name, result)
       }
 
@@ -217,8 +227,16 @@ export class Agent {
       fullText = ''
       toolCalls = []
       for await (const evt of engine.continueFromToolResults(tools, signal)) {
-        if (evt.kind === 'delta') fullText += evt.delta
-        if (evt.kind === 'tool_calls') toolCalls = evt.toolCalls
+        if (evt.kind === 'delta') {
+          fullText += evt.delta
+          await onEvent?.({ type: 'delta', text: evt.delta })
+        }
+        if (evt.kind === 'tool_calls') {
+          toolCalls = evt.toolCalls
+          for (const tc of toolCalls) {
+            await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
+          }
+        }
       }
     }
 
