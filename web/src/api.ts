@@ -45,6 +45,8 @@ export type DirectoryListing = {
   path: string
   parentPath: string | null
   entries: DirectoryEntry[]
+  isRootListing?: boolean
+  canListRoots?: boolean
 }
 
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -88,9 +90,19 @@ export async function abortSession(sessionId: string): Promise<void> {
   await jsonRequest<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' })
 }
 
-export async function listDirectories(path?: string): Promise<DirectoryListing> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+export async function listDirectories(path?: string, options: { roots?: boolean } = {}): Promise<DirectoryListing> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (options.roots) params.set('roots', '1')
+  const query = params.toString() ? `?${params.toString()}` : ''
   return jsonRequest<DirectoryListing>(`/api/filesystem/directories${query}`)
+}
+
+export async function pickDirectory(initialPath?: string): Promise<{ path: string | null }> {
+  return jsonRequest<{ path: string | null }>('/api/filesystem/pick-directory', {
+    method: 'POST',
+    body: JSON.stringify({ initialPath }),
+  })
 }
 
 export async function streamPrompt(

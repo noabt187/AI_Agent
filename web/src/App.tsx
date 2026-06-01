@@ -19,6 +19,7 @@ import {
   listSessions,
   listDirectories,
   loadSession,
+  pickDirectory,
   streamPrompt,
   updateAllowedPaths,
   type Message,
@@ -68,6 +69,10 @@ function formatTime(value: number): string {
   }).format(value)
 }
 
+function isWindowsClient(): boolean {
+  return navigator.platform.toLowerCase().includes('win') || navigator.userAgent.includes('Windows')
+}
+
 export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -75,7 +80,6 @@ export function App() {
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
   const [prompt, setPrompt] = useState('')
-  const [pathsText, setPathsText] = useState('')
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
   const [directoryError, setDirectoryError] = useState('')
@@ -91,6 +95,8 @@ export function App() {
   const [deltaCount, setDeltaCount] = useState(0)
 
   const pendingConfirm = session?.state.pendingConfirm
+  const allowedPathsText = session?.state.allowedPaths.join('\n') || ''
+  const operationRoot = session?.state.allowedPaths[0] || ''
 
   async function refreshSessions(preferredId?: string) {
     const nextSessions = await listSessions()
@@ -104,7 +110,6 @@ export function App() {
     const detail = await loadSession(sessionId)
     setSession(detail)
     setTimeline(toTimeline(detail.messages))
-    setPathsText(detail.state.allowedPaths.join('\n'))
     setRunning(detail.running)
     setStatus(detail.running ? '运行中' : '就绪')
   }
@@ -142,22 +147,42 @@ export function App() {
     await refreshSession(sessionId)
   }
 
-  async function handleSavePaths() {
-    if (!selectedSessionId) return
-    const allowedPaths = pathsText.split('\n').map((line) => line.trim()).filter(Boolean)
-    const detail = await updateAllowedPaths(selectedSessionId, allowedPaths)
-    setSession(detail)
-    setStatus('目录已更新')
+  function getDirectoryStartPath(): string | undefined {
+    return operationRoot || undefined
   }
 
-  async function openDirectoryPicker(startPath?: string) {
+  async function openDirectoryPicker(startPath?: string, options: { roots?: boolean } = {}) {
     setDirectoryPickerOpen(true)
     setDirectoryError('')
     try {
-      const listing = await listDirectories(startPath || session?.state.allowedPaths[0] || undefined)
+      const listing = await listDirectories(options.roots ? undefined : startPath || getDirectoryStartPath(), options)
       setDirectoryListing(listing)
     } catch (err) {
       setDirectoryError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handlePickDirectory() {
+    const startPath = getDirectoryStartPath()
+    if (isWindowsClient()) {
+      try {
+        const result = await pickDirectory(startPath)
+        if (result.path) {
+          await chooseDirectory(result.path)
+          return
+        }
+      } catch {}
+    }
+    await openDirectoryPicker(startPath)
+  }
+
+  function openDirectoryParent() {
+    if (directoryListing?.parentPath) {
+      void openDirectoryPicker(directoryListing.parentPath)
+      return
+    }
+    if (directoryListing?.canListRoots && !directoryListing.isRootListing) {
+      void openDirectoryPicker(undefined, { roots: true })
     }
   }
 
@@ -165,7 +190,6 @@ export function App() {
     if (!selectedSessionId) return
     const detail = await updateAllowedPaths(selectedSessionId, [path])
     setSession(detail)
-    setPathsText(path)
     setDirectoryPickerOpen(false)
     setDirectoryError('')
     setStatus('目录已更新')
@@ -200,7 +224,6 @@ export function App() {
 
   async function handleSendComments() {
     if (elementComments.length === 0) return
-    const operationRoot = session?.state.allowedPaths[0] || pathsText.split('\n').find(Boolean) || ''
     const commentPrompt = buildAnnotationPrompt(elementComments, operationRoot)
     setViewMode('chat')
     await sendPrompt(commentPrompt)
@@ -320,9 +343,9 @@ export function App() {
           </div>
           <div className="selectedPathBox">
             <FolderOpen size={17} />
-            <span>{pathsText.trim() || '未选择操作目录'}</span>
+            <span>{allowedPathsText.trim() || '未选择操作目录'}</span>
           </div>
-          <button className="choosePathButton" onClick={() => void openDirectoryPicker()}>
+          <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
             选择文件夹
           </button>
         </section>
@@ -509,10 +532,13 @@ export function App() {
             {directoryError ? <div className="directoryError">{directoryError}</div> : null}
 
             <div className="directoryToolbar">
-              <button disabled={!directoryListing?.parentPath} onClick={() => void openDirectoryPicker(directoryListing?.parentPath || undefined)}>
-                上一级
+              <button
+                disabled={!directoryListing?.parentPath && !(directoryListing?.canListRoots && !directoryListing.isRootListing)}
+                onClick={openDirectoryParent}
+              >
+                {directoryListing?.parentPath ? '上一级' : '盘符列表'}
               </button>
-              <button disabled={!directoryListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
+              <button disabled={!directoryListing || directoryListing.isRootListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
                 选择当前文件夹
               </button>
             </div>

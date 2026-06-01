@@ -13,9 +13,10 @@ import {
 } from './sessionApi.js'
 import { startJsonStream, writeStreamEvent } from './stream.js'
 import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
-import { listDirectories } from './fileBrowser.js'
+import { listDirectories, pickDirectory } from './fileBrowser.js'
+import { loadAppConfig } from '../config/appConfig.js'
 
-const port = Number(process.env.PORT || 3001)
+const { serverPort: port } = loadAppConfig()
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, {
@@ -143,7 +144,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
 
     if (method === 'GET' && pathname === '/api/filesystem/directories') {
-      sendJson(res, 200, await listDirectories(url.searchParams.get('path') || undefined))
+      sendJson(res, 200, await listDirectories(url.searchParams.get('path') || undefined, {
+        roots: url.searchParams.get('roots') === '1',
+      }))
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/filesystem/pick-directory') {
+      const body = await readJson(req)
+      const initialPath = typeof body.initialPath === 'string' ? body.initialPath : undefined
+      sendJson(res, 200, await pickDirectory(initialPath))
       return
     }
 
