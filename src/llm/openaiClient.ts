@@ -67,7 +67,10 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (data === '[DONE]') {
-          yield { type: 'done', usage }
+          // usage 已在 usage chunk 处理时 yield 过 done，此处仅作为兜底
+          if (!usage) {
+            yield { type: 'done', usage }
+          }
           break
         }
         try {
@@ -79,6 +82,19 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
               promptTokens: parsed.usage.prompt_tokens ?? 0,
               completionTokens: parsed.usage.completion_tokens ?? 0,
             }
+            // 立即 yield done，确保监控记录不丢失
+            if (toolCallsAcc.size > 0) {
+              yield {
+                type: 'tool_calls',
+                toolCalls: Array.from(toolCallsAcc.values()).map((tc) => ({
+                  id: tc.id,
+                  name: tc.name,
+                  arguments: tc.arguments,
+                })),
+              }
+              toolCallsAcc.clear()
+            }
+            yield { type: 'done', usage }
             continue
           }
 
