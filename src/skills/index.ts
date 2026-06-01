@@ -4,7 +4,6 @@ import type { WorldState } from '../orchestrator/types.js'
 
 export type Skill = {
   name: string
-  description: string
   trigger: string
   content: string
 }
@@ -49,7 +48,6 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
       if (meta.name && meta.trigger && body) {
         skills.push({
           name: meta.name,
-          description: meta.description || '',
           trigger: meta.trigger,
           content: body,
         })

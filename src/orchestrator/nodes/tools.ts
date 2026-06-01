@@ -1,16 +1,17 @@
 import { readdir, stat, readFile, writeFile as fsWriteFile, unlink, mkdir } from 'node:fs/promises'
 import { resolve, relative, extname, sep, dirname } from 'node:path'
+import { exec } from 'node:child_process'
 import { readTextFile } from '../../tools/fileTools.js'
 
 import type { ToolDefinition } from '../../llm/types.js'
 
-export type ToolScope = 'read' | 'write'
+type ToolScope = 'read' | 'write'
 
 // ── Tool Definitions ────────────────────────────────────────────────
 
-export type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
+type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
-export type ToolDef = {
+type ToolDef = {
   fn: ToolFn
   description: string
   argNames: string[]
@@ -111,9 +112,155 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, 'i')
 }
 
+async function execCommandTool(rootDir: string, command: string): Promise<string> {
+  return new Promise((resolve) => {
+    exec(command, { cwd: rootDir, timeout: 60000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      const output = [stdout, stderr].filter(Boolean).join('\n')
+      if (err) {
+        resolve(`[exit code: ${err.code}]\n${output || err.message}`)
+      } else {
+        resolve(output || 'OK')
+      }
+    })
+  })
+}
+
+async function verifyCodeTool(rootDir: string, changedFiles: string): Promise<string> {
+  const results: string[] = []
+  let hasError = false
+
+  // ── 1. 读取 package.json，检测可用命令 ──
+  const scripts: Record<string, string> = {}
+  try {
+    const pkgRaw = await readFile(resolve(rootDir, 'package.json'), 'utf8')
+    const pkg = JSON.parse(pkgRaw)
+    Object.assign(scripts, pkg.scripts || {})
+  } catch {}
+
+  // 检查是否有子项目的 package.json（前后端分离项目）
+  const subDirs = ['backend', 'frontend']
+  const subScripts: Record<string, Record<string, string>> = {}
+  for (const sub of subDirs) {
+    try {
+      const subPkgRaw = await readFile(resolve(rootDir, sub, 'package.json'), 'utf8')
+      const subPkg = JSON.parse(subPkgRaw)
+      subScripts[sub] = subPkg.scripts || {}
+    } catch {}
+  }
+
+  // ── 2. 运行可用的验证命令 ──
+  const runCmd = (cmd: string, cwd: string): Promise<{ ok: boolean; output: string }> => {
+    return new Promise((r) => {
+      exec(cmd, { cwd, timeout: 60000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+        const output = [stdout, stderr].filter(Boolean).join('\n')
+        r({ ok: !err, output: output.slice(0, 2000) })
+      })
+    })
+  }
+
+  // 根目录 test
+  if (scripts.test) {
+    const { ok, output } = await runCmd('npm test -- --run', rootDir)
+    if (!ok) {
+      hasError = true
+      results.push(`❌ 根目录 npm test 失败:\n${output}`)
+    } else {
+      results.push(`✅ 根目录 npm test 通过`)
+    }
+  }
+
+  // 子项目 lint/test/build
+  for (const [dir, sc] of Object.entries(subScripts)) {
+    if (sc.lint) {
+      const { ok, output } = await runCmd('npm run lint', resolve(rootDir, dir))
+      if (!ok) {
+        hasError = true
+        results.push(`❌ ${dir}/npm run lint 失败:\n${output}`)
+      } else {
+        results.push(`✅ ${dir}/npm run lint 通过`)
+      }
+    }
+    if (sc.test) {
+      const { ok, output } = await runCmd('npm test', resolve(rootDir, dir))
+      if (!ok) {
+        hasError = true
+        results.push(`❌ ${dir}/npm test 失败:\n${output}`)
+      } else {
+        results.push(`✅ ${dir}/npm test 通过`)
+      }
+    }
+    if (sc.build) {
+      const { ok, output } = await runCmd('npm run build', resolve(rootDir, dir))
+      if (!ok) {
+        hasError = true
+        results.push(`❌ ${dir}/npm run build 失败:\n${output}`)
+      } else {
+        results.push(`✅ ${dir}/npm run build 通过`)
+      }
+    }
+  }
+
+  // ── 3. 跨栈一致性检查 ──
+  const files = changedFiles.split(',').map((f) => f.trim()).filter(Boolean)
+  const backendModelFiles = files.filter((f) => /models?\//i.test(f) && /backend/i.test(f))
+  const backendControllerFiles = files.filter((f) => /controllers?\//i.test(f) && /backend/i.test(f))
+
+  if (backendModelFiles.length > 0 || backendControllerFiles.length > 0) {
+    // 读取后端模型文件，提取字段名
+    const backendFields: string[] = []
+    for (const modelFile of backendModelFiles) {
+      try {
+        const content = await readFile(resolve(rootDir, modelFile), 'utf8')
+        // 提取 DataTypes 定义的字段名（简单正则）
+        const fieldMatches = content.matchAll(/^\s+(\w+)\s*:/gm)
+        for (const m of fieldMatches) {
+          const field = m[1]
+          if (['id', 'createdAt', 'updatedAt', 'associate', 'toJSON', 'init', 'type', 'defaultValue', 'allowNull', 'primaryKey', 'autoIncrement', 'unique'].includes(field)) continue
+          if (field.startsWith('_')) continue
+          backendFields.push(field)
+        }
+      } catch {}
+    }
+
+    // 检查前端是否引用了这些字段
+    if (backendFields.length > 0) {
+      const frontendDir = resolve(rootDir, 'frontend', 'src')
+      for (const field of backendFields) {
+        try {
+          const allFrontendFiles = await collectFiles(frontendDir)
+          let found = false
+          for (const f of allFrontendFiles) {
+            try {
+              const content = await readFile(resolve(frontendDir, f), 'utf8')
+              if (content.includes(field)) {
+                found = true
+                break
+              }
+            } catch {}
+          }
+          if (!found) {
+            results.push(`⚠️ 跨栈一致性: 后端字段 "${field}" 在前端代码中未找到引用，可能需要同步修改前端`)
+          }
+        } catch {}
+      }
+      if (backendFields.length > 0 && !results.some((r) => r.includes('⚠️'))) {
+        results.push(`✅ 跨栈一致性检查通过（后端字段: ${backendFields.join(', ')}）`)
+      }
+    }
+  }
+
+  if (backendModelFiles.length === 0 && backendControllerFiles.length === 0) {
+    results.push(`ℹ️ 本次修改未涉及后端模型/控制器，跳过跨栈一致性检查`)
+  }
+
+  // ── 4. 汇总 ──
+  const summary = hasError ? '❌ 验证未通过' : '✅ 验证通过'
+  return `${summary}\n\n${results.join('\n')}`
+}
+
 // ── Registry ────────────────────────────────────────────────────────
 
-export const toolRegistry: Record<string, ToolDef> = {
+const toolRegistry: Record<string, ToolDef> = {
   readTextFile: {
     fn: readTextFile,
     description: '读取指定路径的文本文件内容',
@@ -149,6 +296,18 @@ export const toolRegistry: Record<string, ToolDef> = {
     description: '删除指定文件（需要人工确认）',
     argNames: ['rootDir', 'relativePath'],
     scope: 'write',
+  },
+  execCommand: {
+    fn: execCommandTool,
+    description: '在项目目录下执行 shell 命令，用于运行 lint、test、build 等',
+    argNames: ['rootDir', 'command'],
+    scope: 'read',
+  },
+  verifyCode: {
+    fn: verifyCodeTool,
+    description: '验证代码质量：运行 lint/test/build + 跨栈一致性检查，changedFiles 为本次修改的文件列表（逗号分隔）',
+    argNames: ['rootDir', 'changedFiles'],
+    scope: 'read',
   },
 }
 
@@ -195,7 +354,7 @@ function assertInsideRoot(rootDir: string, targetPath: string): void {
   const resolvedRoot = resolve(rootDir)
   const resolvedTarget = resolve(rootDir, targetPath)
   const rel = relative(resolvedRoot, resolvedTarget)
-  if (rel === '..' || rel.startsWith(`..${sep}`) || rel.startsWith('..')) {
+  if (rel === '..' || rel.startsWith(`..${sep}`)) {
     throw new Error(`路径越界："${targetPath}" 超出了项目根目录`)
   }
 }
@@ -240,6 +399,22 @@ export async function executeTool(
       // searchFiles with empty pattern = match all (use *)
       if (name === 'searchFiles' && argName === 'pattern' && (!val || val.trim() === '')) {
         return `错误：工具 "${name}" 缺少搜索模式（pattern 不能为空）`
+      }
+
+      // execCommand: command is a shell command, not a path
+      if (name === 'execCommand' && argName === 'command') {
+        if (!val || val.trim() === '') {
+          return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
+        }
+        continue
+      }
+
+      // verifyCode: changedFiles is a comma-separated list, not a path
+      if (name === 'verifyCode' && argName === 'changedFiles') {
+        if (!val || val.trim() === '') {
+          return `错误：工具 "${name}" 缺少必需参数 "${argName}"（本次修改的文件列表，逗号分隔）`
+        }
+        continue
       }
 
       // All other params are required
