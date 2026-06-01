@@ -145,14 +145,16 @@ export class QueryEngine {
       // 成功（无错误）
       if (!lastError) break
 
-      // 非 429 错误或已用尽重试次数
-      if (!lastError.includes('429') || attempt >= MAX_RETRIES) {
+      // 429 限流 + 5xx 服务端错误 → 可重试；其他错误直接返回
+      const isRetryable = /HTTP (429|5\d{2})/.test(lastError) || lastError.includes('429')
+      if (!isRetryable || attempt >= MAX_RETRIES) {
         return { type: 'error', error: lastError }
       }
 
-      // 429 限流，等待后重试
+      // 等待后重试（指数退避）
       const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000)
-      yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: `\n[限流，${waitMs / 1000}秒后重试 (${attempt + 1}/${MAX_RETRIES})]...`, createdAt }
+      const reason = lastError.includes('429') ? '限流' : '服务端错误'
+      yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: `\n[${reason}，${waitMs / 1000}秒后重试 (${attempt + 1}/${MAX_RETRIES})]...`, createdAt }
       await new Promise((r) => setTimeout(r, waitMs))
     }
 
