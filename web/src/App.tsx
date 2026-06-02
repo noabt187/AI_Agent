@@ -416,10 +416,30 @@ export function App() {
     setConfirmDraft('')
   }
 
+  function buildConfirmEditPrompt(feedback: string): string {
+    if (!pendingConfirm) return feedback
+    if (pendingConfirm.type === 'design') {
+      return [
+        '用户正在修改待确认的方案设计。',
+        `原待确认方案是：\n${pendingConfirm.message}`,
+        `用户修改意见是：\n${feedback}`,
+        '请重新设计方案；如果修改意见改变了需求范围，请回到 requirement confirm，否则返回新的 design confirm。',
+        '不要写代码。',
+      ].join('\n\n')
+    }
+
+    return [
+      '用户正在修改待确认的需求分析。',
+      `原待确认需求是：\n${pendingConfirm.message}`,
+      `用户修改意见是：\n${feedback}`,
+      '请重新分析需求；如信息足够，返回新的 requirement confirm；如信息不足，ask_user。',
+      '不要写代码。',
+    ].join('\n\n')
+  }
+
   function handleSubmitConfirmEdit() {
     if (!pendingConfirm || !confirmDraft.trim()) return
-    const target = pendingConfirm.type === 'design' ? '方案' : '需求'
-    const editPrompt = `请根据以下反馈修改${target}，修改后重新给出${target}并等待我确认：\n\n${confirmDraft.trim()}`
+    const editPrompt = buildConfirmEditPrompt(confirmDraft.trim())
     clearPendingConfirmLocal()
     void sendPrompt(editPrompt)
   }
