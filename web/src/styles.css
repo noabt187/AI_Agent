@@ -187,17 +187,6 @@ small {
   background: #ecfdf9;
 }
 
-.pathsInput {
-  width: 100%;
-  min-height: 130px;
-  resize: vertical;
-  border: 1px solid #cfd7df;
-  border-radius: 8px;
-  padding: 11px 12px;
-  color: #1f2933;
-  background: #fbfcfd;
-}
-
 .selectedPathBox {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -977,10 +966,6 @@ small {
 
   .sessionItem {
     font-size: 15px;
-  }
-
-  .pathsInput {
-    min-height: 112px;
   }
 
   .workspaceControls {
