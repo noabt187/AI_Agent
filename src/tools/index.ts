@@ -4,6 +4,7 @@ import { writeFileTool, deleteFileTool } from './fileWrite.js'
 import { execCommandTool } from './execCommand.js'
 import { verifyCodeTool } from './verifyCode.js'
 import { createPullRequestTool } from './createPullRequest.js'
+import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
 import { assertInsideRoot, assertInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
@@ -17,6 +18,8 @@ type ToolDef = {
   description: string
   argNames: string[]
   scope: ToolScope
+  requiredArgNames?: string[]
+  pathArgNames?: string[]
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -72,9 +75,25 @@ const toolRegistry: Record<string, ToolDef> = {
   },
   createPullRequest: {
     fn: createPullRequestTool,
-    description: '把当前项目的本地改动提交到新分支并创建 GitHub PR。repoUrl 可传 auto 或空字符串自动读取 git remote；draft 默认 true。参数: repoUrl,title,body,baseBranch,headBranch,commitMessage,draft,remote',
-    argNames: ['rootDir', 'repoUrl', 'title', 'body', 'baseBranch', 'headBranch', 'commitMessage', 'draft', 'remote'],
+    description: '把当前项目的本地改动提交到分支并创建 GitHub PR。repoUrl 是推送仓库，auto 读取 origin；prRepoUrl 是 PR 目标仓库，auto 表示同 repoUrl；draft 默认 true。参数: repoUrl,title,body,baseBranch,headBranch,commitMessage,draft,remote,prRepoUrl,headOwner',
+    argNames: ['rootDir', 'repoUrl', 'title', 'body', 'baseBranch', 'headBranch', 'commitMessage', 'draft', 'remote', 'prRepoUrl', 'headOwner'],
     scope: 'write',
+    requiredArgNames: ['rootDir'],
+  },
+  forkRepository: {
+    fn: forkRepositoryTool,
+    description: 'Fork GitHub 仓库到当前 gh 登录账号或指定组织。只创建远程 fork，不 clone、不创建分支、不提交 PR。参数: repoUrl,targetOwner,forkName,defaultBranchOnly',
+    argNames: ['rootDir', 'repoUrl', 'targetOwner', 'forkName', 'defaultBranchOnly'],
+    scope: 'write',
+    requiredArgNames: ['rootDir', 'repoUrl'],
+  },
+  cloneRepository: {
+    fn: cloneRepositoryTool,
+    description: 'Clone 任意 Git 仓库到用户指定本地目录。只 clone，不 fork、不提交 PR；可选添加一个额外 remote。参数: repoUrl,cloneParentDir,cloneDirName,remoteName,upstreamUrl,upstreamRemoteName',
+    argNames: ['rootDir', 'repoUrl', 'cloneParentDir', 'cloneDirName', 'remoteName', 'upstreamUrl', 'upstreamRemoteName'],
+    scope: 'write',
+    requiredArgNames: ['rootDir', 'repoUrl'],
+    pathArgNames: ['cloneParentDir'],
   },
   compressContext: {
     fn: compressContextTool,
@@ -111,7 +130,7 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
             : (name === 'createPullRequest' && arg !== 'repoUrl' ? `${arg}，可传 auto 使用默认值` : arg),
         }
       }
-      const required = name === 'createPullRequest' ? ['rootDir'] : def.argNames
+      const required = def.requiredArgNames ?? (name === 'createPullRequest' ? ['rootDir'] : def.argNames)
       return {
         type: 'function' as const,
         function: {
@@ -133,6 +152,8 @@ function isNonPathToolArg(toolName: string, argName: string): boolean {
   if (toolName === 'execCommand' && argName === 'command') return true
   if (toolName === 'verifyCode' && argName === 'changedFiles') return true
   if (toolName === 'createPullRequest') return true
+  if (toolName === 'forkRepository') return true
+  if (toolName === 'cloneRepository' && argName !== 'cloneParentDir') return true
   if (toolName === 'compressContext' && argName === 'sessionId') return true
   return false
 }
@@ -170,6 +191,9 @@ export async function executeTool(
     if (tool.scope === 'write' && allowedPaths) {
       assertInsideAllowedPaths(rootDir, allowedPaths)
     }
+    const requiredArgNames = new Set(tool.requiredArgNames ?? tool.argNames)
+    const pathArgNames = new Set(tool.pathArgNames ?? tool.argNames.filter((argName) => !isNonPathToolArg(name, argName)))
+
     for (const argName of tool.argNames) {
       if (argName === 'rootDir') continue
       const val = args[argName]
@@ -185,30 +209,25 @@ export async function executeTool(
         return `错误：工具 "${name}" 缺少搜索模式（pattern 不能为空）`
       }
 
-      // createPullRequest has optional metadata fields. Empty values mean "use defaults".
-      if (name === 'createPullRequest') {
-        continue
-      }
-
       // Some arguments are commands or metadata, not filesystem paths.
       if (isNonPathToolArg(name, argName)) {
-        if (!val || val.trim() === '') {
+        if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
           return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
         }
         continue
       }
 
       // All other params are required
-      if (!val || val.trim() === '') {
+      if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
         return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
       }
-      assertInsideRoot(rootDir, val)
+      if (val && pathArgNames.has(argName)) assertInsideRoot(rootDir, val)
     }
 
     // For write-scope tools, validate against allowedPaths
     if (tool.scope === 'write' && allowedPaths) {
       for (const argName of tool.argNames) {
-        if (argName !== 'rootDir' && argName !== 'content' && args[argName] && !isNonPathToolArg(name, argName)) {
+        if (argName !== 'rootDir' && argName !== 'content' && args[argName] && pathArgNames.has(argName)) {
           const fullPath = resolve(rootDir, args[argName])
           assertInsideAllowedPaths(fullPath, allowedPaths)
         }
