@@ -42,7 +42,7 @@ button {
   height: 100vh;
   min-height: 0;
   flex-direction: column;
-  gap: clamp(12px, 1.4vw, 16px);
+  gap: clamp(16px, 1.8vw, 22px);
   overflow: auto;
   border-right: 1px solid #d8dee4;
   background: #ffffff;
@@ -121,7 +121,12 @@ small {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+}
+
+.panel + .panel {
+  border-top: 1px solid #edf1f4;
+  padding-top: 14px;
 }
 
 .panelHeader {
@@ -135,6 +140,13 @@ small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.fieldLabel {
+  color: #5d6a78;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.2;
 }
 
 .sessionList {
@@ -188,6 +200,11 @@ small {
   padding: 11px 12px;
 }
 
+.selectedPathBox.compact {
+  min-height: 38px;
+  padding: 9px 11px;
+}
+
 .selectedPathBox span {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -195,7 +212,24 @@ small {
 }
 
 .choosePathButton {
+  display: inline-flex;
   min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #155eef;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #155eef;
+  font-weight: 760;
+}
+
+.openPreviewButton {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid #155eef;
   border-radius: 8px;
   background: #eef4ff;
@@ -212,14 +246,23 @@ small {
   background: #fbfcfd;
 }
 
-.previewActions {
+.urlInput.large {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.modeStack {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(88px, 1fr));
   gap: 8px;
 }
 
 .modeButton {
-  min-height: 34px;
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid #cfd7df;
   border-radius: 8px;
   background: #ffffff;
@@ -328,7 +371,7 @@ small {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
   min-width: 0;
   min-height: 0;
   height: 100vh;
@@ -341,13 +384,40 @@ small {
   padding: 18px 22px;
 }
 
+.workspaceControls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(260px, 1fr) minmax(280px, 0.8fr);
+  gap: 14px;
+  align-items: center;
+  border-bottom: 1px solid #d8dee4;
+  background: #fbfcfd;
+  padding: 12px 22px;
+}
+
+.controlGroup {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.controlRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.modeControl .modeStack {
+  min-width: 0;
+}
+
 .headerActions {
   display: inline-flex;
   align-items: center;
   gap: 10px;
 }
 
-.stopButton,
 .annotateButton,
 .sendButton,
 .confirmBar button {
@@ -370,7 +440,6 @@ small {
   color: #ffffff;
 }
 
-.stopButton:disabled,
 .sendButton:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -382,6 +451,94 @@ small {
   gap: 12px;
   overflow: auto;
   padding: 24px;
+}
+
+.metricsView {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+}
+
+.metricsSummary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.metricsSummary article {
+  border: 1px solid #d5dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.metricsSummary span {
+  display: block;
+  color: #66727f;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.metricsSummary strong {
+  display: block;
+  margin-top: 8px;
+  color: #182636;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.metricsTableWrap {
+  overflow: auto;
+  border: 1px solid #d5dde4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.metricsTable {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.metricsTable th,
+.metricsTable td {
+  border-bottom: 1px solid #edf1f4;
+  padding: 11px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.metricsTable th {
+  background: #f8fafb;
+  color: #465462;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.metricsTable td {
+  color: #22313f;
+  font-size: 14px;
+}
+
+.metricsTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.metricsError,
+.emptyMetrics {
+  border: 1px solid #efb4aa;
+  border-radius: 8px;
+  background: #fff1ef;
+  color: #9f2d20;
+  padding: 12px;
+}
+
+.emptyMetrics {
+  border-color: #d5dde4;
+  background: #fbfcfd;
+  color: #66727f;
 }
 
 .previewStage {
@@ -448,10 +605,28 @@ small {
 }
 
 .confirmBar {
-  gap: 10px;
+  gap: 12px;
+  align-items: stretch;
   border-top: 1px solid #d8dee4;
   background: #fffaf0;
   padding: 12px 22px;
+}
+
+.confirmBar textarea {
+  flex: 1;
+  min-height: 46px;
+  max-height: 110px;
+  resize: vertical;
+  border: 1px solid #d4c7a6;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.confirmActions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .elementCommentDock {
@@ -522,10 +697,29 @@ small {
   opacity: 0.5;
 }
 
-.confirmBar button:first-child {
+.confirmActions button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #b9c3cc;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2933;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.confirmActions button.primary {
   border-color: #0f766e;
   background: #0f766e;
   color: #ffffff;
+}
+
+.confirmActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .composer {
@@ -573,6 +767,42 @@ small {
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+}
+
+.previewAddressModal {
+  display: grid;
+  width: min(520px, 100%);
+  overflow: hidden;
+  border: 1px solid #c8d2dc;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+}
+
+.previewAddressModal header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #d8dee4;
+  padding: 16px 18px;
+}
+
+.previewAddressModal h3 {
+  margin: 0;
+  color: #172331;
+  font-size: 18px;
+}
+
+.previewAddressModal p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.previewAddressBody {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
 }
 
 .directoryModal header {
@@ -711,6 +941,22 @@ small {
     height: auto;
     min-height: 68vh;
   }
+
+  .workspaceControls {
+    grid-template-columns: 1fr;
+  }
+
+  .controlRow {
+    grid-template-columns: 1fr;
+  }
+
+  .modeStack {
+    grid-template-columns: 1fr;
+  }
+
+  .metricsSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (min-width: 861px) and (max-width: 1120px) {
@@ -722,4 +968,11 @@ small {
     font-size: 15px;
   }
 
+  .workspaceControls {
+    grid-template-columns: 1fr;
+  }
+
+  .metricsSummary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }

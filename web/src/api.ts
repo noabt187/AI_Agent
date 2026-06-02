@@ -49,6 +49,30 @@ export type DirectoryListing = {
   canListRoots?: boolean
 }
 
+export type MetricsCall = {
+  timestamp: number
+  promptTokens: number
+  completionTokens: number
+  latencyMs: number
+  firstTokenMs: number
+}
+
+export type MetricsSummary = {
+  callCount: number
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  totalTokens: number
+  averageLatencyMs: number
+  averageFirstTokenMs: number
+}
+
+export type SessionMetrics = {
+  sessionId: string
+  startedAt: number | null
+  calls: MetricsCall[]
+  summary: MetricsSummary
+}
+
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -77,6 +101,10 @@ export async function createSession(): Promise<string> {
 
 export async function loadSession(sessionId: string): Promise<SessionDetail> {
   return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+}
+
+export async function loadSessionMetrics(sessionId: string): Promise<SessionMetrics> {
+  return jsonRequest<SessionMetrics>(`/api/sessions/${encodeURIComponent(sessionId)}/metrics`)
 }
 
 export async function updateAllowedPaths(sessionId: string, allowedPaths: string[]): Promise<SessionDetail> {

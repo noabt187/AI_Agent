@@ -14,9 +14,11 @@ import {
 import { startJsonStream, writeStreamEvent } from './stream.js'
 import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
 import { listDirectories, pickDirectory } from './fileBrowser.js'
+import { loadMetricsFromStateDir } from './metrics.js'
 import { loadAppConfig } from '../config/appConfig.js'
 
 const { serverPort: port } = loadAppConfig()
+const stateDir = 'state'
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, {
@@ -171,6 +173,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const sessionId = getSessionId(pathname)
     if (sessionId && method === 'GET' && pathname === `/api/sessions/${encodeURIComponent(sessionId)}`) {
       sendJson(res, 200, await loadSession(sessionId))
+      return
+    }
+
+    if (sessionId && method === 'GET' && pathname.endsWith('/metrics')) {
+      sendJson(res, 200, await loadMetricsFromStateDir(stateDir, sessionId))
       return
     }
 
