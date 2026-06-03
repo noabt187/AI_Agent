@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
+  CircleStop,
   Eye,
   FolderOpen,
   Gauge,
@@ -13,6 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import {
+  abortSession,
   createSession,
   listSessions,
   listDirectories,
@@ -220,6 +222,17 @@ export function App() {
     return () => window.removeEventListener('message', handleMessage)
   }, [])
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        void handleAbort()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  })
+
   function postAnnotatorState(active = annotateActive) {
     previewFrameRef.current?.contentWindow?.postMessage({ type: 'agent-annotator-set-active', active }, '*')
   }
@@ -399,6 +412,19 @@ export function App() {
     } finally {
       setRunning(false)
     }
+  }
+
+  async function handleAbort() {
+    if (!selectedSessionId || !running) return
+    appendItem({ role: 'activity', content: '[中断] 正在停止当前操作...' })
+    try {
+      await abortSession(selectedSessionId)
+    } catch {
+      // abort API 调用失败不影响 UI 恢复
+    }
+    // 不在这里 setRunning(false) 和 appendItem，
+    // 让 sendPrompt 的 stream 结束和 finally 统一处理状态恢复，
+    // Agent 也会返回 "[已中断]" 消息通过 stream 输出到 timeline
   }
 
   function handleConfirmAction() {

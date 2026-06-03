@@ -199,7 +199,8 @@ export class Agent {
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
-    for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
+    try {
+      for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
       if (evt.kind === 'delta') {
         fullText += evt.delta
         await onEvent?.({ type: 'delta', text: evt.delta })
@@ -296,5 +297,11 @@ export class Agent {
     if (parsed) return parsed
 
     return { action: 'chat', message: fullText.trim() }
+    } catch (err) {
+      if (signal?.aborted) {
+        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
+      }
+      throw err
+    }
   }
 }
