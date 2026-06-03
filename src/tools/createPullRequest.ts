@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { access } from 'node:fs/promises'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -25,14 +26,47 @@ async function runGit(rootDir: string, args: string[]): Promise<string> {
   return [stdout, stderr].filter(Boolean).join('\n').trim()
 }
 
+const WINDOWS_GH_PATHS = [
+  'C:\\Program Files\\GitHub CLI\\gh.exe',
+  'C:\\Program Files (x86)\\GitHub CLI\\gh.exe',
+]
+
+let cachedGhCommand: string | null = null
+
+async function resolveGhCommand(): Promise<string> {
+  if (cachedGhCommand) return cachedGhCommand
+
+  try {
+    await runCommand('gh', ['--version'], process.cwd())
+    cachedGhCommand = 'gh'
+    return cachedGhCommand
+  } catch {}
+
+  for (const candidate of WINDOWS_GH_PATHS) {
+    try {
+      await access(candidate)
+      cachedGhCommand = candidate
+      return cachedGhCommand
+    } catch {}
+  }
+
+  return 'gh'
+}
+
 async function runGh(rootDir: string, args: string[]): Promise<string> {
-  const { stdout, stderr } = await runCommand('gh', args, rootDir)
+  const ghCommand = await resolveGhCommand()
+  const { stdout, stderr } = await runCommand(ghCommand, args, rootDir)
   return [stdout, stderr].filter(Boolean).join('\n').trim()
+}
+
+function isDefaultValueToken(value: string | undefined): boolean {
+  const trimmed = value?.trim().toLowerCase() ?? ''
+  return !trimmed || trimmed === 'auto' || trimmed === '-'
 }
 
 function optionalValue(value: string): string | undefined {
   const trimmed = value.trim()
-  if (!trimmed || trimmed === 'auto' || trimmed === '-') return undefined
+  if (isDefaultValueToken(trimmed)) return undefined
   return trimmed
 }
 
@@ -83,11 +117,47 @@ function toGhRepo(repoUrl: string): string {
   return trimmed
 }
 
+export type GitHubRepositoryRef = {
+  owner: string
+  name: string
+  fullName: string
+}
+
+export function parseGitHubRepository(repoUrl: string): GitHubRepositoryRef {
+  const repo = toGhRepo(repoUrl).replace(/\.git$/, '').replace(/^\/+|\/+$/g, '')
+  const parts = repo.split('/').filter(Boolean)
+  const startIndex = parts[0]?.includes('.') ? 1 : 0
+  const owner = parts[startIndex]
+  const name = parts[startIndex + 1]
+
+  if (!owner || !name || parts.length < startIndex + 2) {
+    throw new Error(`GitHub 仓库地址不合法: ${repoUrl}`)
+  }
+
+  validateGitHubSegment(owner, 'owner')
+  validateGitHubSegment(name, 'repository')
+
+  return {
+    owner,
+    name,
+    fullName: `${owner}/${name}`,
+  }
+}
+
+export function validateGitHubSegment(value: string, label: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(value)
+    || value.startsWith('-')
+    || value.endsWith('-')
+    || value.includes('..')) {
+    throw new Error(`${label} 不合法: ${value}`)
+  }
+}
+
 function githubCliSetupMessage(reason: string): string {
   return [
     `错误：${reason}`,
     '',
-    'createPullRequest 需要本机安装并登录 GitHub CLI（gh），因为创建 PR 依赖 gh pr create。',
+    'GitHub 仓库操作需要本机安装并登录 GitHub CLI（gh）。',
     '',
     'Windows PowerShell:',
     '  winget install --id GitHub.cli',
@@ -149,6 +219,8 @@ async function createPullRequestTool(
   commitMessageArg: string,
   draftArg: string,
   remoteArg: string,
+  prRepoUrlArg: string,
+  headOwnerArg: string,
 ): Promise<string> {
   await runGit(rootDir, ['rev-parse', '--is-inside-work-tree'])
 
@@ -188,6 +260,12 @@ async function createPullRequestTool(
   const ghReadyError = await checkGitHubCliReady(rootDir)
   if (ghReadyError) return ghReadyError
 
+  const pushRepo = parseGitHubRepository(repoUrl)
+  const explicitPrRepoUrl = optionalValue(prRepoUrlArg)
+  const prRepoUrl = explicitPrRepoUrl ?? repoUrl
+  const prRepo = parseGitHubRepository(prRepoUrl)
+  const headOwner = optionalValue(headOwnerArg) ?? pushRepo.owner
+
   const currentBranch = await getCurrentBranch(rootDir)
   if (currentBranch !== headBranch) {
     try {
@@ -216,11 +294,11 @@ async function createPullRequestTool(
     'pr',
     'create',
     '--repo',
-    toGhRepo(repoUrl),
+    prRepo.fullName,
     '--base',
     baseBranch,
     '--head',
-    headBranch,
+    `${headOwner}:${headBranch}`,
     '--title',
     title,
     '--body',
@@ -232,9 +310,10 @@ async function createPullRequestTool(
 
   return [
     'PR 创建成功。',
-    `远程仓库: ${repoUrl}`,
+    `推送仓库: ${pushRepo.fullName}`,
+    `PR 目标仓库: ${prRepo.fullName}`,
     `base: ${baseBranch}`,
-    `head: ${headBranch}`,
+    `head: ${headOwner}:${headBranch}`,
     `draft: ${draft ? 'true' : 'false'}`,
     '',
     prOutput,
