@@ -747,6 +747,16 @@ small {
   color: #ffffff;
 }
 
+.sendButton.abort {
+  border-color: #ef4444;
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.sendButton.abort:hover {
+  background: #dc2626;
+}
+
 .modalBackdrop {
   position: fixed;
   inset: 0;

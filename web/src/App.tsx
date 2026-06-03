@@ -744,9 +744,15 @@ export function App() {
               }
             }}
           />
-          <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId || running}>
-            <Send size={19} />
-          </button>
+          {running ? (
+            <button className="sendButton abort" title="停止" type="button" onClick={() => void handleAbort()}>
+              <CircleStop size={19} />
+            </button>
+          ) : (
+            <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId}>
+              <Send size={19} />
+            </button>
+          )}
         </form>
       </section>
 

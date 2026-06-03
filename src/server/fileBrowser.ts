@@ -6,12 +6,12 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
-export type DirectoryEntry = {
+type DirectoryEntry = {
   name: string
   path: string
 }
 
-export type DirectoryListing = {
+type DirectoryListing = {
   path: string
   parentPath: string | null
   entries: DirectoryEntry[]
@@ -19,7 +19,7 @@ export type DirectoryListing = {
   canListRoots?: boolean
 }
 
-export type DirectoryPickerResult = {
+type DirectoryPickerResult = {
   path: string | null
 }
 

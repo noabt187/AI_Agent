@@ -6,6 +6,8 @@ import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
+import { saveDesignCheckpoint, loadDesignCheckpoint, createCodeCheckpoint, restoreCodeCheckpoint, listCodeCheckpoints, applySnapshot } from './checkpoint.js'
+import type { WriteConfirmFn } from '../tools/index.js'
 
 const execAsync = promisify(exec)
 
@@ -54,6 +56,22 @@ export class Orchestrator {
   private async emitOutput(message: string, onEvent?: AgentEventHandler) {
     console.log(message)
     await onEvent?.({ type: 'output', message })
+  }
+
+  private createWriteConfirmFn(onEvent?: AgentEventHandler): WriteConfirmFn {
+    return async (toolName: string, targetFile: string) => {
+      const msg = `Agent 要修改文件 "${targetFile}"（工具: ${toolName}），确认？`
+      await this.emitOutput(`\n[写操作确认] ${msg}`, onEvent)
+      if (this.askConfirm) {
+        const confirmed = await this.askConfirm(msg)
+        if (confirmed) {
+          this.state.designConfirmed = true
+          await this.persist()
+        }
+        return confirmed
+      }
+      return false
+    }
   }
 
   abort() {
@@ -114,6 +132,15 @@ export class Orchestrator {
       console.log(`\n${report}`)
       return
     }
+    if (userInput === '/checkpoints') {
+      await this.handleListCheckpoints(onEvent)
+      return
+    }
+    if (userInput.startsWith('/checkpoint ')) {
+      const label = userInput.split(/\s+/)[1]
+      await this.handleRestoreCheckpoint(label, onEvent)
+      return
+    }
 
     // Handle confirmation response
     if (this.isConfirmationInput(userInput) && this.state.pendingConfirm) {
@@ -139,17 +166,21 @@ export class Orchestrator {
     }
 
     // Run Agent
+    const onConfirmWrite = this.createWriteConfirmFn(onEvent)
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder, onConfirmWrite)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    // Handle result
+    await this.handleAgentResult(result, onEvent)
+    await this.persist()
+  }
+
+  private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler) {
     switch (result.action) {
       case 'chat':
         await this.emitOutput(result.message, onEvent)
         break
-
       case 'ask_user':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput('\n[需要你确认]', onEvent)
@@ -158,27 +189,20 @@ export class Orchestrator {
           void onEvent?.({ type: 'output', message: `  ${i + 1}. ${q}` })
         })
         break
-
       case 'confirm':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput(`\n${result.prompt}`, onEvent)
-        // Save pending confirm for next user input
-        if (result.message) {
-          this.state.pendingConfirm = {
-            type: result.confirmType || 'requirement',
-            message: result.message,
-          }
+        this.state.pendingConfirm = {
+          type: result.confirmType || 'requirement',
+          message: result.message || result.prompt,
         }
         break
-
       case 'done':
         await this.emitOutput(`\n${result.message}`, onEvent)
-        // Clear state after completion
         this.state.pendingConfirm = undefined
+        this.state.designConfirmed = false
         break
     }
-
-    await this.persist()
   }
 
   private isConfirmationInput(input: string): boolean {
@@ -194,47 +218,24 @@ export class Orchestrator {
 
     if (pending.type === 'requirement') {
       this.state.confirmedRequirement = pending.message
+      await saveDesignCheckpoint(this.state.sessionId, this.state)
       await this.emitOutput('\n[需求已确认] 正在设计方案...', onEvent)
     } else {
+      this.state.designConfirmed = true
+      await saveDesignCheckpoint(this.state.sessionId, this.state)
       await this.emitOutput('\n[方案已确认] 正在编写代码...', onEvent)
     }
 
     await this.persist()
 
     // Call Agent again to proceed to next step
+    const onConfirmWrite = this.createWriteConfirmFn(onEvent)
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder, onConfirmWrite)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    switch (result.action) {
-      case 'chat':
-        await this.emitOutput(result.message, onEvent)
-        break
-      case 'ask_user':
-        if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
-        await this.emitOutput('\n[需要你确认]', onEvent)
-        result.questions.forEach((q, i) => {
-          console.log(`  ${i + 1}. ${q}`)
-          void onEvent?.({ type: 'output', message: `  ${i + 1}. ${q}` })
-        })
-        break
-      case 'confirm':
-        if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
-        await this.emitOutput(`\n${result.prompt}`, onEvent)
-        if (result.message) {
-          this.state.pendingConfirm = {
-            type: result.confirmType || 'requirement',
-            message: result.message,
-          }
-        }
-        break
-      case 'done':
-        await this.emitOutput(`\n${result.message}`, onEvent)
-        this.state.pendingConfirm = undefined
-        break
-    }
-
+    await this.handleAgentResult(result, onEvent)
     await this.persist()
   }
 
@@ -265,7 +266,6 @@ export class Orchestrator {
     const projectPath = parts[1]
     const githubRepoUrl = parts[2]
 
-    // 验证目录存在
     try {
       await access(projectPath)
     } catch {
@@ -273,7 +273,6 @@ export class Orchestrator {
       return
     }
 
-    // 验证是 git 仓库
     try {
       await access(`${projectPath}/.git`)
     } catch {
@@ -282,11 +281,9 @@ export class Orchestrator {
     }
 
     try {
-      // 1. fetch 远程最新版本
       await this.emitOutput(`\n[revert] 正在拉取远程最新版本...`, onEvent)
       await execAsync(`git fetch ${githubRepoUrl}`, { cwd: projectPath })
 
-      // 2. diff 展示改动
       const { stdout: diffOutput } = await execAsync('git diff HEAD', { cwd: projectPath })
       if (!diffOutput.trim()) {
         await this.emitOutput('[revert] 没有检测到本地改动，无需回退。', onEvent)
@@ -303,7 +300,6 @@ export class Orchestrator {
         await this.emitOutput(`\n... 共 ${diffLines.length} 行，已截断`, onEvent)
       }
 
-      // 3. 确认回退
       if (this.askConfirm) {
         const confirmed = await this.askConfirm('\n确认丢弃以上所有改动？')
         if (!confirmed) {
@@ -312,13 +308,86 @@ export class Orchestrator {
         }
       }
 
-      // 4. checkout 丢弃改动
       await execAsync('git checkout .', { cwd: projectPath })
       await this.emitOutput('[revert] 已回退到 GitHub 最新版本。', onEvent)
     } catch (err) {
       console.error(`[revert] 执行失败:`, err instanceof Error ? err.message : err)
       await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
+  }
+
+  // ── Checkpoints ─────────────────────────────────────────────────────
+
+  private async handleListCheckpoints(onEvent?: AgentEventHandler) {
+    // 设计 checkpoint
+    const designSnapshot = await loadDesignCheckpoint(this.state.sessionId)
+    await this.emitOutput('\n[checkpoint] 设计断点：', onEvent)
+    if (designSnapshot) {
+      const preview = designSnapshot.confirmedRequirement?.slice(0, 80) || designSnapshot.goal?.slice(0, 80) || '无'
+      await this.emitOutput(`  design — ${preview}...`, onEvent)
+    } else {
+      await this.emitOutput('  （无）', onEvent)
+    }
+
+    // 代码 checkpoint
+    const codeEntries = await listCodeCheckpoints(this.state.sessionId)
+    await this.emitOutput('\n[checkpoint] 代码断点：', onEvent)
+    if (codeEntries.length === 0) {
+      await this.emitOutput('  （无）', onEvent)
+    } else {
+      for (const entry of codeEntries) {
+        const time = new Date(entry.timestamp).toLocaleTimeString()
+        await this.emitOutput(`  ${entry.label} - ${time} - ${entry.commitHash.slice(0, 8)}`, onEvent)
+      }
+    }
+
+    await this.emitOutput('\n使用 /checkpoint design 回到设计断点（不回退代码）', onEvent)
+    await this.emitOutput('使用 /checkpoint <label> 回到代码断点（回退代码）', onEvent)
+  }
+
+  private async handleRestoreCheckpoint(targetLabel: string, onEvent?: AgentEventHandler) {
+    // 设计 checkpoint：只恢复 WorldState，不回退代码
+    if (targetLabel === 'design') {
+      const snapshot = await loadDesignCheckpoint(this.state.sessionId)
+      if (!snapshot) {
+        await this.emitOutput('\n[checkpoint] 未找到设计断点。', onEvent)
+        return
+      }
+
+      if (this.askConfirm) {
+        const confirmed = await this.askConfirm('确认回到设计断点？当前方案将被恢复。')
+        if (!confirmed) {
+          await this.emitOutput('[checkpoint] 已取消。', onEvent)
+          return
+        }
+      }
+
+      applySnapshot(this.state, snapshot)
+      this.state.pendingConfirm = undefined
+      await this.persist()
+      await this.emitOutput('\n[checkpoint] 已回到设计断点。', onEvent)
+      return
+    }
+
+    // 代码 checkpoint：恢复 WorldState + 回退代码
+    if (this.askConfirm) {
+      const confirmed = await this.askConfirm(`确认回到 "${targetLabel}" 代码断点？代码将被回退。`)
+      if (!confirmed) {
+        await this.emitOutput('[checkpoint] 已取消。', onEvent)
+        return
+      }
+    }
+
+    const snapshot = await restoreCodeCheckpoint(this.state.sessionId, targetLabel, this.state)
+    if (!snapshot) {
+      await this.emitOutput(`\n[checkpoint] 未找到 "${targetLabel}" 代码断点。`, onEvent)
+      return
+    }
+
+    applySnapshot(this.state, snapshot)
+    this.state.pendingConfirm = undefined
+    await this.persist()
+    await this.emitOutput(`\n[checkpoint] 已回到 "${targetLabel}" 代码断点，代码已回退。`, onEvent)
   }
 
   // ── Cancel ────────────────────────────────────────────────────────
@@ -331,6 +400,7 @@ export class Orchestrator {
     this.state.failedTaskIds = []
     this.state.errors = {}
     this.state.pendingConfirm = undefined
+    this.state.designConfirmed = false
     await this.persist()
     await this.emitOutput('\n[已取消] 当前任务已清除。', onEvent)
   }

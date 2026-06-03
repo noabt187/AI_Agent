@@ -49,7 +49,7 @@ export function estimateTokenCount(messages: Message[]): number {
 
 // ── Round Splitting ───────────────────────────────────────────────────
 
-export function splitByRounds(messages: Message[], keepRounds: number): [Message[], Message[]] {
+function splitByRounds(messages: Message[], keepRounds: number): [Message[], Message[]] {
   // A "round" starts with a real user message (not meta, not compressed)
   const userIndices: number[] = []
   for (let i = 0; i < messages.length; i++) {

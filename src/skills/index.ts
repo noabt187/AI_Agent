@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { resolve, extname } from 'node:path'
 import type { WorldState } from '../orchestrator/types.js'
 
-export type Skill = {
+type Skill = {
   name: string
   trigger: string
   content: string
