@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, parse, resolve } from 'node:path'
 
-export type AppConfig = {
+type AppConfig = {
   serverPort: number
   webPort: number
 }

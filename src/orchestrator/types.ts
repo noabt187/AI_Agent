@@ -8,6 +8,14 @@ export type DesignTask = {
   rationale: string
 }
 
+export type CheckpointSnapshot = {
+  goal?: string
+  confirmedRequirement?: string
+  designTasks?: DesignTask[]
+  completedTaskIds: string[]
+  failedTaskIds: string[]
+}
+
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
@@ -24,6 +32,9 @@ export type WorldState = {
 
   // Pending confirmation
   pendingConfirm?: { type: 'requirement' | 'design'; message: string }
+
+  // Write gate: true = user confirmed design, writes allowed
+  designConfirmed?: boolean
 }
 
 export type AgentResult =

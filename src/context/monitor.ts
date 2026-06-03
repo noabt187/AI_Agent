@@ -1,13 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-
-export type LlmCallMetric = {
-  timestamp: number
-  promptTokens: number
-  completionTokens: number
-  latencyMs: number
-  firstTokenMs: number
-}
+import type { LlmCallMetric } from '../llm/monitoredClient.js'
 
 type SessionMetrics = {
   sessionId: string
@@ -37,7 +30,7 @@ async function saveMetrics(sessionId: string, metrics: SessionMetrics): Promise<
   await writeFile(getMetricsPath(sessionId), JSON.stringify(metrics, null, 2), 'utf8')
 }
 
-export async function recordMetrics(sessionId: string, calls: LlmCallMetric[]): Promise<void> {
+async function recordMetrics(sessionId: string, calls: LlmCallMetric[]): Promise<void> {
   const metrics = await loadMetrics(sessionId)
   metrics.calls.push(...calls)
   await saveMetrics(sessionId, metrics)

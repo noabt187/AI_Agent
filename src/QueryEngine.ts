@@ -9,7 +9,7 @@ import type {
 import { loadMessages, saveMessages } from './state/sessionStore.js'
 import { newUuid, toTextPrompt } from './utils/index.js'
 
-export type QueryEngineParams = {
+type QueryEngineParams = {
   sessionId: string
   llmClient: LlmClient
 }
