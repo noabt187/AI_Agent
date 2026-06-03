@@ -393,6 +393,8 @@ export class Orchestrator {
   // ── Cancel ────────────────────────────────────────────────────────
 
   private async handleCancel(onEvent?: AgentEventHandler) {
+    // 先中断正在运行的 Agent（如果有的话）
+    this.abort()
     this.state.goal = undefined
     this.state.confirmedRequirement = undefined
     this.state.designTasks = undefined
