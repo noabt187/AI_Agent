@@ -73,6 +73,8 @@ async function main() {
   console.log('- 输入"设置目录"：修改可操作文件目录')
   console.log('- 输入"取消"：清除当前任务')
   console.log('- 输入 /revert <项目路径> <GitHub仓库地址>：回退项目代码到 GitHub 版本')
+  console.log('- 输入 /memory auto|off|on|list|forget <id>：查看或设置记忆召回')
+  console.log('- 输入 /remember <内容>：保存项目固定记忆')
   console.log('- 按 ESC 中断当前操作')
   console.log('- 输入 /exit 或按 Ctrl+C 退出')
 
