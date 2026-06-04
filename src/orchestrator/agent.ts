@@ -4,7 +4,6 @@ import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
-import type { WriteConfirmFn } from '../tools/index.js'
 import { loadSkills, getActiveSkills } from '../skills/index.js'
 import type { AgentEventHandler, WorldState, AgentResult, AgentPhase } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
@@ -175,7 +174,6 @@ export class Agent {
     signal?: AbortSignal,
     onEvent?: AgentEventHandler,
     onMetric?: MetricCallback,
-    onConfirmWrite?: WriteConfirmFn,
   ): Promise<AgentResult> {
     const cfg = await loadModelConfig()
     const llm = createLlmClient(cfg, onMetric)
@@ -286,7 +284,7 @@ export class Agent {
           continue
         }
 
-        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed, onConfirmWrite, state.phase)
+        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed, state.phase)
         await onEvent?.({ type: 'tool_result', name: tc.name, result })
         await engine.appendToolResult(tc.id, tc.name, result)
 

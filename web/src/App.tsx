@@ -2,14 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   CircleStop,
+  Check,
+  Copy,
   Eye,
   FolderOpen,
   Gauge,
   MessageSquare,
   MousePointer2,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCcw,
   Send,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   X,
 } from 'lucide-react'
@@ -38,8 +44,26 @@ type TimelineItem = {
   content: string
 }
 
+type ActivityItem = {
+  id: string
+  content: string
+}
+
+type PendingConfirm = {
+  type: 'requirement' | 'design'
+  message: string
+}
+
 type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
 type ViewMode = 'chat' | 'preview' | 'metrics'
+type NegativeFeedbackDraft = {
+  itemId: string
+  content: string
+  reasons: string[]
+  detail: string
+}
+
+const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 
 function messageContent(message: Message): string {
   if (message.role !== 'assistant') return message.content
@@ -54,7 +78,7 @@ function messageContent(message: Message): string {
 }
 
 function toTimeline(messages: Message[]): TimelineItem[] {
-  return messages
+  const items = messages
     .filter((message) => !message.isMeta && message.role !== 'system' && message.role !== 'tool')
     .map((message) => {
       const content = messageContent(message).trim()
@@ -65,6 +89,16 @@ function toTimeline(messages: Message[]): TimelineItem[] {
       }
     })
     .filter((item) => item.content.length > 0)
+
+  return items.reduce<TimelineItem[]>((merged, item) => {
+    const previous = merged.at(-1)
+    if (previous?.role === 'assistant' && item.role === 'assistant') {
+      previous.content = `${previous.content}\n\n${item.content}`
+      return merged
+    }
+    merged.push(item)
+    return merged
+  }, [])
 }
 
 function formatTime(value: number): string {
@@ -137,12 +171,32 @@ function isWindowsClient(): boolean {
   return navigator.platform.toLowerCase().includes('win') || navigator.userAgent.includes('Windows')
 }
 
+function inferPendingConfirm(timeline: TimelineItem[], running: boolean): PendingConfirm | undefined {
+  if (running) return undefined
+  const latestAssistant = [...timeline].reverse().find((item) => item.role === 'assistant')
+  if (!latestAssistant) return undefined
+  const content = latestAssistant.content.trim()
+  if (!content || /任务完成|已完成|验证通过/.test(content)) return undefined
+
+  const waitingForConfirm = /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
+    || (/确认/.test(content) && /是否|吗|？|\?/.test(content))
+  if (!waitingForConfirm) return undefined
+
+  return {
+    type: /方案|设计|任务顺序|待执行/.test(content) ? 'design' : 'requirement',
+    message: content,
+  }
+}
+
 export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
+  const timelineRef = useRef<HTMLDivElement | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  const [activityItems, setActivityItems] = useState<ActivityItem[]>([])
+  const [activityExpanded, setActivityExpanded] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
@@ -162,8 +216,12 @@ export function App() {
   const [running, setRunning] = useState(false)
   const [status, setStatus] = useState('未连接')
   const [deltaCount, setDeltaCount] = useState(0)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [responseFeedback, setResponseFeedback] = useState<Record<string, 'up' | 'down'>>({})
+  const [copiedResponseId, setCopiedResponseId] = useState('')
+  const [negativeFeedbackDraft, setNegativeFeedbackDraft] = useState<NegativeFeedbackDraft | null>(null)
 
-  const pendingConfirm = session?.state.pendingConfirm
+  const pendingConfirm = session?.state.pendingConfirm || inferPendingConfirm(timeline, running)
   const operationRoot = session?.state.allowedPaths[0] || ''
 
   function clearPendingConfirmLocal() {
@@ -204,6 +262,15 @@ export function App() {
   useEffect(() => {
     if (selectedSessionId) void refreshSession(selectedSessionId)
   }, [selectedSessionId])
+
+  useEffect(() => {
+    if (viewMode !== 'chat') return
+    window.requestAnimationFrame(() => {
+      const timelineEl = timelineRef.current
+      if (!timelineEl) return
+      timelineEl.scrollTop = timelineEl.scrollHeight
+    })
+  }, [selectedSessionId, viewMode, timeline.length, activityItems.length])
 
   useEffect(() => {
     if (viewMode === 'metrics' && selectedSessionId) {
@@ -353,13 +420,117 @@ export function App() {
   }
 
   function appendItem(item: Omit<TimelineItem, 'id'>) {
-    setTimeline((current) => [
+    setTimeline((current) => {
+      const previous = current.at(-1)
+      if (previous?.role === 'assistant' && item.role === 'assistant') {
+        return [
+          ...current.slice(0, -1),
+          {
+            ...previous,
+            content: `${previous.content}\n\n${item.content}`,
+          },
+        ]
+      }
+      return [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          ...item,
+        },
+      ]
+    })
+  }
+
+  function appendActivity(content: string) {
+    setActivityItems((current) => [
       ...current,
       {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        ...item,
+        content,
       },
     ])
+  }
+
+  async function handleCopyResponse(itemId: string, content: string) {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedResponseId(itemId)
+      setStatus('回复已复制')
+      window.setTimeout(() => {
+        setCopiedResponseId((current) => (current === itemId ? '' : current))
+      }, 1800)
+    } catch {
+      setStatus('复制失败')
+    }
+  }
+
+  function handleFeedback(itemId: string, value: 'up' | 'down') {
+    setResponseFeedback((current) => {
+      const next = { ...current }
+      if (next[itemId] === value) {
+        delete next[itemId]
+      } else {
+        next[itemId] = value
+      }
+      return next
+    })
+  }
+
+  function handleNegativeFeedback(itemId: string, content: string) {
+    if (responseFeedback[itemId] === 'down') {
+      setResponseFeedback((current) => {
+        const next = { ...current }
+        delete next[itemId]
+        return next
+      })
+      setNegativeFeedbackDraft((current) => (current?.itemId === itemId ? null : current))
+      return
+    }
+
+    setResponseFeedback((current) => ({ ...current, [itemId]: 'down' }))
+    setNegativeFeedbackDraft({
+      itemId,
+      content,
+      reasons: [],
+      detail: '',
+    })
+  }
+
+  function toggleNegativeReason(reason: string) {
+    setNegativeFeedbackDraft((current) => {
+      if (!current) return current
+      const exists = current.reasons.includes(reason)
+      return {
+        ...current,
+        reasons: exists ? current.reasons.filter((item) => item !== reason) : [...current.reasons, reason],
+      }
+    })
+  }
+
+  function closeNegativeFeedback() {
+    setNegativeFeedbackDraft(null)
+  }
+
+  function submitNegativeFeedback() {
+    if (!negativeFeedbackDraft) return
+    setStatus('反馈已记录')
+    setNegativeFeedbackDraft(null)
+  }
+
+  function findPreviousUserPrompt(itemIndex: number): string {
+    for (let index = itemIndex - 1; index >= 0; index -= 1) {
+      if (timeline[index]?.role === 'user') return timeline[index].content
+    }
+    return ''
+  }
+
+  function handleRegenerate(itemIndex: number) {
+    const previousPrompt = findPreviousUserPrompt(itemIndex)
+    if (!previousPrompt) {
+      setStatus('未找到上一条问题')
+      return
+    }
+    void sendPrompt(previousPrompt)
   }
 
   function handleStreamEvent(event: StreamEvent) {
@@ -377,11 +548,11 @@ export function App() {
       return
     }
     if (event.type === 'tool_call') {
-      appendItem({ role: 'activity', content: formatToolCall(event.name, event.arguments) })
+      appendActivity(formatToolCall(event.name, event.arguments))
       return
     }
     if (event.type === 'tool_result') {
-      appendItem({ role: 'activity', content: formatToolResult(event.name, event.result) })
+      appendActivity(formatToolResult(event.name, event.result))
       return
     }
     if (event.type === 'error') {
@@ -390,7 +561,8 @@ export function App() {
       return
     }
     if (event.type === 'done') {
-      setTimeline((current) => current.filter((item) => item.role !== 'activity'))
+      setActivityItems([])
+      setActivityExpanded(false)
       setStatus('就绪')
     }
   }
@@ -401,6 +573,8 @@ export function App() {
     setPrompt('')
     setDeltaCount(0)
     setRunning(true)
+    setActivityItems([])
+    setActivityExpanded(false)
     appendItem({ role: 'user', content: text })
     try {
       await streamPrompt(selectedSessionId, text, handleStreamEvent)
@@ -416,7 +590,7 @@ export function App() {
 
   async function handleAbort() {
     if (!selectedSessionId || !running) return
-    appendItem({ role: 'activity', content: '[中断] 正在停止当前操作...' })
+    appendActivity('[中断] 正在停止当前操作...')
     try {
       await abortSession(selectedSessionId)
     } catch {
@@ -482,17 +656,30 @@ export function App() {
     return '本地 Agent 工作台'
   }, [pendingConfirm, previewUrl, viewMode])
 
+  const activitySummary = useMemo(() => {
+    const latest = activityItems.at(-1)?.content || (running ? '正在准备' : '暂无执行过程')
+    return {
+      latest,
+      count: activityItems.length,
+    }
+  }, [activityItems, running])
+
   return (
-    <main className="appShell">
+    <main className={sidebarCollapsed ? 'appShell sidebarCollapsed' : 'appShell'}>
       <aside className="sidebar">
         <section className="brandBlock">
           <div>
             <h1>Agent Console</h1>
             <p>{statusLabel}</p>
           </div>
-          <button className="iconButton" title="刷新" onClick={() => void refreshSession()}>
-            <RefreshCcw size={18} />
-          </button>
+          <div className="brandActions">
+            <button className="iconButton" title="刷新" onClick={() => void refreshSession()}>
+              <RefreshCcw size={18} />
+            </button>
+            <button className="iconButton" title="收起侧边栏" onClick={() => setSidebarCollapsed(true)}>
+              <PanelLeftClose size={18} />
+            </button>
+          </div>
         </section>
 
         <section className="panel">
@@ -542,12 +729,55 @@ export function App() {
         </section>
       </aside>
 
+      <aside className="collapsedRail" aria-label="已收起的侧边栏">
+        <button className="iconButton" title="展开侧边栏" onClick={() => setSidebarCollapsed(false)}>
+          <PanelLeftOpen size={18} />
+        </button>
+      </aside>
+
       <section className="workspace">
         <header className="workspaceHeader">
-          <div>
+          <div className="workspaceTitle">
             <h2>{selectedSessionId || '未选择会话'}</h2>
             <p>{workspaceSubtitle}</p>
           </div>
+
+          <section className="workspaceControls">
+            <div className="controlGroup pathControl">
+              <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
+                <FolderOpen size={17} />
+                选择操作目录
+              </button>
+            </div>
+
+            <div className="controlGroup previewControl">
+              <button className="openPreviewButton" onClick={openPreviewEditor}>
+                <Eye size={17} />
+                编辑预览地址
+              </button>
+            </div>
+
+            <div className="controlGroup modeControl">
+              <div className="modeStack">
+                <button className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'} onClick={() => setViewMode('chat')}>
+                  <MessageSquare size={17} />
+                  对话
+                </button>
+                <button
+                  className={viewMode === 'metrics' ? 'modeButton active' : 'modeButton'}
+                  disabled={!selectedSessionId}
+                  onClick={() => {
+                    setViewMode('metrics')
+                    void refreshMetrics()
+                  }}
+                >
+                  <Gauge size={17} />
+                  监控
+                </button>
+              </div>
+            </div>
+          </section>
+
           <div className="headerActions">
             {viewMode === 'preview' && previewUrl ? (
               <button
@@ -556,47 +786,11 @@ export function App() {
                 onClick={() => setAnnotateActive((active) => !active)}
               >
                 <MousePointer2 size={18} />
-                评论
+              评论
               </button>
             ) : null}
           </div>
         </header>
-
-        <section className="workspaceControls">
-          <div className="controlGroup pathControl">
-            <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
-              <FolderOpen size={17} />
-              选择操作目录
-            </button>
-          </div>
-
-          <div className="controlGroup previewControl">
-            <button className="openPreviewButton" onClick={openPreviewEditor}>
-              <Eye size={17} />
-              编辑预览地址
-            </button>
-          </div>
-
-          <div className="controlGroup modeControl">
-            <div className="modeStack">
-              <button className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'} onClick={() => setViewMode('chat')}>
-                <MessageSquare size={17} />
-                对话
-              </button>
-              <button
-                className={viewMode === 'metrics' ? 'modeButton active' : 'modeButton'}
-                disabled={!selectedSessionId}
-                onClick={() => {
-                  setViewMode('metrics')
-                  void refreshMetrics()
-                }}
-              >
-                <Gauge size={17} />
-                监控
-              </button>
-            </div>
-          </div>
-        </section>
 
         {viewMode === 'metrics' ? (
           <div className="metricsView">
@@ -679,15 +873,66 @@ export function App() {
             )}
           </div>
         ) : (
-          <div className="timeline">
-            {timeline.length === 0 ? (
+          <div className="timeline" ref={timelineRef}>
+            {timeline.length === 0 && activityItems.length === 0 ? (
               <div className="emptyState">新会话已准备好</div>
             ) : (
-              timeline.map((item) => (
-                <article key={item.id} className={`bubble ${item.role}`}>
-                  <pre>{item.content}</pre>
-                </article>
-              ))
+              <>
+                {timeline.map((item, index) => (
+                  <article key={item.id} className={`bubble ${item.role}`}>
+                    <pre>{item.content}</pre>
+                    {item.role === 'assistant' ? (
+                      <div className="responseActions" aria-label="模型回复操作" onMouseLeave={() => setCopiedResponseId('')}>
+                        <button
+                          className={copiedResponseId === item.id ? 'copied' : ''}
+                          title={copiedResponseId === item.id ? '已复制' : '复制回复'}
+                          onClick={() => void handleCopyResponse(item.id, item.content)}
+                        >
+                          {copiedResponseId === item.id ? <Check size={17} /> : <Copy size={17} />}
+                        </button>
+                        {responseFeedback[item.id] !== 'down' ? (
+                          <button
+                            className={responseFeedback[item.id] === 'up' ? 'active' : ''}
+                            title="赞"
+                            onClick={() => handleFeedback(item.id, 'up')}
+                          >
+                            <ThumbsUp size={17} />
+                          </button>
+                        ) : null}
+                        <button
+                          className={responseFeedback[item.id] === 'down' ? 'active' : ''}
+                          title="踩"
+                          onClick={() => handleNegativeFeedback(item.id, item.content)}
+                        >
+                          <ThumbsDown size={17} />
+                        </button>
+                        <button title="重新生成" disabled={running} onClick={() => handleRegenerate(index)}>
+                          <RefreshCcw size={17} />
+                        </button>
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+                {activityItems.length > 0 ? (
+                  <section className="activityPanel" aria-label="执行过程">
+                    <button className="activitySummary" onClick={() => setActivityExpanded((expanded) => !expanded)}>
+                      <span className="activityPulse" />
+                      <span>
+                        <strong>{running ? '正在执行' : '执行过程'}</strong>
+                        <small>{activitySummary.count} 条记录 · {activitySummary.latest}</small>
+                      </span>
+                      <em>{activityExpanded ? '收起' : '详情'}</em>
+                    </button>
+                    {activityExpanded ? (
+                      <ol className="activityList">
+                        {activityItems.map((item) => (
+                          <li key={item.id}>{item.content}</li>
+                        ))}
+                      </ol>
+                    ) : null}
+                  </section>
+                ) : null}
+              </>
             )}
           </div>
         )}
@@ -849,6 +1094,44 @@ export function App() {
                 <button disabled={!previewDraftUrl.trim()} onClick={savePreviewAddress}>
                   打开预览
                 </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {negativeFeedbackDraft ? (
+        <div className="modalBackdrop">
+          <section className="feedbackModal" aria-label="反馈模型回复问题">
+            <header>
+              <div>
+                <h3>反馈这条回复</h3>
+                <p>哪里不太对？这些反馈会帮助我们改进体验。</p>
+              </div>
+              <button className="miniIconButton static" title="关闭" onClick={closeNegativeFeedback}>
+                <X size={17} />
+              </button>
+            </header>
+            <div className="feedbackBody">
+              <div className="feedbackReasonGrid">
+                {negativeFeedbackReasons.map((reason) => (
+                  <button
+                    key={reason}
+                    className={negativeFeedbackDraft.reasons.includes(reason) ? 'selected' : ''}
+                    onClick={() => toggleNegativeReason(reason)}
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                value={negativeFeedbackDraft.detail}
+                onChange={(event) => setNegativeFeedbackDraft((current) => current ? { ...current, detail: event.target.value } : current)}
+                placeholder="可以补充说明问题在哪里"
+              />
+              <div className="feedbackActions">
+                <button onClick={closeNegativeFeedback}>取消</button>
+                <button className="primary" onClick={submitNegativeFeedback}>提交反馈</button>
               </div>
             </div>
           </section>
