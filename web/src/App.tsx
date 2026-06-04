@@ -50,7 +50,7 @@ type ActivityItem = {
 }
 
 type PendingConfirm = {
-  type: 'requirement' | 'design'
+  allowWrite: boolean
   message: string
 }
 
@@ -183,7 +183,7 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
   if (!waitingForConfirm) return undefined
 
   return {
-    type: /方案|设计|任务顺序|待执行/.test(content) ? 'design' : 'requirement',
+    allowWrite: /方案|设计|任务顺序|待执行/.test(content),
     message: content,
   }
 }
