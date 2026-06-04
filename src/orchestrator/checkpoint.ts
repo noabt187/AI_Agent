@@ -43,6 +43,7 @@ function extractSnapshot(state: WorldState): CheckpointSnapshot {
     designTasks: state.designTasks ? [...state.designTasks] : undefined,
     completedTaskIds: [...state.completedTaskIds],
     failedTaskIds: [...state.failedTaskIds],
+    phase: state.phase,
   }
 }
 
@@ -154,6 +155,7 @@ export function applySnapshot(state: WorldState, snapshot: CheckpointSnapshot): 
   state.designTasks = snapshot.designTasks
   state.completedTaskIds = [...snapshot.completedTaskIds]
   state.failedTaskIds = [...snapshot.failedTaskIds]
+  state.phase = snapshot.phase ? (snapshot.phase as import('./types.js').AgentPhase) : undefined
   state.pendingConfirm = undefined
   state.designConfirmed = false
 }

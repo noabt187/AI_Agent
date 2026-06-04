@@ -29,6 +29,7 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
+      phase: 'planning',
     }
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
@@ -40,6 +41,7 @@ export class Orchestrator {
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
       persisted.errors = persisted.errors || {}
+      if (!persisted.phase) persisted.phase = 'planning'
     }
     return new Orchestrator(sessionId, persisted ?? {
       sessionId,
@@ -47,6 +49,7 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
+      phase: 'planning',
     })
   }
 
@@ -201,6 +204,7 @@ export class Orchestrator {
         await this.emitOutput(`\n${result.message}`, onEvent)
         this.state.pendingConfirm = undefined
         this.state.designConfirmed = false
+        this.state.phase = 'planning'
         break
     }
   }
@@ -222,6 +226,8 @@ export class Orchestrator {
       await this.emitOutput('\n[需求已确认] 正在设计方案...', onEvent)
     } else {
       this.state.designConfirmed = true
+      this.state.phase = 'code_generation'
+      await onEvent?.({ type: 'phase', phase: 'code_generation' })
       await saveDesignCheckpoint(this.state.sessionId, this.state)
       await this.emitOutput('\n[方案已确认] 正在编写代码...', onEvent)
     }
@@ -403,6 +409,7 @@ export class Orchestrator {
     this.state.errors = {}
     this.state.pendingConfirm = undefined
     this.state.designConfirmed = false
+    this.state.phase = 'planning'
     await this.persist()
     await this.emitOutput('\n[已取消] 当前任务已清除。', onEvent)
   }

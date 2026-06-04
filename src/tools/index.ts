@@ -169,6 +169,7 @@ export async function executeTool(
   scope: ToolScope = 'read',
   designConfirmed?: boolean,
   onConfirmWrite?: WriteConfirmFn,
+  phase?: string,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
@@ -177,7 +178,7 @@ export async function executeTool(
   }
 
   // 写操作确认检查
-  if (tool.scope === 'write' && !designConfirmed) {
+  if (tool.scope === 'write' && phase !== 'code_generation' && !designConfirmed) {
     const targetFile = args.relativePath || args.content?.slice(0, 50) || name
     if (onConfirmWrite) {
       const confirmed = await onConfirmWrite(name, targetFile)
