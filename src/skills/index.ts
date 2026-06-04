@@ -5,6 +5,7 @@ import type { WorldState } from '../orchestrator/types.js'
 export type Skill = {
   name: string
   trigger: string
+  description: string
   content: string
 }
 
@@ -39,7 +40,7 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
     return skills
   }
 
-  for (const entry of entries) {
+  for (const entry of entries.sort()) {
     if (extname(entry) !== '.md') continue
     const filePath = resolve(skillsDir, entry)
     try {
@@ -49,6 +50,7 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
         skills.push({
           name: meta.name,
           trigger: meta.trigger,
+          description: meta.description ?? '',
           content: body,
         })
       }
@@ -73,20 +75,19 @@ function matchesOperationalRequest(input: string): boolean {
 }
 
 function matchesTrigger(trigger: string, state: WorldState, userInput = ''): boolean {
-  const requestText = `${state.goal ?? ''}\n${userInput}`
   switch (trigger) {
     case 'always':
       return true
     case 'has_goal_no_requirement':
-      return !!state.goal && !state.confirmedRequirement && !matchesOperationalRequest(requestText)
+      return !!state.goal && !state.confirmedRequirement && !matchesOperationalRequest(`${state.goal}\n${userInput}`)
     case 'has_requirement_no_tasks':
       return !!state.confirmedRequirement && !state.designConfirmed && !state.designTasks?.length
     case 'has_tasks':
       return !!state.designConfirmed || !!state.designTasks?.length
     case 'repository_request':
-      return matchesRepositoryRequest(requestText)
+      return matchesRepositoryRequest(`${state.goal ?? ''}\n${userInput}`)
     case 'pull_request_request':
-      return matchesPullRequest(requestText)
+      return matchesPullRequest(`${state.goal ?? ''}\n${userInput}`)
     default:
       return true
   }
@@ -94,4 +95,11 @@ function matchesTrigger(trigger: string, state: WorldState, userInput = ''): boo
 
 export function getActiveSkills(skills: Skill[], state: WorldState, userInput = ''): Skill[] {
   return skills.filter((s) => matchesTrigger(s.trigger, state, userInput))
+}
+
+export function formatSkillContext(skills: Skill[]): string {
+  if (skills.length === 0) return ''
+  return skills
+    .map((skill) => `### ${skill.name}\n${skill.content}`)
+    .join('\n\n')
 }

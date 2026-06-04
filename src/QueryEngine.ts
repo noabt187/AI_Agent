@@ -14,6 +14,22 @@ type QueryEngineParams = {
   llmClient: LlmClient
 }
 
+function withRuntimeContext(messages: Message[], runtimeContext?: string): Message[] {
+  const trimmedContext = runtimeContext?.trim()
+  if (!trimmedContext) return messages
+
+  const requestMessages = messages.map((m) => ({ ...m }))
+  for (let i = requestMessages.length - 1; i >= 0; i--) {
+    const msg = requestMessages[i]
+    if (msg.role === 'user' && !msg.isMeta && !msg.isCompressed) {
+      msg.content = `[本轮临时上下文]\n${trimmedContext}\n\n[用户输入]\n${msg.content}`
+      return requestMessages
+    }
+  }
+
+  return requestMessages
+}
+
 export class QueryEngine {
   readonly sessionId: string
   readonly llmClient: LlmClient
@@ -57,7 +73,7 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean; tools?: ToolDefinition[]; signal?: AbortSignal },
+    options?: { uuid?: string; isMeta?: boolean; tools?: ToolDefinition[]; signal?: AbortSignal; runtimeContext?: string },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const content = toTextPrompt(prompt)
     const userUuid = options?.uuid ?? newUuid()
@@ -72,7 +88,7 @@ export class QueryEngine {
 
     await this.appendMessage(userMessage)
 
-    const terminal = yield* this.queryLoop(options?.tools, options?.signal)
+    const terminal = yield* this.queryLoop(options?.tools, options?.signal, options?.runtimeContext)
 
     if (terminal.type === 'error') {
       const errMsg = {
@@ -87,8 +103,8 @@ export class QueryEngine {
     }
   }
 
-  async *continueFromToolResults(tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<SDKMessage, void, unknown> {
-    const terminal = yield* this.queryLoop(tools, signal)
+  async *continueFromToolResults(tools?: ToolDefinition[], signal?: AbortSignal, runtimeContext?: string): AsyncGenerator<SDKMessage, void, unknown> {
+    const terminal = yield* this.queryLoop(tools, signal, runtimeContext)
 
     if (terminal.type === 'error') {
       const errMsg = {
@@ -103,7 +119,7 @@ export class QueryEngine {
     }
   }
 
-  async *queryLoop(tools?: ToolDefinition[], signal?: AbortSignal): AsyncGenerator<SDKMessage, Terminal, unknown> {
+  async *queryLoop(tools?: ToolDefinition[], signal?: AbortSignal, runtimeContext?: string): AsyncGenerator<SDKMessage, Terminal, unknown> {
     const { state } = this
     const MAX_RETRIES = 5
 
@@ -118,7 +134,7 @@ export class QueryEngine {
       toolCalls = []
 
       try {
-        for await (const evt of this.llmClient.streamChat(state.messages, tools, signal)) {
+        for await (const evt of this.llmClient.streamChat(withRuntimeContext(state.messages, runtimeContext), tools, signal)) {
           if (evt.type === 'delta') {
             acc += evt.text
             yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: evt.text, createdAt }

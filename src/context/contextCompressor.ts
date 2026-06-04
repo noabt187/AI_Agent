@@ -1,207 +1,197 @@
 import { createLlmClient } from '../llm/index.js'
 import { loadModelConfig } from './modelConfig.js'
-import { loadMessages, saveMessages, saveMessagesBackup, getCompressionFailureCount, incrementCompressionFailure, resetCompressionFailures } from '../state/sessionStore.js'
+import {
+  getCompressionFailureCount,
+  incrementCompressionFailure,
+  loadMessages,
+  resetCompressionFailures,
+  saveMessages,
+  saveMessagesBackup,
+} from '../state/sessionStore.js'
 import { newUuid } from '../utils/index.js'
+import { toCompressibleMessage } from './contextPolicy.js'
 import type { Message } from '../types/index.js'
 
-const COMPRESSION_THRESHOLD = 50_000 // tokens
-const KEEP_ROUNDS = 10
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+const DEFAULT_SOFT_RATIO = 0.70
+const DEFAULT_HARD_RATIO = 0.85
+const DEFAULT_DANGER_RATIO = 0.95
+const DEFAULT_KEEP_ROUNDS = 10
+const MAX_COMPRESSION_FAILURES = 3
 
-const COMPRESS_PROMPT = `你是上下文压缩器。以下是之前的对话历史。
+const COMPRESS_PROMPT = `你是上下文压缩器。按模块提取关键信息，输出结构化摘要。
 
-## 任务
-从对话历史中提取关键信息，用结构化格式输出。
+模块：当前目标、已确认需求、已确认方案、文件与接口变更、用户约束、当前进度、错误与验证。
 
-## 输出格式
-用以下分类组织信息（没有则跳过该分类）：
-
-### 用户需求
-- 用户提出的核心需求和目标
-
-### 技术决策
-- 做出的技术选型、架构决策
-
-### 文件变更
-- 涉及的文件路径和修改内容
-
-### 约束与偏好
-- 用户明确的约束条件、编码偏好
-
-### 当前进度
-- 已完成的工作、待完成的任务
-
-## 要求
+要求：
+- 必须保留已有的历史压缩摘要内容，并合并进新的摘要
+- 不要总结系统协议、工具规则、确认流程、运行时状态注入方式
 - 保留具体文件路径、函数名、变量名等技术细节
-- 保留用户明确表达的偏好和约束
-- 丢弃问候、闲聊、错误重试等非实质内容
-- 总长度控制在 1000 字以内
-- 如果对话中没有实质性内容，返回"无关键信息"`
+- 丢弃闲聊、重复失败日志等非实质内容
+- 总长度控制在 1200 字以内
+- 没有实质内容时返回"无关键信息"`
 
-// ── Token Estimation ──────────────────────────────────────────────────
+export type ContextPressureLevel = 'normal' | 'soft' | 'hard' | 'danger'
+
+export type ContextCompressionPolicy = {
+  contextWindowTokens?: number
+  softRatio?: number
+  hardRatio?: number
+  dangerRatio?: number
+  softThresholdTokens?: number
+  hardThresholdTokens?: number
+  dangerThresholdTokens?: number
+  keepRounds?: number
+  compressor?: (oldMessages: Message[], allMessages: Message[]) => Promise<string | null>
+}
+
+export type ContextPressure = {
+  tokens: number
+  level: ContextPressureLevel
+  thresholds: { soft: number; hard: number; danger: number }
+}
+
+function resolvePolicy(policy: ContextCompressionPolicy = {}) {
+  const contextWindowTokens = policy.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS
+  const soft = policy.softThresholdTokens ?? Math.floor(contextWindowTokens * (policy.softRatio ?? DEFAULT_SOFT_RATIO))
+  const hard = policy.hardThresholdTokens ?? Math.floor(contextWindowTokens * (policy.hardRatio ?? DEFAULT_HARD_RATIO))
+  const danger = policy.dangerThresholdTokens ?? Math.floor(contextWindowTokens * (policy.dangerRatio ?? DEFAULT_DANGER_RATIO))
+  return { soft, hard, danger, keepRounds: policy.keepRounds ?? DEFAULT_KEEP_ROUNDS, compressor: policy.compressor }
+}
 
 export function estimateTokenCount(messages: Message[]): number {
-  let totalChars = 0
-  for (const msg of messages) {
-    totalChars += msg.content.length
-  }
-  return Math.ceil(totalChars / 4)
+  return Math.ceil(messages.reduce((total, msg) => total + msg.content.length + (msg.toolCalls ? JSON.stringify(msg.toolCalls).length : 0), 0) / 4)
 }
 
-// ── Round Splitting ───────────────────────────────────────────────────
+export function getContextPressure(messages: Message[], policy: ContextCompressionPolicy = {}): ContextPressure {
+  const resolved = resolvePolicy(policy)
+  const tokens = estimateTokenCount(messages)
+  const level: ContextPressureLevel = tokens >= resolved.danger ? 'danger'
+    : tokens >= resolved.hard ? 'hard'
+      : tokens >= resolved.soft ? 'soft'
+        : 'normal'
+  return { tokens, level, thresholds: { soft: resolved.soft, hard: resolved.hard, danger: resolved.danger } }
+}
 
 function splitByRounds(messages: Message[], keepRounds: number): [Message[], Message[]] {
-  // A "round" starts with a real user message (not meta, not compressed)
-  const userIndices: number[] = []
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]
-    if (m.role === 'user' && !m.isMeta && !m.isCompressed) {
-      userIndices.push(i)
-    }
-  }
-
+  const userIndices = messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.role === 'user' && !message.isMeta && !message.isCompressed)
+    .map(({ index }) => index)
   if (userIndices.length <= keepRounds) return [[], messages]
-
-  const cutoffIndex = userIndices[userIndices.length - keepRounds]
-  return [messages.slice(0, cutoffIndex), messages.slice(cutoffIndex)]
+  const cutoff = userIndices[userIndices.length - keepRounds]
+  return [messages.slice(0, cutoff), messages.slice(cutoff)]
 }
 
-// ── Message Filtering for Compression ─────────────────────────────────
-
 function filterQAMessages(messages: Message[]): Message[] {
-  return messages.filter((m) => {
-    if (m.role === 'system') return false
-    if (m.role === 'tool') return false
-    if (m.isMeta) return false
-    if (m.isCompressed) return false
-    if (m.role === 'user' && m.content.startsWith('工具执行结果')) return false
-    if (m.role === 'assistant') {
-      const trimmed = m.content.trim()
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsed = JSON.parse(trimmed)
-          if (parsed.toolCalls) return false
-        } catch {}
-      }
-    }
-    return true
-  })
+  return messages.map((message) => toCompressibleMessage(message)).filter((message): message is Message => message !== null)
 }
 
 function formatMessages(messages: Message[]): string {
   return messages
-    .map((m) => {
-      const label = m.role === 'user' ? '用户' : '助手'
-      const content = m.content.length > 1000 ? m.content.slice(0, 1000) + '...' : m.content
+    .map((message) => {
+      const label = message.isCompressed ? '历史摘要' : message.role === 'user' ? '用户' : '助手'
+      const content = message.content.length > 1000 ? `${message.content.slice(0, 1000)}...` : message.content
       return `[${label}]: ${content}`
     })
     .join('\n\n')
 }
 
 function buildToolUsageSummary(messages: Message[]): string {
-  const toolMessages = messages.filter((m) => m.role === 'tool' && m.toolName)
-  if (toolMessages.length === 0) return ''
-  const toolCalls: Record<string, number> = {}
-  for (const m of toolMessages) {
-    toolCalls[m.toolName!] = (toolCalls[m.toolName!] || 0) + 1
+  const counts: Record<string, number> = {}
+  for (const message of messages) {
+    if (message.role === 'tool' && message.toolName) counts[message.toolName] = (counts[message.toolName] || 0) + 1
   }
-  return Object.entries(toolCalls)
-    .map(([name, count]) => `${name}: ${count}次`)
-    .join(', ')
+  return Object.entries(counts).map(([name, count]) => `${name}: ${count}次`).join(', ')
 }
 
-// ── Compress Old Messages ─────────────────────────────────────────────
-
-async function compressOldMessages(oldMessages: Message[], allMessages?: Message[]): Promise<string | null> {
+async function compressOldMessages(oldMessages: Message[], allMessages: Message[]): Promise<string | null> {
   const qaMessages = filterQAMessages(oldMessages)
   if (qaMessages.length === 0) return null
 
-  const rawMessages = formatMessages(qaMessages)
-  const cfg = await loadModelConfig()
-  const llm = createLlmClient(cfg)
-
-  const toolSummary = allMessages ? buildToolUsageSummary(allMessages) : ''
+  const toolSummary = buildToolUsageSummary(allMessages)
   const toolContext = toolSummary ? `\n\n## 工具使用统计\n${toolSummary}` : ''
-  const prompt = `${COMPRESS_PROMPT}${toolContext}\n\n## 对话历史\n${rawMessages}`
-
   const llmMessages: Message[] = [
     { uuid: 'compress-sys', role: 'system', content: '你是上下文压缩器。只输出压缩后的要点列表，不要输出其他内容。', createdAt: Date.now() },
-    { uuid: newUuid(), role: 'user', content: prompt, createdAt: Date.now() },
+    { uuid: newUuid(), role: 'user', content: `${COMPRESS_PROMPT}${toolContext}\n\n## 对话历史\n${formatMessages(qaMessages)}`, createdAt: Date.now() },
   ]
 
   let summary = ''
-  for await (const evt of llm.streamChat(llmMessages)) {
-    if (evt.type === 'delta') {
-      summary += evt.text
-    } else if (evt.type === 'error') {
-      return null
-    }
+  for await (const evt of createLlmClient(await loadModelConfig('compression')).streamChat(llmMessages)) {
+    if (evt.type === 'delta') summary += evt.text
+    if (evt.type === 'error') return null
   }
-
   summary = summary.trim()
-  if (!summary || summary === '无关键信息') return null
-  return summary
+  return summary && summary !== '无关键信息' ? summary : null
 }
 
-// ── Main Entry Point ──────────────────────────────────────────────────
+export function buildCompressedMessages(messages: Message[], summary: string, keepRounds = DEFAULT_KEEP_ROUNDS): Message[] {
+  const [, recentMessages] = splitByRounds(messages, keepRounds)
+  const systemMsg = messages.find((message) => message.role === 'system')
+  const next: Message[] = []
+  if (systemMsg) next.push(systemMsg)
+  next.push({
+    uuid: newUuid(),
+    role: 'user',
+    content: `[压缩上下文] 以下是之前对话的关键信息摘要：\n\n${summary}`,
+    createdAt: Date.now(),
+    isCompressed: true,
+  })
+  next.push(...recentMessages.filter((message) => message.role !== 'system' && !message.isCompressed))
+  return next
+}
 
-const MAX_COMPRESSION_FAILURES = 3
+function trimLowValueOldMessages(messages: Message[], keepRounds: number): Message[] | null {
+  const [oldMessages, recentMessages] = splitByRounds(messages, keepRounds)
+  if (oldMessages.length === 0) return null
+  const systemMsg = messages.find((message) => message.role === 'system')
+  const next = [
+    ...(systemMsg ? [systemMsg] : []),
+    ...oldMessages.filter((message) => message.role !== 'system' && message.role !== 'tool' && !message.isMeta),
+    ...recentMessages.filter((message) => message.role !== 'system'),
+  ]
+  return next.length < messages.length ? next : null
+}
 
-export async function maybeCompressContext(
-  sessionId: string,
-  threshold: number = COMPRESSION_THRESHOLD,
-  keepRounds: number = KEEP_ROUNDS,
-): Promise<boolean> {
-  // Circuit breaker: skip if too many consecutive failures
+async function saveFallbackTrim(sessionId: string, messages: Message[], keepRounds: number): Promise<boolean> {
+  const trimmed = trimLowValueOldMessages(messages, keepRounds)
+  if (!trimmed) return false
+  await saveMessagesBackup(sessionId, messages)
+  await saveMessages(sessionId, trimmed)
+  return true
+}
+
+export async function maybeCompressContext(sessionId: string, policy: ContextCompressionPolicy = {}): Promise<boolean> {
+  const resolved = resolvePolicy(policy)
+  const messages = await loadMessages(sessionId)
+  if (messages.length === 0) return false
+
+  const pressure = getContextPressure(messages, policy)
+  if (pressure.level === 'normal' || pressure.level === 'soft') return false
+
   const failures = await getCompressionFailureCount(sessionId)
-  if (failures >= MAX_COMPRESSION_FAILURES) {
+  if (failures >= MAX_COMPRESSION_FAILURES && pressure.level !== 'danger') {
     console.log(`[上下文压缩] 连续失败 ${failures} 次，跳过压缩`)
     return false
   }
 
-  const messages = await loadMessages(sessionId)
-  if (messages.length === 0) return false
-
-  const tokens = estimateTokenCount(messages)
-  if (tokens < threshold) return false
-
-  const [oldMessages, recentMessages] = splitByRounds(messages, keepRounds)
-  if (oldMessages.length === 0) return false
+  const [oldMessages] = splitByRounds(messages, resolved.keepRounds)
+  const compressibleOldMessages = filterQAMessages(oldMessages)
+  if (compressibleOldMessages.length === 0) return false
 
   try {
-    const summary = await compressOldMessages(oldMessages, messages)
-    if (!summary) return false
-
-    // Backup full history before compression
+    const summary = await (resolved.compressor ?? compressOldMessages)(compressibleOldMessages, messages)
+    if (!summary) {
+      await incrementCompressionFailure(sessionId)
+      return pressure.level === 'danger' ? saveFallbackTrim(sessionId, messages, resolved.keepRounds) : false
+    }
     await saveMessagesBackup(sessionId, messages)
-
-    // Build new messages: system + compressed context + recent
-    const systemMsg = messages.find((m) => m.role === 'system')
-    const newMessages: Message[] = []
-
-    if (systemMsg) {
-      newMessages.push(systemMsg)
-    }
-
-    newMessages.push({
-      uuid: newUuid(),
-      role: 'user',
-      content: `[压缩上下文] 以下是之前对话的关键信息摘要：\n\n${summary}`,
-      createdAt: Date.now(),
-      isCompressed: true,
-    })
-
-    for (const msg of recentMessages) {
-      if (msg.role === 'system') continue
-      if (msg.isCompressed) continue // replace old compressed context
-      newMessages.push(msg)
-    }
-
-    await saveMessages(sessionId, newMessages)
+    await saveMessages(sessionId, buildCompressedMessages(messages, summary, resolved.keepRounds))
     await resetCompressionFailures(sessionId)
     return true
   } catch (err) {
     await incrementCompressionFailure(sessionId)
     console.error(`[上下文压缩] 压缩失败 (${failures + 1}/${MAX_COMPRESSION_FAILURES}):`, err)
-    return false
+    return pressure.level === 'danger' ? saveFallbackTrim(sessionId, messages, resolved.keepRounds) : false
   }
 }

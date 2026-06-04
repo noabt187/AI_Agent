@@ -1,7 +1,7 @@
 ---
 name: requirement-analysis
 description: 需求分析指引
-trigger: always
+trigger: has_goal_no_requirement
 ---
 
 ## Skill: 需求分析

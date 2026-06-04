@@ -1,7 +1,7 @@
 ---
 name: code-generation
 description: 代码生成指引
-trigger: always
+trigger: has_tasks
 ---
 
 ## Skill: 代码生成

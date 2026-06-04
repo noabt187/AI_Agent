@@ -6,6 +6,14 @@ import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
+import {
+  appendPinnedProjectMemory,
+  createAndStoreProjectMemory,
+  deletePinnedProjectMemory,
+  loadPinnedProjectMemories,
+  type PinnedProjectMemory,
+} from '../memory/projectMemory.js'
+import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
 
 const execAsync = promisify(exec)
 
@@ -24,10 +32,12 @@ export class Orchestrator {
     this.state = initialState ?? {
       sessionId,
       allowedPaths: [],
+      memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
     }
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
@@ -38,10 +48,12 @@ export class Orchestrator {
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
       persisted.errors = persisted.errors || {}
+      persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
     }
     return new Orchestrator(sessionId, persisted ?? {
       sessionId,
       allowedPaths: [],
+      memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
@@ -65,6 +77,31 @@ export class Orchestrator {
 
   async persist(): Promise<void> {
     await saveOrchestratorState(this.state.sessionId, this.state)
+  }
+
+  private getProjectDir(): string {
+    return this.state.allowedPaths[0] ?? process.cwd()
+  }
+
+  async getMemoryState(): Promise<{ settings: MemorySettings; pinned: PinnedProjectMemory[] }> {
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
+    return {
+      settings: this.state.memorySettings,
+      pinned: await loadPinnedProjectMemories(this.getProjectDir()),
+    }
+  }
+
+  async setMemoryRecallMode(mode: MemoryRecallMode): Promise<void> {
+    this.state.memorySettings = { recallMode: mode }
+    await this.persist()
+  }
+
+  async rememberProjectMemory(content: string): Promise<{ memory: PinnedProjectMemory; created: boolean }> {
+    return appendPinnedProjectMemory(this.getProjectDir(), content, this.state.sessionId)
+  }
+
+  async forgetProjectMemory(id: string): Promise<boolean> {
+    return deletePinnedProjectMemory(this.getProjectDir(), id)
   }
 
   // ── allowedPaths ──────────────────────────────────────────────────
@@ -112,6 +149,14 @@ export class Orchestrator {
     if (userInput === '/stats') {
       const report = await formatStats(this.state.sessionId)
       console.log(`\n${report}`)
+      return
+    }
+    if (userInput === '/memory' || userInput.startsWith('/memory ')) {
+      await this.handleMemoryCommand(userInput, onEvent)
+      return
+    }
+    if (userInput.startsWith('/remember')) {
+      await this.handleRememberCommand(userInput, onEvent)
       return
     }
 
@@ -174,15 +219,26 @@ export class Orchestrator {
         break
       case 'done':
         await this.emitOutput(`\n${result.message}`, onEvent)
-        this.state.goal = undefined
-        this.state.confirmedRequirement = undefined
-        this.state.designTasks = undefined
-        this.state.completedTaskIds = []
-        this.state.failedTaskIds = []
-        this.state.errors = {}
-        this.state.pendingConfirm = undefined
-        this.state.designConfirmed = false
+        await this.storeProjectMemory(result.message, onEvent)
+        this.clearCurrentTaskState()
         break
+    }
+  }
+
+  private async storeProjectMemory(doneMessage: string, onEvent?: AgentEventHandler) {
+    const projectDir = this.state.allowedPaths[0] ?? process.cwd()
+    try {
+      const memory = await createAndStoreProjectMemory({
+        projectDir,
+        sessionId: this.state.sessionId,
+        state: this.state,
+        doneMessage,
+      })
+      if (memory) {
+        await this.emitOutput('\n[项目记忆] 已保存本次完成任务的结构化记忆。', onEvent)
+      }
+    } catch (err) {
+      console.error('[项目记忆] 保存失败:', err)
     }
   }
 
@@ -191,6 +247,18 @@ export class Orchestrator {
     return trimmed === '确认' || trimmed === '是' || trimmed === 'yes' || trimmed === 'y'
       || trimmed === 'ok' || trimmed === '好' || trimmed === '可以' || trimmed === '开始'
       || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
+  }
+
+  private clearCurrentTaskState(): void {
+    this.state.goal = undefined
+    this.state.confirmedRequirement = undefined
+    this.state.designTasks = undefined
+    this.state.completedTaskIds = []
+    this.state.failedTaskIds = []
+    this.state.errors = {}
+    this.state.pendingConfirm = undefined
+    this.state.designConfirmed = false
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
   }
 
   private async handleConfirmResponse(userInput: string, onEvent?: AgentEventHandler) {
@@ -228,6 +296,77 @@ export class Orchestrator {
         await this.persist()
         await this.emitOutput(`[操作目录已更新] ${this.state.allowedPaths.join(', ')}`, onEvent)
       }
+    }
+  }
+
+  // ── Memory Commands ────────────────────────────────────────────────
+
+  private async emitMemoryStatus(onEvent?: AgentEventHandler) {
+    const memory = await this.getMemoryState()
+    await this.emitOutput(`\n[memory] 召回模式: ${memory.settings.recallMode}`, onEvent)
+    await this.emitOutput(`[memory] 项目固定记忆: ${memory.pinned.length} 条`, onEvent)
+  }
+
+  private async handleMemoryCommand(input: string, onEvent?: AgentEventHandler) {
+    const parts = input.trim().split(/\s+/)
+    const action = parts[1]
+
+    if (!action) {
+      await this.emitMemoryStatus(onEvent)
+      await this.emitOutput('[memory] 用法: /memory auto|off|on|list|forget <id>', onEvent)
+      return
+    }
+
+    if (isMemoryRecallMode(action)) {
+      await this.setMemoryRecallMode(action)
+      await this.emitOutput(`\n[memory] 召回模式已设置为 ${action}`, onEvent)
+      return
+    }
+
+    if (action === 'list') {
+      const { pinned } = await this.getMemoryState()
+      await this.emitOutput('\n[memory] 项目固定记忆:', onEvent)
+      if (pinned.length === 0) {
+        await this.emitOutput('  （无）', onEvent)
+        return
+      }
+      for (const item of pinned) {
+        await this.emitOutput(`  ${item.id} - ${item.content}`, onEvent)
+      }
+      return
+    }
+
+    if (action === 'forget') {
+      const id = parts[2]
+      if (!id) {
+        await this.emitOutput('\n[memory] 用法: /memory forget <id>', onEvent)
+        return
+      }
+      const deleted = await this.forgetProjectMemory(id)
+      await this.emitOutput(deleted ? `\n[memory] 已删除固定记忆: ${id}` : `\n[memory] 未找到固定记忆: ${id}`, onEvent)
+      return
+    }
+
+    await this.emitOutput('\n[memory] 未识别的命令。用法: /memory auto|off|on|list|forget <id>', onEvent)
+  }
+
+  private async handleRememberCommand(input: string, onEvent?: AgentEventHandler) {
+    const content = input.replace(/^\/remember\b/, '').trim()
+    if (!content) {
+      await this.emitOutput('\n[remember] 用法: /remember <需要项目内长期记住的内容>', onEvent)
+      return
+    }
+
+    try {
+      const { memory, created } = await this.rememberProjectMemory(content)
+      await this.emitOutput(
+        created
+          ? `\n[remember] 已保存项目固定记忆: ${memory.id}`
+          : `\n[remember] 已存在相同固定记忆: ${memory.id}`,
+        onEvent,
+      )
+    } catch (err) {
+      await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -297,16 +436,8 @@ export class Orchestrator {
   // ── Cancel ────────────────────────────────────────────────────────
 
   private async handleCancel(onEvent?: AgentEventHandler) {
-    // 先中断正在运行的 Agent（如果有的话）
     this.abort()
-    this.state.goal = undefined
-    this.state.confirmedRequirement = undefined
-    this.state.designTasks = undefined
-    this.state.completedTaskIds = []
-    this.state.failedTaskIds = []
-    this.state.errors = {}
-    this.state.pendingConfirm = undefined
-    this.state.designConfirmed = false
+    this.clearCurrentTaskState()
     await this.persist()
     await this.emitOutput('\n[已取消] 当前任务已清除。', onEvent)
   }

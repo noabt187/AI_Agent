@@ -4,27 +4,29 @@ import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
-import { loadSkills, getActiveSkills } from '../skills/index.js'
+import { formatSkillContext, getActiveSkills, loadSkills } from '../skills/index.js'
+import {
+  extractMemoryTerms,
+  formatPinnedProjectMemoryContext,
+  formatProjectMemoryContext,
+  loadPinnedProjectMemories,
+  searchProjectMemories,
+} from '../memory/projectMemory.js'
 import type { AgentEventHandler, WorldState, AgentResult } from './types.js'
+import { getMemorySettings } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
+const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
-// ── System Prompt ──────────────────────────────────────────────────
+// ── Stable System Prompt ───────────────────────────────────────────
 
-function buildSystemPrompt(allowedPaths: string[], worldStateContext: string, activeSkillTexts: string[]): string {
+export function buildStableSystemPrompt(): string {
   return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
-
-## 可操作目录
-${allowedPaths.join('\n')}
-工具调用的 rootDir 必须使用以上目录之一。
-
-## 当前状态
-${worldStateContext}
 
 ## 工作方式
 你通过"观察→思考→行动"循环工作：
@@ -33,6 +35,7 @@ ${worldStateContext}
 3. 行动：调用工具读取/写入代码，或回复用户
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
+工具调用的 rootDir 必须使用本轮临时上下文中的可操作目录之一。
 当你准备好回复用户时，输出以下 JSON 格式。
 
 ## 可用工具
@@ -41,6 +44,7 @@ ${getToolDescriptionsForScope('write')}
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
 {"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
+JSON 字符串中不要包含 Markdown 代码块；引用代码时用单引号或普通文字描述，避免未转义双引号导致 JSON 无法解析。
 
 action 说明：
 - chat：直接回复用户（普通对话、回答问题）
@@ -62,21 +66,29 @@ action 说明：
 - 用户确认前不要调用写工具（writeFile/deleteFile）
 - confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
 - 仅在对齐理解、确认需求时，省略 confirmType
+- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
+- 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
 ${activeSkillTexts.join('\n\n')}`
 }
 
-// ── WorldState Context ─────────────────────────────────────────────
+// ── Runtime Context ────────────────────────────────────────────────
 
-function buildWorldStateContext(state: WorldState): string {
+export function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
 
   if (state.goal) parts.push(`用户目标: ${state.goal}`)
   if (state.confirmedRequirement) {
-    const preview = state.confirmedRequirement.length > 200
-      ? state.confirmedRequirement.slice(0, 200) + '...'
+    const preview = state.confirmedRequirement.length > 1500
+      ? state.confirmedRequirement.slice(0, 1500) + '...'
       : state.confirmedRequirement
     parts.push(`需求已确认: ${preview}`)
+  }
+  if (state.pendingConfirm) {
+    const pendingPreview = state.pendingConfirm.message.length > 1200
+      ? state.pendingConfirm.message.slice(0, 1200) + '...'
+      : state.pendingConfirm.message
+    parts.push(`待确认内容: [${state.pendingConfirm.allowWrite ? 'allow_write' : 'read_only'}] ${pendingPreview}`)
   }
 
   if (state.designTasks?.length) {
@@ -94,9 +106,60 @@ function buildWorldStateContext(state: WorldState): string {
     }
   }
 
-  if (state.allowedPaths?.length) parts.push(`操作目录: ${state.allowedPaths[0]}`)
+  if (state.allowedPaths?.length) {
+    parts.push(`可操作目录:\n${state.allowedPaths.map((path) => `- ${path}`).join('\n')}`)
+  }
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
+}
+
+export function buildRuntimeContext(
+  state: WorldState,
+  memoryContext: string,
+  skillContext: string,
+  pinnedMemoryContext = '',
+): string {
+  const parts = [
+    `## 当前状态\n${buildWorldStateContext(state)}`,
+  ]
+  if (pinnedMemoryContext.trim()) {
+    parts.push(`## 项目固定记忆（用户明确要求）\n${pinnedMemoryContext.trim()}`)
+  }
+  if (memoryContext.trim()) {
+    parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
+  }
+  if (skillContext.trim()) {
+    parts.push(`## 当前阶段技能\n${skillContext.trim()}`)
+  }
+  return parts.join('\n\n')
+}
+
+export function isPureConfirmationInput(input: string): boolean {
+  const trimmed = input.trim().toLowerCase()
+  return trimmed === '确认' || trimmed === '是' || trimmed === 'yes' || trimmed === 'y'
+    || trimmed === 'ok' || trimmed === '好' || trimmed === '可以' || trimmed === '开始'
+    || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
+}
+
+export function shouldRecallTaskMemories(state: WorldState, userInput: string): boolean {
+  const mode = getMemorySettings(state).recallMode
+  if (mode === 'off') return false
+  if (mode === 'on') return true
+  if (isPureConfirmationInput(userInput)) return false
+  return !state.pendingConfirm && !state.confirmedRequirement && !state.designConfirmed
+}
+
+export function buildTaskMemorySearchQuery(state: WorldState, userInput: string): string {
+  const trimmed = userInput.trim()
+  const userTerms = extractMemoryTerms(trimmed)
+  if (isPureConfirmationInput(trimmed) || userTerms.length === 0) {
+    return (state.confirmedRequirement || state.goal || trimmed).trim()
+  }
+
+  const parts: string[] = []
+  if (state.goal && state.goal.trim() !== trimmed) parts.push(state.goal)
+  parts.push(trimmed)
+  return parts.join('\n').trim()
 }
 
 // ── JSON Parsing ───────────────────────────────────────────────────
@@ -106,7 +169,7 @@ function extractJsonText(raw: string): string {
   const codeBlockStart = trimmed.indexOf('```json')
   if (codeBlockStart !== -1) {
     const afterMarker = trimmed.slice(codeBlockStart + 7)
-    const codeBlockEnd = afterMarker.indexOf('```')
+    const codeBlockEnd = afterMarker.lastIndexOf('```')
     if (codeBlockEnd !== -1) return afterMarker.slice(0, codeBlockEnd).trim()
     return afterMarker.trim()
   }
@@ -114,6 +177,86 @@ function extractJsonText(raw: string): string {
   const jsonEnd = trimmed.lastIndexOf('}')
   if (jsonStart !== -1 && jsonEnd > jsonStart) return trimmed.slice(jsonStart, jsonEnd + 1)
   return trimmed
+}
+
+function extractLooseStringField(raw: string, field: string): string | undefined {
+  const marker = `"${field}"`
+  const markerIndex = raw.indexOf(marker)
+  if (markerIndex === -1) return undefined
+  const colonIndex = raw.indexOf(':', markerIndex + marker.length)
+  if (colonIndex === -1) return undefined
+  const startQuote = raw.indexOf('"', colonIndex + 1)
+  if (startQuote === -1) return undefined
+
+  for (let i = startQuote + 1; i < raw.length; i++) {
+    const char = raw[i]
+    if (char === '\\') {
+      i += 1
+      continue
+    }
+    if (char !== '"') continue
+    const rest = raw.slice(i + 1)
+    if (/^\s*(,|\})/.test(rest)) {
+      return raw
+        .slice(startQuote + 1, i)
+        .replace(/\\n/g, '\n')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\')
+        .trim()
+    }
+  }
+  return undefined
+}
+
+function parseLooseAgentResult(jsonText: string, raw: string): AgentResult | null {
+  const action = /"action"\s*:\s*"(chat|ask_user|confirm|done)"/.exec(jsonText)?.[1]
+  if (!action) return null
+  if (action === 'confirm') {
+    const message = extractLooseStringField(jsonText, 'message')
+    const prompt = extractLooseStringField(jsonText, 'prompt') || message || raw.trim()
+    const explicit = /"confirmType"\s*:\s*"(allow_write|design)"/.test(jsonText) ? 'allow_write' : undefined
+    const confirmType = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
+    return { action: 'confirm', confirmType, prompt, message }
+  }
+  if (action === 'ask_user') {
+    const message = extractLooseStringField(jsonText, 'message')
+    const question = extractLooseStringField(jsonText, 'questions') || message
+    return question ? { action: 'ask_user', questions: [question], message } : null
+  }
+  if (action === 'done') {
+    return { action: 'done', message: extractLooseStringField(jsonText, 'message') || '任务完成' }
+  }
+  return { action: 'chat', message: extractLooseStringField(jsonText, 'message') || raw.trim() }
+}
+
+function parseMarkdownProtocolResult(raw: string): AgentResult | null {
+  const text = raw.trim()
+  if (!text) return null
+  const asksForConfirmation = /请确认|确认以上|确认方案|是否准确|是否可行/.test(text)
+  if (!asksForConfirmation) return null
+
+  const looksLikeRequirement = /需求标题|需求概述|需求文档|相关文件|交互行为/.test(text)
+  const looksLikeToolOperationConfirmation = isToolOperationConfirmationText(text)
+  if (looksLikeRequirement && /需求|分析/.test(text)) {
+    return {
+      action: 'confirm',
+      confirmType: looksLikeToolOperationConfirmation ? 'allow_write' : undefined,
+      prompt: text,
+      message: text,
+    }
+  }
+
+  const looksLikeDesign = /方案设计|任务列表|T\d+\s*\[(create|modify|delete)\]|修改方案/.test(text)
+  if (looksLikeDesign || looksLikeToolOperationConfirmation) {
+    return {
+      action: 'confirm',
+      confirmType: 'allow_write',
+      prompt: text,
+      message: text,
+    }
+  }
+
+  return null
 }
 
 function isToolOperationConfirmationText(text: string): boolean {
@@ -186,7 +329,7 @@ export function parseAgentResult(raw: string): AgentResult | null {
       }
       if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
     } catch {}
-    return parseToolOperationMarkdownConfirm(raw)
+    return parseLooseAgentResult(jsonText, raw) ?? parseMarkdownProtocolResult(raw)
   }
 }
 
@@ -206,14 +349,19 @@ export class Agent {
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
-    const worldStateContext = buildWorldStateContext(state)
-
-    // Load skills from markdown files
     const allSkills = await loadSkills(SKILLS_DIR)
     const activeSkills = getActiveSkills(allSkills, state, userInput)
-    const activeSkillTexts = activeSkills.map((s) => s.content)
+    const skillContext = formatSkillContext(activeSkills)
+    const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
+    const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
+    const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
+    const memories = shouldRecallTaskMemories(state, userInput)
+      ? await searchProjectMemories(effectiveAllowedPaths[0], taskMemoryQuery, TASK_MEMORY_LIMIT)
+      : []
+    const memoryContext = formatProjectMemoryContext(memories)
 
-    const systemPrompt = buildSystemPrompt(effectiveAllowedPaths, worldStateContext, activeSkillTexts)
+    const systemPrompt = buildStableSystemPrompt()
+    const runtimeContext = buildRuntimeContext(state, memoryContext, skillContext, pinnedMemoryContext)
 
     // Inject/replace system prompt
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
@@ -235,7 +383,7 @@ export class Agent {
     let toolCalls: LlmToolCall[] = []
 
     try {
-      for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
+      for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
       if (evt.kind === 'delta') {
         fullText += evt.delta
         await onEvent?.({ type: 'delta', text: evt.delta })
@@ -283,7 +431,7 @@ export class Agent {
       if (signal?.aborted) break
       fullText = ''
       toolCalls = []
-      for await (const evt of engine.continueFromToolResults(tools, signal)) {
+      for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })

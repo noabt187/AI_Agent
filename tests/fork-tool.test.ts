@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { parseAgentResult } from '../src/orchestrator/agent.js'
 import { getActiveSkills, type Skill } from '../src/skills/index.js'
 import { parseGitHubRepository } from '../src/tools/createPullRequest.js'
-import { executeTool, toolDefsToOpenAI } from '../src/tools/index.js'
+import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../src/tools/index.js'
 
 test('parseGitHubRepository accepts common GitHub repository formats', () => {
   assert.deepEqual(parseGitHubRepository('https://github.com/noabt187/AI_Agent.git'), {
@@ -107,9 +107,9 @@ test('markdown repository operation confirmation is parsed as allow_write', () =
 
 test('PR requests use PR skill instead of requirement analysis and stay active after confirm input', () => {
   const skills: Skill[] = [
-    { name: 'requirement-analysis', trigger: 'has_goal_no_requirement', content: 'requirement skill' },
-    { name: 'pull-request', trigger: 'pull_request_request', content: 'pr skill' },
-    { name: 'code-generation', trigger: 'has_tasks', content: 'code skill' },
+    { name: 'requirement-analysis', trigger: 'has_goal_no_requirement', description: '', content: 'requirement skill' },
+    { name: 'pull-request', trigger: 'pull_request_request', description: '', content: 'pr skill' },
+    { name: 'code-generation', trigger: 'has_tasks', description: '', content: 'code skill' },
   ]
   const state = {
     sessionId: 'pr-session',
@@ -122,6 +122,14 @@ test('PR requests use PR skill instead of requirement analysis and stay active a
 
   assert.deepEqual(getActiveSkills(skills, state, state.goal).map((skill) => skill.name), ['pull-request'])
   assert.deepEqual(getActiveSkills(skills, state, '确认').map((skill) => skill.name), ['pull-request'])
+})
+
+test('compressContext is not exposed as a model-callable tool', () => {
+  const tools = toolDefsToOpenAI('write').map((item) => item.function.name)
+  const descriptions = getToolDescriptionsForScope('write')
+
+  assert.ok(!tools.includes('compressContext'))
+  assert.doesNotMatch(descriptions, /compressContext/)
 })
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {

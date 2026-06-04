@@ -1,7 +1,7 @@
 ---
 name: solution-design
 description: 方案设计指引
-trigger: always
+trigger: has_requirement_no_tasks
 ---
 
 ## Skill: 方案设计
