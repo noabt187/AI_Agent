@@ -23,7 +23,7 @@ export type WorldState = {
   errors: Record<string, string>
 
   // Pending confirmation
-  pendingConfirm?: { type: 'requirement' | 'design'; message: string }
+  pendingConfirm?: { allowWrite: boolean; message: string }
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
@@ -32,7 +32,7 @@ export type WorldState = {
 export type AgentResult =
   | { action: 'chat'; message: string }
   | { action: 'ask_user'; questions: string[]; message?: string }
-  | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'requirement' | 'design' }
+  | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'allow_write' }
   | { action: 'done'; message: string }
 
 export type AgentEvent =

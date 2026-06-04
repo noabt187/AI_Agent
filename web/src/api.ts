@@ -15,7 +15,7 @@ export type Message = {
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
-  pendingConfirm?: { type: 'requirement' | 'design'; message: string }
+  pendingConfirm?: { allowWrite: boolean; message: string }
   goal?: string
 }
 

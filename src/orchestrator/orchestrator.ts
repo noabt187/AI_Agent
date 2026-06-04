@@ -165,8 +165,11 @@ export class Orchestrator {
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput(`\n${result.prompt}`, onEvent)
         this.state.pendingConfirm = {
-          type: result.confirmType || 'requirement',
+          allowWrite: result.confirmType === 'allow_write',
           message: result.message || result.prompt,
+        }
+        if (result.confirmType === 'allow_write') {
+          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':
@@ -194,12 +197,12 @@ export class Orchestrator {
     const pending = this.state.pendingConfirm!
     this.state.pendingConfirm = undefined
 
-    if (pending.type === 'requirement') {
-      this.state.confirmedRequirement = pending.message
-      await this.emitOutput('\n[需求已确认] 正在设计方案...', onEvent)
-    } else {
+    if (pending.allowWrite) {
       this.state.designConfirmed = true
-      await this.emitOutput('\n[方案已确认] 正在编写代码...', onEvent)
+      await this.emitOutput('\n[已确认] Agent 已获得文件写入权限，开始执行...', onEvent)
+    } else {
+      this.state.confirmedRequirement = pending.message
+      await this.emitOutput('\n[已确认] 正在继续...', onEvent)
     }
 
     await this.persist()

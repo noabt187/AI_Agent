@@ -67,33 +67,31 @@ test('createPullRequest keeps optional PR metadata in schema', () => {
   assert.ok('headOwner' in tool.function.parameters.properties)
 })
 
-test('PR confirmation is treated as design confirmation even if model says requirement', () => {
+test('PR confirmation without allow_write is force-upgraded to allow_write', () => {
   const parsed = parseAgentResult(JSON.stringify({
     thinking: '确认 PR 参数',
     action: 'confirm',
-    confirmType: 'requirement',
     message: 'PR 参数：目标仓库 guwan-real/conduit-realworld-example-app，baseBranch main，headBranch feat/article-last-edited，PR 标题 feat: test',
     prompt: '确认创建 PR？',
   }))
 
   assert.equal(parsed?.action, 'confirm')
-  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
 })
 
-test('repository operation confirmation is treated as design confirmation', () => {
+test('repository operation confirmation is force-upgraded to allow_write', () => {
   const parsed = parseAgentResult(JSON.stringify({
     thinking: '确认 fork 参数',
     action: 'confirm',
-    confirmType: 'requirement',
     message: 'Fork 参数：源仓库 guwan-real/conduit-realworld-example-app，目标账号 guwan-real，fork 名 conduit-realworld-example-app',
     prompt: '确认执行 forkRepository？',
   }))
 
   assert.equal(parsed?.action, 'confirm')
-  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
 })
 
-test('markdown repository operation confirmation is parsed as design confirmation', () => {
+test('markdown repository operation confirmation is parsed as allow_write', () => {
   const parsed = parseAgentResult([
     '## Clone 仓库确认',
     '',
@@ -104,7 +102,7 @@ test('markdown repository operation confirmation is parsed as design confirmatio
   ].join('\n'))
 
   assert.equal(parsed?.action, 'confirm')
-  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
 })
 
 test('PR requests use PR skill instead of requirement analysis and stay active after confirm input', () => {

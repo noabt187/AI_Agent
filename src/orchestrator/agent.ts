@@ -40,23 +40,28 @@ ${getToolDescriptionsForScope('write')}
 
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
-{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"requirement|design"}
+{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
 
 action 说明：
 - chat：直接回复用户（普通对话、回答问题）
 - ask_user：需要用户提供更多信息，questions 数组不能为空
-- confirm：呈现方案或任务列表，等待用户确认，prompt 为确认内容
-  - confirmType="requirement"：需求分析完成，message 中包含需求文档
-  - confirmType="design"：方案设计完成，message 中包含任务列表和需要修改的文件
+- confirm：需要用户确认当前内容后再继续，prompt 为确认内容
+  - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
+  - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
 
-## 重要工作流程
-当用户提出开发需求时，必须按以下顺序执行：
-1. 需求分析：读取代码，理解现状，输出需求文档 → action=confirm, confirmType=requirement
-2. 等待用户确认需求后 → 方案设计：拆解任务，列出需要修改的文件 → action=confirm, confirmType=design
-3. 等待用户确认方案后 → 代码编写：按任务逐个编写代码 → action=done
-不要跳过任何步骤，不要在用户未确认需求时就开始写代码。
-仓库操作、fork、clone、提交 PR 属于带副作用的工具操作，不属于代码需求分析；这类操作确认参数时必须直接使用 action=confirm, confirmType="design"，不要使用 requirement confirm。
+## 工作方式
+根据任务需要选择合适的流程，不要总是固定步骤：
+
+- **简单修改**（改文案、修小bug）：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
+- **复杂功能**（新功能、跨文件重构）：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
+- **纯分析**（审查代码、回答问题）：读代码 → chat 直接回答
+- **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
+
+**重要规则**：
+- 用户确认前不要调用写工具（writeFile/deleteFile）
+- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
+- 仅在对齐理解、确认需求时，省略 confirmType
 
 ${activeSkillTexts.join('\n\n')}`
 }
@@ -116,8 +121,9 @@ function isToolOperationConfirmationText(text: string): boolean {
     || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
 }
 
-function normalizeConfirmType(confirmType: 'requirement' | 'design', text: string): 'requirement' | 'design' {
-  if (confirmType === 'requirement' && isToolOperationConfirmationText(text)) return 'design'
+function normalizeConfirmType(confirmType: 'allow_write' | undefined, text: string): 'allow_write' | undefined {
+  // 工具操作确认强制设为 allow_write（fork/clone/PR 都需要写权限）
+  if (!confirmType && isToolOperationConfirmationText(text)) return 'allow_write'
   return confirmType
 }
 
@@ -127,7 +133,7 @@ function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
   if (!/请确认|确认以上|确认执行|是否正确|是否以上述|是否使用/.test(text)) return null
   return {
     action: 'confirm',
-    confirmType: 'design',
+    confirmType: 'allow_write',
     prompt: text,
     message: text,
   }
@@ -149,7 +155,9 @@ export function parseAgentResult(raw: string): AgentResult | null {
     if (action === 'confirm') {
       const prompt = String(obj.prompt || '')
       const message = obj.message ? String(obj.message) : undefined
-      const ct = normalizeConfirmType(obj.confirmType === 'design' ? 'design' : 'requirement', `${message ?? ''}\n${prompt}`)
+      // 'design' is legacy alias for 'allow_write'
+      const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+      const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
       return { action: 'confirm', prompt, message, confirmType: ct }
     }
     if (action === 'done') {
@@ -171,7 +179,9 @@ export function parseAgentResult(raw: string): AgentResult | null {
       if (obj.action === 'confirm') {
         const prompt = String(obj.prompt || '')
         const message = obj.message ? String(obj.message) : undefined
-        const ct = normalizeConfirmType(obj.confirmType === 'design' ? 'design' : 'requirement', `${message ?? ''}\n${prompt}`)
+        // 'design' is legacy alias for 'allow_write'
+        const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+        const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
         return { action: 'confirm', prompt, message, confirmType: ct }
       }
       if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }

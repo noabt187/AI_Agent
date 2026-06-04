@@ -618,21 +618,21 @@ export function App() {
 
   function buildConfirmEditPrompt(feedback: string): string {
     if (!pendingConfirm) return feedback
-    if (pendingConfirm.type === 'design') {
+    if (pendingConfirm.allowWrite) {
       return [
-        '用户正在修改待确认的方案设计。',
-        `原待确认方案是：\n${pendingConfirm.message}`,
+        '用户正在修改待确认的方案（含写权限）。',
+        `原待确认内容是：\n${pendingConfirm.message}`,
         `用户修改意见是：\n${feedback}`,
-        '请重新设计方案；如果修改意见改变了需求范围，请回到 requirement confirm，否则返回新的 design confirm。',
+        '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
         '不要写代码。',
       ].join('\n\n')
     }
 
     return [
-      '用户正在修改待确认的需求分析。',
-      `原待确认需求是：\n${pendingConfirm.message}`,
+      '用户正在修改待确认的内容。',
+      `原待确认内容是：\n${pendingConfirm.message}`,
       `用户修改意见是：\n${feedback}`,
-      '请重新分析需求；如信息足够，返回新的 requirement confirm；如信息不足，ask_user。',
+      '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
       '不要写代码。',
     ].join('\n\n')
   }
@@ -652,7 +652,7 @@ export function App() {
   const workspaceSubtitle = useMemo(() => {
     if (viewMode === 'metrics') return '会话监控信息'
     if (viewMode === 'preview' && previewUrl) return previewUrl
-    if (pendingConfirm) return `等待确认：${pendingConfirm.type === 'design' ? '方案' : '需求'}`
+    if (pendingConfirm) return `等待确认：${pendingConfirm.allowWrite ? '代码修改' : '内容'}`
     return '本地 Agent 工作台'
   }, [pendingConfirm, previewUrl, viewMode])
 
@@ -968,7 +968,7 @@ export function App() {
                 <textarea
                   value={confirmDraft}
                   onChange={(event) => setConfirmDraft(event.target.value)}
-                  placeholder={`输入你想调整的${pendingConfirm.type === 'design' ? '方案' : '需求'}内容`}
+                  placeholder={`输入你想调整的内容`}
                   autoFocus
                 />
                 <div className="confirmActions">
