@@ -160,15 +160,12 @@ function isNonPathToolArg(toolName: string, argName: string): boolean {
 
 // ── Execute Tool ────────────────────────────────────────────────────
 
-export type WriteConfirmFn = (toolName: string, targetFile: string) => Promise<boolean>
-
 export async function executeTool(
   name: string,
   args: Record<string, string>,
   allowedPaths?: string[],
   scope: ToolScope = 'read',
   designConfirmed?: boolean,
-  onConfirmWrite?: WriteConfirmFn,
   phase?: string,
 ): Promise<string> {
   const tool = toolRegistry[name]
@@ -177,15 +174,9 @@ export async function executeTool(
     return `错误：工具 "${name}" 不在当前节点的可用范围内（只读模式）`
   }
 
-  // 写操作确认检查
+  // 写操作只受“方案已确认/代码生成阶段”控制，不再对每个文件做二次确认。
   if (tool.scope === 'write' && phase !== 'code_generation' && !designConfirmed) {
-    const targetFile = args.relativePath || args.content?.slice(0, 50) || name
-    if (onConfirmWrite) {
-      const confirmed = await onConfirmWrite(name, targetFile)
-      if (!confirmed) return `用户拒绝了此操作。请先向用户说明修改方案，用户确认后再执行。`
-    } else {
-      return `错误：当前未确认方案，请先向用户确认修改方案后再修改代码。`
-    }
+    return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
   }
   try {
     const rootDir = args.rootDir ?? '.'

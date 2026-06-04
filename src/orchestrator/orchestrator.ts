@@ -7,7 +7,6 @@ import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
 import { saveDesignCheckpoint, loadDesignCheckpoint, createCodeCheckpoint, restoreCodeCheckpoint, listCodeCheckpoints, applySnapshot } from './checkpoint.js'
-import type { WriteConfirmFn } from '../tools/index.js'
 
 const execAsync = promisify(exec)
 
@@ -59,22 +58,6 @@ export class Orchestrator {
   private async emitOutput(message: string, onEvent?: AgentEventHandler) {
     console.log(message)
     await onEvent?.({ type: 'output', message })
-  }
-
-  private createWriteConfirmFn(onEvent?: AgentEventHandler): WriteConfirmFn {
-    return async (toolName: string, targetFile: string) => {
-      const msg = `Agent 要修改文件 "${targetFile}"（工具: ${toolName}），确认？`
-      await this.emitOutput(`\n[写操作确认] ${msg}`, onEvent)
-      if (this.askConfirm) {
-        const confirmed = await this.askConfirm(msg)
-        if (confirmed) {
-          this.state.designConfirmed = true
-          await this.persist()
-        }
-        return confirmed
-      }
-      return false
-    }
   }
 
   abort() {
@@ -169,9 +152,8 @@ export class Orchestrator {
     }
 
     // Run Agent
-    const onConfirmWrite = this.createWriteConfirmFn(onEvent)
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder, onConfirmWrite)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
@@ -235,9 +217,8 @@ export class Orchestrator {
     await this.persist()
 
     // Call Agent again to proceed to next step
-    const onConfirmWrite = this.createWriteConfirmFn(onEvent)
     this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder, onConfirmWrite)
+    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
