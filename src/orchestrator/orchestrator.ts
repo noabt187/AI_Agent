@@ -104,12 +104,10 @@ export class Orchestrator {
     return deletePinnedProjectMemory(this.getProjectDir(), id)
   }
 
-  // ── allowedPaths ──────────────────────────────────────────────────
-
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
     if (!this.state.allowedPaths || this.state.allowedPaths.length === 0) {
       const defaultPath = process.cwd()
-      await this.emitOutput(`\n[设置操作目录] Agent 可在以下目录中读写文件：`, onEvent)
+      await this.emitOutput('\n[设置操作目录] Agent 可在以下目录中读写文件：', onEvent)
       await this.emitOutput(`  默认: ${defaultPath}`, onEvent)
 
       if (this.askInput) {
@@ -128,12 +126,9 @@ export class Orchestrator {
     }
   }
 
-  // ── Main Entry ──────────────────────────────────────────────────
-
   async handleUserInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     await this.ensureAllowedPaths(onEvent)
 
-    // Hardcoded shortcuts
     if (userInput === '取消' || userInput === 'cancel' || userInput === '不做了') {
       await this.handleCancel(onEvent)
       return
@@ -143,7 +138,7 @@ export class Orchestrator {
       return
     }
     if (userInput.startsWith('/revert')) {
-      await this.handleRevert(userInput)
+      await this.handleRevert(userInput, onEvent)
       return
     }
     if (userInput === '/stats') {
@@ -160,16 +155,13 @@ export class Orchestrator {
       return
     }
 
-    // Handle confirmation response
     if (this.isConfirmationInput(userInput) && this.state.pendingConfirm) {
       await this.handleConfirmResponse(userInput, onEvent)
       return
     }
 
-    // Context compression
-    let compressed = false
     try {
-      compressed = await maybeCompressContext(this.state.sessionId)
+      const compressed = await maybeCompressContext(this.state.sessionId)
       if (compressed) {
         await this.emitOutput(`[上下文压缩] 消息过长，已压缩旧对话并保留最近 ${10} 轮`, onEvent)
       }
@@ -178,12 +170,10 @@ export class Orchestrator {
       await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
 
-    // Track goal on first development input
     if (!this.state.goal && !this.state.confirmedRequirement) {
       this.state.goal = userInput
     }
 
-    // Run Agent
     this.abortController = new AbortController()
     const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
@@ -275,7 +265,6 @@ export class Orchestrator {
 
     await this.persist()
 
-    // Call Agent again to proceed to next step
     this.abortController = new AbortController()
     const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
@@ -284,8 +273,6 @@ export class Orchestrator {
     await this.handleAgentResult(result, onEvent)
     await this.persist()
   }
-
-  // ── Set Directory ─────────────────────────────────────────────────
 
   private async handleSetDirectory(onEvent?: AgentEventHandler) {
     if (this.askInput) {
@@ -298,8 +285,6 @@ export class Orchestrator {
       }
     }
   }
-
-  // ── Memory Commands ────────────────────────────────────────────────
 
   private async emitMemoryStatus(onEvent?: AgentEventHandler) {
     const memory = await this.getMemoryState()
@@ -370,8 +355,6 @@ export class Orchestrator {
     }
   }
 
-  // ── Revert ──────────────────────────────────────────────────────────
-
   private async handleRevert(input: string, onEvent?: AgentEventHandler) {
     const parts = input.split(/\s+/)
     if (parts.length < 3) {
@@ -398,7 +381,7 @@ export class Orchestrator {
     }
 
     try {
-      await this.emitOutput(`\n[revert] 正在拉取远程最新版本...`, onEvent)
+      await this.emitOutput('\n[revert] 正在拉取远程最新版本...', onEvent)
       await execAsync(`git fetch ${githubRepoUrl}`, { cwd: projectPath })
 
       const { stdout: diffOutput } = await execAsync('git diff HEAD', { cwd: projectPath })
@@ -428,7 +411,7 @@ export class Orchestrator {
       await execAsync('git checkout .', { cwd: projectPath })
       await this.emitOutput('[revert] 已回退到 GitHub 最新版本。', onEvent)
     } catch (err) {
-      console.error(`[revert] 执行失败:`, err instanceof Error ? err.message : err)
+      console.error('[revert] 执行失败:', err instanceof Error ? err.message : err)
       await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
   }

@@ -12,7 +12,7 @@ import {
   loadPinnedProjectMemories,
   searchProjectMemories,
 } from '../memory/projectMemory.js'
-import type { AgentEventHandler, WorldState, AgentResult } from './types.js'
+import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
@@ -22,8 +22,6 @@ const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
-
-// ── Stable System Prompt ───────────────────────────────────────────
 
 export function buildStableSystemPrompt(): string {
   return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
@@ -68,11 +66,8 @@ action 说明：
 - 仅在对齐理解、确认需求时，省略 confirmType
 - 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
-
-${activeSkillTexts.join('\n\n')}`
+`
 }
-
-// ── Runtime Context ────────────────────────────────────────────────
 
 export function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
@@ -80,13 +75,13 @@ export function buildWorldStateContext(state: WorldState): string {
   if (state.goal) parts.push(`用户目标: ${state.goal}`)
   if (state.confirmedRequirement) {
     const preview = state.confirmedRequirement.length > 1500
-      ? state.confirmedRequirement.slice(0, 1500) + '...'
+      ? `${state.confirmedRequirement.slice(0, 1500)}...`
       : state.confirmedRequirement
     parts.push(`需求已确认: ${preview}`)
   }
   if (state.pendingConfirm) {
     const pendingPreview = state.pendingConfirm.message.length > 1200
-      ? state.pendingConfirm.message.slice(0, 1200) + '...'
+      ? `${state.pendingConfirm.message.slice(0, 1200)}...`
       : state.pendingConfirm.message
     parts.push(`待确认内容: [${state.pendingConfirm.allowWrite ? 'allow_write' : 'read_only'}] ${pendingPreview}`)
   }
@@ -100,10 +95,7 @@ export function buildWorldStateContext(state: WorldState): string {
         : state.failedTaskIds.includes(t.id) ? '[失败]' : '[待执行]'
       parts.push(`  ${status} ${t.id} [${t.changeType}] ${t.title} → ${t.file}`)
     }
-    if (failed > 0) {
-      const failedTasks = state.failedTaskIds.join(', ')
-      parts.push(`失败任务: ${failedTasks}`)
-    }
+    if (failed > 0) parts.push(`失败任务: ${state.failedTaskIds.join(', ')}`)
   }
 
   if (state.allowedPaths?.length) {
@@ -119,9 +111,7 @@ export function buildRuntimeContext(
   skillContext: string,
   pinnedMemoryContext = '',
 ): string {
-  const parts = [
-    `## 当前状态\n${buildWorldStateContext(state)}`,
-  ]
+  const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
   if (pinnedMemoryContext.trim()) {
     parts.push(`## 项目固定记忆（用户明确要求）\n${pinnedMemoryContext.trim()}`)
   }
@@ -129,7 +119,7 @@ export function buildRuntimeContext(
     parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
   }
   if (skillContext.trim()) {
-    parts.push(`## 当前阶段技能\n${skillContext.trim()}`)
+    parts.push(`## 当前加载的 Skills\n${skillContext.trim()}`)
   }
   return parts.join('\n\n')
 }
@@ -161,8 +151,6 @@ export function buildTaskMemorySearchQuery(state: WorldState, userInput: string)
   parts.push(trimmed)
   return parts.join('\n').trim()
 }
-
-// ── JSON Parsing ───────────────────────────────────────────────────
 
 function extractJsonText(raw: string): string {
   const trimmed = raw.trim()
@@ -206,6 +194,16 @@ function extractLooseStringField(raw: string, field: string): string | undefined
     }
   }
   return undefined
+}
+
+function isToolOperationConfirmationText(text: string): boolean {
+  return /\bpr\b|pull request|createPullRequest|提交\s*pr|创建\s*pr|发起\s*pr|PR\s*参数|PR\s*标题|PR\s*目标仓库/i.test(text)
+    || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
+}
+
+function normalizeConfirmType(confirmType: 'allow_write' | undefined, text: string): 'allow_write' | undefined {
+  if (!confirmType && isToolOperationConfirmationText(text)) return 'allow_write'
+  return confirmType
 }
 
 function parseLooseAgentResult(jsonText: string, raw: string): AgentResult | null {
@@ -259,17 +257,6 @@ function parseMarkdownProtocolResult(raw: string): AgentResult | null {
   return null
 }
 
-function isToolOperationConfirmationText(text: string): boolean {
-  return /\bpr\b|pull request|createPullRequest|提交\s*pr|创建\s*pr|发起\s*pr|PR\s*参数|PR\s*标题|PR\s*目标仓库/i.test(text)
-    || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
-}
-
-function normalizeConfirmType(confirmType: 'allow_write' | undefined, text: string): 'allow_write' | undefined {
-  // 工具操作确认强制设为 allow_write（fork/clone/PR 都需要写权限）
-  if (!confirmType && isToolOperationConfirmationText(text)) return 'allow_write'
-  return confirmType
-}
-
 function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
   const text = raw.trim()
   if (!text || !isToolOperationConfirmationText(text)) return null
@@ -287,9 +274,7 @@ export function parseAgentResult(raw: string): AgentResult | null {
   try {
     const obj = JSON.parse(jsonText)
     const action = obj.action
-    if (action === 'chat') {
-      return { action: 'chat', message: String(obj.message || raw.trim()) }
-    }
+    if (action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
     if (action === 'ask_user') {
       const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
       if (questions.length === 0) return null
@@ -303,9 +288,7 @@ export function parseAgentResult(raw: string): AgentResult | null {
       const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
       return { action: 'confirm', prompt, message, confirmType: ct }
     }
-    if (action === 'done') {
-      return { action: 'done', message: String(obj.message || '任务完成') }
-    }
+    if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
     return null
   } catch {
     try {
@@ -332,8 +315,6 @@ export function parseAgentResult(raw: string): AgentResult | null {
     return parseLooseAgentResult(jsonText, raw) ?? parseMarkdownProtocolResult(raw)
   }
 }
-
-// ── Agent ──────────────────────────────────────────────────────────
 
 export class Agent {
   async run(
@@ -363,7 +344,6 @@ export class Agent {
     const systemPrompt = buildStableSystemPrompt()
     const runtimeContext = buildRuntimeContext(state, memoryContext, skillContext, pinnedMemoryContext)
 
-    // Inject/replace system prompt
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
     if (!hasCorrectPrompt) {
       const sysMsg = { uuid: SYS_UUID, role: 'system' as const, content: systemPrompt, createdAt: Date.now() }
@@ -377,61 +357,11 @@ export class Agent {
     }
 
     const tools = toolDefsToOpenAI('write')
-
-    // Submit user message and enter tool call loop
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
     try {
       for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
-      if (evt.kind === 'delta') {
-        fullText += evt.delta
-        await onEvent?.({ type: 'delta', text: evt.delta })
-      }
-      if (evt.kind === 'tool_calls') {
-        toolCalls = evt.toolCalls
-        for (const tc of toolCalls) {
-          await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
-        }
-      }
-    }
-
-    // Tool call loop
-    const toolFailureCounts = new Map<string, number>()
-
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      if (signal?.aborted) break
-      if (toolCalls.length === 0) break
-
-      for (const tc of toolCalls) {
-        if (signal?.aborted) break
-        let args: Record<string, string>
-        try { args = JSON.parse(tc.arguments) } catch { continue }
-
-        // 检查该工具+参数组合是否已失败超过上限
-        const failureKey = `${tc.name}:${tc.arguments}`
-        const failCount = toolFailureCounts.get(failureKey) ?? 0
-        if (failCount >= MAX_TOOL_RETRIES) {
-          await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
-          continue
-        }
-
-        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
-        await onEvent?.({ type: 'tool_result', name: tc.name, result })
-        await engine.appendToolResult(tc.id, tc.name, result)
-
-        // 记录失败
-        if (result.startsWith('工具执行错误')) {
-          toolFailureCounts.set(failureKey, failCount + 1)
-        } else {
-          toolFailureCounts.delete(failureKey)  // 成功则重置计数
-        }
-      }
-
-      if (signal?.aborted) break
-      fullText = ''
-      toolCalls = []
-      for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })
@@ -443,43 +373,84 @@ export class Agent {
           }
         }
       }
-    }
 
-    // Abort check
-    if (signal?.aborted) {
-      return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-    }
+      const toolFailureCounts = new Map<string, number>()
 
-    // 达到迭代上限 — 让 LLM 基于已有结果生成最终回答
-    if (toolCalls.length > 0) {
-      const prevText = fullText
-      fullText = ''
-      toolCalls = []
-      try {
-        for await (const evt of engine.submitMessage(
-          `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
-          { tools: [], signal },
-        )) {
-          if (evt.kind === 'delta') fullText += evt.delta
+      for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+        if (signal?.aborted) break
+        if (toolCalls.length === 0) break
+
+        for (const tc of toolCalls) {
+          if (signal?.aborted) break
+          let args: Record<string, string>
+          try { args = JSON.parse(tc.arguments) } catch { continue }
+
+          const failureKey = `${tc.name}:${tc.arguments}`
+          const failCount = toolFailureCounts.get(failureKey) ?? 0
+          if (failCount >= MAX_TOOL_RETRIES) {
+            await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
+            continue
+          }
+
+          const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
+          await onEvent?.({ type: 'tool_result', name: tc.name, result })
+          await engine.appendToolResult(tc.id, tc.name, result)
+
+          if (result.startsWith('工具执行错误')) {
+            toolFailureCounts.set(failureKey, failCount + 1)
+          } else {
+            toolFailureCounts.delete(failureKey)
+          }
         }
-      } catch (err) {
-        console.error('[Agent] 最终总结 LLM 调用失败:', err)
+
+        if (signal?.aborted) break
+        fullText = ''
+        toolCalls = []
+        for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
+          if (evt.kind === 'delta') {
+            fullText += evt.delta
+            await onEvent?.({ type: 'delta', text: evt.delta })
+          }
+          if (evt.kind === 'tool_calls') {
+            toolCalls = evt.toolCalls
+            for (const tc of toolCalls) {
+              await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
+            }
+          }
+        }
       }
-      // 如果总结调用失败或为空，用之前累积的文字
-      if (!fullText.trim() && prevText.trim()) {
-        fullText = prevText
+
+      if (signal?.aborted) {
+        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
       }
-    }
 
-    // Parse final response
-    if (!fullText.trim()) {
-      return { action: 'chat', message: '(Agent 返回了空响应)' }
-    }
+      if (toolCalls.length > 0) {
+        const prevText = fullText
+        fullText = ''
+        toolCalls = []
+        try {
+          for await (const evt of engine.submitMessage(
+            `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
+            { tools: [], signal, runtimeContext },
+          )) {
+            if (evt.kind === 'delta') fullText += evt.delta
+          }
+        } catch (err) {
+          console.error('[Agent] 最终总结 LLM 调用失败:', err)
+        }
+        if (!fullText.trim() && prevText.trim()) {
+          fullText = prevText
+        }
+      }
 
-    const parsed = parseAgentResult(fullText)
-    if (parsed) return parsed
+      if (!fullText.trim()) {
+        return { action: 'chat', message: '(Agent 返回了空响应)' }
+      }
 
-    return { action: 'chat', message: fullText.trim() }
+      const parsed = parseAgentResult(fullText)
+      if (parsed) return parsed
+
+      return { action: 'chat', message: fullText.trim() }
     } catch (err) {
       if (signal?.aborted) {
         return { action: 'chat', message: '[已中断] 操作被用户取消。' }

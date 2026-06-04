@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { maybeCompressContext } from '../src/context/contextCompressor.js'
@@ -662,10 +662,21 @@ test('write tools cannot bypass design confirmation', async () => {
       [cwd],
       'write',
       false,
-      async () => true,
     )
 
-    assert.match(rejected, /系统流程拦截/)
-    assert.match(rejected, /action=confirm/)
+    assert.match(rejected, /当前未确认方案/)
+    assert.match(rejected, /等待用户确认后再修改代码/)
   })
+})
+
+test('memory integration does not restore phase or checkpoint flow', async () => {
+  const agent = await readFile(new URL('../src/orchestrator/agent.ts', import.meta.url), 'utf8')
+  const orchestrator = await readFile(new URL('../src/orchestrator/orchestrator.ts', import.meta.url), 'utf8')
+  const types = await readFile(new URL('../src/orchestrator/types.ts', import.meta.url), 'utf8')
+  const tools = await readFile(new URL('../src/tools/index.ts', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(agent, /setPhase|AgentPhase|state\.phase|code_generation/)
+  assert.doesNotMatch(orchestrator, /checkpoint|saveDesignCheckpoint|loadDesignCheckpoint|state\.phase|code_generation/)
+  assert.doesNotMatch(types, /AgentPhase|CheckpointSnapshot|phase/)
+  assert.doesNotMatch(tools, /requiresDesignConfirmation|code_generation|phase\?:/)
 })

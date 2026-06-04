@@ -22,8 +22,6 @@ type ToolDef = {
   pathArgNames?: string[]
 }
 
-// ── Registry ────────────────────────────────────────────────────────
-
 const toolRegistry: Record<string, ToolDef> = {
   readTextFile: {
     fn: readTextFile,
@@ -103,8 +101,6 @@ const toolRegistry: Record<string, ToolDef> = {
   },
 }
 
-// ── Tool Descriptions ───────────────────────────────────────────────
-
 export function getToolDescriptionsForScope(scope: ToolScope): string {
   return Object.entries(toolRegistry)
     .filter(([, def]) => scope === 'write' || def.scope === 'read')
@@ -114,8 +110,6 @@ export function getToolDescriptionsForScope(scope: ToolScope): string {
     })
     .join('\n')
 }
-
-// ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
   return Object.entries(toolRegistry)
@@ -146,8 +140,6 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
     })
 }
 
-// ── Non-path argument detection ─────────────────────────────────────
-
 function isNonPathToolArg(toolName: string, argName: string): boolean {
   if (toolName === 'execCommand' && argName === 'command') return true
   if (toolName === 'verifyCode' && argName === 'changedFiles') return true
@@ -157,8 +149,6 @@ function isNonPathToolArg(toolName: string, argName: string): boolean {
   if (toolName === 'compressContext' && argName === 'sessionId') return true
   return false
 }
-
-// ── Execute Tool ────────────────────────────────────────────────────
 
 export async function executeTool(
   name: string,
@@ -173,10 +163,10 @@ export async function executeTool(
     return `错误：工具 "${name}" 不在当前节点的可用范围内（只读模式）`
   }
 
-  // 写操作确认检查
   if (tool.scope === 'write' && !designConfirmed) {
-    return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
+    return '错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。'
   }
+
   try {
     const rootDir = args.rootDir ?? '.'
     if (tool.scope === 'write' && allowedPaths) {
@@ -189,18 +179,15 @@ export async function executeTool(
       if (argName === 'rootDir') continue
       const val = args[argName]
 
-      // listDirectory with empty dirPath = list root directory
       if (name === 'listDirectory' && argName === 'dirPath' && (!val || val.trim() === '')) {
-        args[argName] = '.' // default to root
+        args[argName] = '.'
         continue
       }
 
-      // searchFiles with empty pattern = match all (use *)
       if (name === 'searchFiles' && argName === 'pattern' && (!val || val.trim() === '')) {
         return `错误：工具 "${name}" 缺少搜索模式（pattern 不能为空）`
       }
 
-      // Some arguments are commands or metadata, not filesystem paths.
       if (isNonPathToolArg(name, argName)) {
         if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
           return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
@@ -208,14 +195,12 @@ export async function executeTool(
         continue
       }
 
-      // All other params are required
       if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
         return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
       }
       if (val && pathArgNames.has(argName)) assertInsideRoot(rootDir, val)
     }
 
-    // For write-scope tools, validate against allowedPaths
     if (tool.scope === 'write' && allowedPaths) {
       for (const argName of tool.argNames) {
         if (argName !== 'rootDir' && argName !== 'content' && args[argName] && pathArgNames.has(argName)) {

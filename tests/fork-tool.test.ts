@@ -124,12 +124,12 @@ test('PR requests use PR skill instead of requirement analysis and stay active a
   assert.deepEqual(getActiveSkills(skills, state, '确认').map((skill) => skill.name), ['pull-request'])
 })
 
-test('compressContext is not exposed as a model-callable tool', () => {
+test('compressContext remains exposed as a model-callable tool', () => {
   const tools = toolDefsToOpenAI('write').map((item) => item.function.name)
   const descriptions = getToolDescriptionsForScope('write')
 
-  assert.ok(!tools.includes('compressContext'))
-  assert.doesNotMatch(descriptions, /compressContext/)
+  assert.ok(tools.includes('compressContext'))
+  assert.match(descriptions, /compressContext/)
 })
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {
