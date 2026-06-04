@@ -5,7 +5,7 @@ import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
 import { loadSkills, getActiveSkills } from '../skills/index.js'
-import type { AgentEventHandler, WorldState, AgentResult, AgentPhase } from './types.js'
+import type { AgentEventHandler, WorldState, AgentResult } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
@@ -90,17 +90,6 @@ function buildWorldStateContext(state: WorldState): string {
   }
 
   if (state.allowedPaths?.length) parts.push(`操作目录: ${state.allowedPaths[0]}`)
-
-  if (state.phase) {
-    const phaseLabels: Record<string, string> = {
-      planning: '规划中',
-      requirement_analysis: '需求分析',
-      solution_design: '方案设计',
-      code_generation: '代码生成',
-      automated_testing: '自动化测试',
-    }
-    parts.push(`当前阶段: ${phaseLabels[state.phase] || state.phase}`)
-  }
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
 }
@@ -231,27 +220,6 @@ export class Agent {
 
     const tools = toolDefsToOpenAI('write')
 
-    // Virtual tool: setPhase — model calls this to declare its current phase
-    // code_generation is NOT an option — only the system sets it
-    const setPhaseTool: import('../llm/types.js').ToolDefinition = {
-      type: 'function',
-      function: {
-        name: 'setPhase',
-        description: '在切换工作阶段时第一时间调用，让系统知晓你当前所处的阶段。可选值: planning(规划), requirement_analysis(需求分析), solution_design(方案设计), automated_testing(自动化测试)。code_generation 由系统自动设置，不可手动调用。',
-        parameters: {
-          type: 'object',
-          properties: {
-            phase: {
-              type: 'string',
-              description: '当前阶段，可选值: planning, requirement_analysis, solution_design, automated_testing',
-            },
-          },
-          required: ['phase'],
-        },
-      },
-    }
-    tools.push(setPhaseTool)
-
     // Submit user message and enter tool call loop
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
@@ -282,27 +250,6 @@ export class Agent {
         let args: Record<string, string>
         try { args = JSON.parse(tc.arguments) } catch { continue }
 
-        // ── Virtual tool: setPhase ──────────────────────────────────
-        if (tc.name === 'setPhase') {
-          const newPhase = args.phase
-          const validPhases = ['planning', 'requirement_analysis', 'solution_design', 'automated_testing']
-          if (!validPhases.includes(newPhase)) {
-            const errMsg = `无效阶段 "${newPhase}"，可选值: ${validPhases.join(', ')}`
-            await engine.appendToolResult(tc.id, 'setPhase', errMsg)
-            await onEvent?.({ type: 'tool_result', name: 'setPhase', result: errMsg })
-            continue
-          }
-          // Only emit if phase actually changed
-          if (newPhase !== state.phase) {
-            state.phase = newPhase as AgentPhase
-            await onEvent?.({ type: 'phase', phase: newPhase })
-          }
-          const okMsg = `阶段已切换为: ${newPhase}`
-          await engine.appendToolResult(tc.id, 'setPhase', okMsg)
-          await onEvent?.({ type: 'tool_result', name: 'setPhase', result: okMsg })
-          continue
-        }
-
         // 检查该工具+参数组合是否已失败超过上限
         const failureKey = `${tc.name}:${tc.arguments}`
         const failCount = toolFailureCounts.get(failureKey) ?? 0
@@ -311,7 +258,7 @@ export class Agent {
           continue
         }
 
-        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed, state.phase)
+        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
         await onEvent?.({ type: 'tool_result', name: tc.name, result })
         await engine.appendToolResult(tc.id, tc.name, result)
 
