@@ -1,5 +1,3 @@
-export type AgentPhase = 'planning' | 'requirement_analysis' | 'solution_design' | 'code_generation' | 'automated_testing'
-
 export type DesignTask = {
   id: string
   title: string
@@ -8,15 +6,6 @@ export type DesignTask = {
   changeType: 'create' | 'modify' | 'delete'
   dependencies: string[]
   rationale: string
-}
-
-export type CheckpointSnapshot = {
-  goal?: string
-  confirmedRequirement?: string
-  designTasks?: DesignTask[]
-  completedTaskIds: string[]
-  failedTaskIds: string[]
-  phase?: string
 }
 
 export type WorldState = {
@@ -38,9 +27,6 @@ export type WorldState = {
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
-
-  // Current phase in the workflow
-  phase?: AgentPhase
 }
 
 export type AgentResult =
@@ -55,7 +41,6 @@ export type AgentEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }
-  | { type: 'phase'; phase: string }
   | { type: 'error'; message: string }
 
 export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>

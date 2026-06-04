@@ -166,7 +166,6 @@ export async function executeTool(
   allowedPaths?: string[],
   scope: ToolScope = 'read',
   designConfirmed?: boolean,
-  phase?: string,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
@@ -174,8 +173,8 @@ export async function executeTool(
     return `错误：工具 "${name}" 不在当前节点的可用范围内（只读模式）`
   }
 
-  // 写操作只受“方案已确认/代码生成阶段”控制，不再对每个文件做二次确认。
-  if (tool.scope === 'write' && phase !== 'code_generation' && !designConfirmed) {
+  // 写操作确认检查
+  if (tool.scope === 'write' && !designConfirmed) {
     return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
   }
   try {
