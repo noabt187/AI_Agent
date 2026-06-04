@@ -22,15 +22,21 @@ import {
 import {
   abortSession,
   createSession,
+  forgetPinnedMemory,
   listSessions,
   listDirectories,
   loadSession,
+  loadSessionMemory,
   loadSessionMetrics,
   pickDirectory,
+  rememberPinnedMemory,
   streamPrompt,
+  updateMemorySettings,
   updateAllowedPaths,
   type Message,
   type DirectoryListing,
+  type MemoryRecallMode,
+  type SessionMemory,
   type SessionMetrics,
   type SessionDetail,
   type SessionSummary,
@@ -207,6 +213,10 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metrics, setMetrics] = useState<SessionMetrics | null>(null)
   const [metricsError, setMetricsError] = useState('')
+  const [sessionMemory, setSessionMemory] = useState<SessionMemory | null>(null)
+  const [memoryDraft, setMemoryDraft] = useState('')
+  const [memoryError, setMemoryError] = useState('')
+  const [memoryBusy, setMemoryBusy] = useState(false)
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [annotateActive, setAnnotateActive] = useState(false)
@@ -273,6 +283,10 @@ export function App() {
   }, [selectedSessionId, viewMode, timeline.length, activityItems.length])
 
   useEffect(() => {
+    if (selectedSessionId) void refreshMemory(selectedSessionId)
+  }, [selectedSessionId])
+
+  useEffect(() => {
     if (viewMode === 'metrics' && selectedSessionId) {
       void refreshMetrics(selectedSessionId)
     }
@@ -325,6 +339,62 @@ export function App() {
     }
   }
 
+  async function refreshMemory(sessionId = selectedSessionId) {
+    if (!sessionId) return
+    setMemoryError('')
+    try {
+      setSessionMemory(await loadSessionMemory(sessionId))
+    } catch (err) {
+      setSessionMemory(null)
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleMemoryModeChange(mode: MemoryRecallMode) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const detail = await updateMemorySettings(selectedSessionId, mode)
+      setSession(detail)
+      await refreshMemory(selectedSessionId)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
+  async function handleRememberPinned() {
+    const content = memoryDraft.trim()
+    if (!selectedSessionId || !content || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const result = await rememberPinnedMemory(selectedSessionId, content)
+      setSessionMemory(result.memoryState)
+      setMemoryDraft('')
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
+  async function handleForgetPinned(id: string) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const result = await forgetPinnedMemory(selectedSessionId, id)
+      setSessionMemory(result.memoryState)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
   function getDirectoryStartPath(): string | undefined {
     return operationRoot || undefined
   }
@@ -368,6 +438,7 @@ export function App() {
     if (!selectedSessionId) return
     const detail = await updateAllowedPaths(selectedSessionId, [path])
     setSession(detail)
+    await refreshMemory(selectedSessionId)
     setDirectoryPickerOpen(false)
     setDirectoryError('')
     setStatus('目录已更新')
@@ -664,6 +735,8 @@ export function App() {
     }
   }, [activityItems, running])
 
+  const memoryMode = sessionMemory?.settings.recallMode || session?.state.memorySettings?.recallMode || 'auto'
+
   return (
     <main className={sidebarCollapsed ? 'appShell sidebarCollapsed' : 'appShell'}>
       <aside className="sidebar">
@@ -700,6 +773,55 @@ export function App() {
                 <small>{formatTime(item.updatedAt)}</small>
               </button>
             ))}
+          </div>
+        </section>
+
+        <section className="panel memoryPanel">
+          <div className="panelHeader">
+            <span>记忆</span>
+            <small>{memoryMode}</small>
+          </div>
+          <div className="memoryModeStack" role="group" aria-label="记忆召回模式">
+            {(['auto', 'off', 'on'] as MemoryRecallMode[]).map((mode) => (
+              <button
+                type="button"
+                key={mode}
+                className={memoryMode === mode ? 'memoryModeButton active' : 'memoryModeButton'}
+                disabled={!selectedSessionId || memoryBusy}
+                onClick={() => void handleMemoryModeChange(mode)}
+              >
+                {mode === 'auto' ? 'Auto' : mode === 'off' ? 'Off' : 'On'}
+              </button>
+            ))}
+          </div>
+          <div className="memoryComposer">
+            <textarea
+              value={memoryDraft}
+              onChange={(event) => setMemoryDraft(event.target.value)}
+              placeholder="写入项目约束或偏好"
+              disabled={!selectedSessionId || memoryBusy}
+            />
+            <button
+              type="button"
+              className="miniActionButton"
+              title="添加固定记忆"
+              disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
+              onClick={() => void handleRememberPinned()}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+          {memoryError ? <div className="memoryError">{memoryError}</div> : null}
+          <div className="memoryList">
+            {(sessionMemory?.pinned || []).map((item) => (
+              <article className="memoryItem" key={item.id}>
+                <p>{item.content}</p>
+                <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
+                  <Trash2 size={15} />
+                </button>
+              </article>
+            ))}
+            {sessionMemory && sessionMemory.pinned.length === 0 ? <div className="memoryEmpty">无固定记忆</div> : null}
           </div>
         </section>
 
