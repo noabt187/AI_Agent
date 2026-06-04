@@ -8,9 +8,30 @@ export type DesignTask = {
   rationale: string
 }
 
+export type MemoryRecallMode = 'auto' | 'off' | 'on'
+
+export type MemorySettings = {
+  recallMode: MemoryRecallMode
+}
+
+export function isMemoryRecallMode(value: unknown): value is MemoryRecallMode {
+  return value === 'auto' || value === 'off' || value === 'on'
+}
+
+export function normalizeMemorySettings(settings?: Partial<MemorySettings>): MemorySettings {
+  return {
+    recallMode: isMemoryRecallMode(settings?.recallMode) ? settings.recallMode : 'auto',
+  }
+}
+
+export function getMemorySettings(state: { memorySettings?: Partial<MemorySettings> }): MemorySettings {
+  return normalizeMemorySettings(state.memorySettings)
+}
+
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
+  memorySettings?: MemorySettings
 
   // User intent
   goal?: string
