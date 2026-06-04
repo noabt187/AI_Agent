@@ -3,6 +3,8 @@ import test from 'node:test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseAgentResult } from '../src/orchestrator/agent.js'
+import { getActiveSkills, type Skill } from '../src/skills/index.js'
 import { parseGitHubRepository } from '../src/tools/createPullRequest.js'
 import { executeTool, toolDefsToOpenAI } from '../src/tools/index.js'
 
@@ -63,6 +65,65 @@ test('createPullRequest keeps optional PR metadata in schema', () => {
   assert.ok('title' in tool.function.parameters.properties)
   assert.ok('prRepoUrl' in tool.function.parameters.properties)
   assert.ok('headOwner' in tool.function.parameters.properties)
+})
+
+test('PR confirmation is treated as design confirmation even if model says requirement', () => {
+  const parsed = parseAgentResult(JSON.stringify({
+    thinking: '确认 PR 参数',
+    action: 'confirm',
+    confirmType: 'requirement',
+    message: 'PR 参数：目标仓库 guwan-real/conduit-realworld-example-app，baseBranch main，headBranch feat/article-last-edited，PR 标题 feat: test',
+    prompt: '确认创建 PR？',
+  }))
+
+  assert.equal(parsed?.action, 'confirm')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+})
+
+test('repository operation confirmation is treated as design confirmation', () => {
+  const parsed = parseAgentResult(JSON.stringify({
+    thinking: '确认 fork 参数',
+    action: 'confirm',
+    confirmType: 'requirement',
+    message: 'Fork 参数：源仓库 guwan-real/conduit-realworld-example-app，目标账号 guwan-real，fork 名 conduit-realworld-example-app',
+    prompt: '确认执行 forkRepository？',
+  }))
+
+  assert.equal(parsed?.action, 'confirm')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+})
+
+test('markdown repository operation confirmation is parsed as design confirmation', () => {
+  const parsed = parseAgentResult([
+    '## Clone 仓库确认',
+    '',
+    '- 源仓库: https://github.com/noabt187/AI_Agent',
+    '- clone 目录: AI_Agent',
+    '',
+    '请确认以上 clone 参数是否正确。',
+  ].join('\n'))
+
+  assert.equal(parsed?.action, 'confirm')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'design')
+})
+
+test('PR requests use PR skill instead of requirement analysis and stay active after confirm input', () => {
+  const skills: Skill[] = [
+    { name: 'requirement-analysis', trigger: 'has_goal_no_requirement', content: 'requirement skill' },
+    { name: 'pull-request', trigger: 'pull_request_request', content: 'pr skill' },
+    { name: 'code-generation', trigger: 'has_tasks', content: 'code skill' },
+  ]
+  const state = {
+    sessionId: 'pr-session',
+    goal: 'https://github.com/guwan-real/conduit-realworld-example-app 将修改给这个仓库提个pr',
+    allowedPaths: ['/tmp/project'],
+    completedTaskIds: [],
+    failedTaskIds: [],
+    errors: {},
+  }
+
+  assert.deepEqual(getActiveSkills(skills, state, state.goal).map((skill) => skill.name), ['pull-request'])
+  assert.deepEqual(getActiveSkills(skills, state, '确认').map((skill) => skill.name), ['pull-request'])
 })
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {

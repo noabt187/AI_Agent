@@ -56,6 +56,7 @@ action 说明：
 2. 等待用户确认需求后 → 方案设计：拆解任务，列出需要修改的文件 → action=confirm, confirmType=design
 3. 等待用户确认方案后 → 代码编写：按任务逐个编写代码 → action=done
 不要跳过任何步骤，不要在用户未确认需求时就开始写代码。
+仓库操作、fork、clone、提交 PR 属于带副作用的工具操作，不属于代码需求分析；这类操作确认参数时必须直接使用 action=confirm, confirmType="design"，不要使用 requirement confirm。
 
 ${activeSkillTexts.join('\n\n')}`
 }
@@ -121,7 +122,29 @@ function extractJsonText(raw: string): string {
   return trimmed
 }
 
-function parseAgentResult(raw: string): AgentResult | null {
+function isToolOperationConfirmationText(text: string): boolean {
+  return /\bpr\b|pull request|createPullRequest|提交\s*pr|创建\s*pr|发起\s*pr|PR\s*参数|PR\s*标题|PR\s*目标仓库/i.test(text)
+    || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
+}
+
+function normalizeConfirmType(confirmType: 'requirement' | 'design', text: string): 'requirement' | 'design' {
+  if (confirmType === 'requirement' && isToolOperationConfirmationText(text)) return 'design'
+  return confirmType
+}
+
+function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
+  const text = raw.trim()
+  if (!text || !isToolOperationConfirmationText(text)) return null
+  if (!/请确认|确认以上|确认执行|是否正确|是否以上述|是否使用/.test(text)) return null
+  return {
+    action: 'confirm',
+    confirmType: 'design',
+    prompt: text,
+    message: text,
+  }
+}
+
+export function parseAgentResult(raw: string): AgentResult | null {
   const jsonText = extractJsonText(raw)
   try {
     const obj = JSON.parse(jsonText)
@@ -135,8 +158,10 @@ function parseAgentResult(raw: string): AgentResult | null {
       return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
     }
     if (action === 'confirm') {
-      const ct = obj.confirmType === 'design' ? 'design' : 'requirement'
-      return { action: 'confirm', prompt: String(obj.prompt || ''), message: obj.message ? String(obj.message) : undefined, confirmType: ct }
+      const prompt = String(obj.prompt || '')
+      const message = obj.message ? String(obj.message) : undefined
+      const ct = normalizeConfirmType(obj.confirmType === 'design' ? 'design' : 'requirement', `${message ?? ''}\n${prompt}`)
+      return { action: 'confirm', prompt, message, confirmType: ct }
     }
     if (action === 'done') {
       return { action: 'done', message: String(obj.message || '任务完成') }
@@ -155,12 +180,14 @@ function parseAgentResult(raw: string): AgentResult | null {
         if (questions.length > 0) return { action: 'ask_user', questions }
       }
       if (obj.action === 'confirm') {
-        const ct = obj.confirmType === 'design' ? 'design' : 'requirement'
-        return { action: 'confirm', prompt: String(obj.prompt || ''), message: obj.message ? String(obj.message) : undefined, confirmType: ct }
+        const prompt = String(obj.prompt || '')
+        const message = obj.message ? String(obj.message) : undefined
+        const ct = normalizeConfirmType(obj.confirmType === 'design' ? 'design' : 'requirement', `${message ?? ''}\n${prompt}`)
+        return { action: 'confirm', prompt, message, confirmType: ct }
       }
       if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
     } catch {}
-    return null
+    return parseToolOperationMarkdownConfirm(raw)
   }
 }
 
@@ -184,7 +211,7 @@ export class Agent {
 
     // Load skills from markdown files
     const allSkills = await loadSkills(SKILLS_DIR)
-    const activeSkills = getActiveSkills(allSkills, state)
+    const activeSkills = getActiveSkills(allSkills, state, userInput)
     const activeSkillTexts = activeSkills.map((s) => s.content)
 
     const systemPrompt = buildSystemPrompt(effectiveAllowedPaths, worldStateContext, activeSkillTexts)
