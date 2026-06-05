@@ -12,7 +12,7 @@
     "orchestrator": "tsx scripts/orchestrator-chat.ts",
     "dev": "node scripts/cleanup-dev-ports.mjs && concurrently \"npm run dev:server\" \"npm run dev:web\"",
     "dev:cleanup": "node scripts/cleanup-dev-ports.mjs",
-    "dev:server": "tsx src/server/server.ts",
+    "dev:server": "tsx watch src/server/server.ts",
     "dev:web": "npm --workspace web run dev",
     "build:web": "npm --workspace web run build"
   },

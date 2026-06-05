@@ -1,7 +1,7 @@
-import { mkdir, readdir, stat } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
-import { loadMessages } from '../state/sessionStore.js'
+import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
 import { isMemoryRecallMode, type MemoryRecallMode } from '../orchestrator/types.js'
 
 const stateDir = resolve(process.cwd(), 'state')
@@ -29,17 +29,18 @@ export function markSessionIdle(sessionId: string): void {
   activeRuns.delete(sessionId)
 }
 
-export async function listSessions(): Promise<Array<{ id: string; updatedAt: number }>> {
+export async function listSessions(): Promise<Array<{ id: string; title?: string; updatedAt: number }>> {
   await mkdir(stateDir, { recursive: true })
   const entries = await readdir(stateDir)
-  const sessions: Array<{ id: string; updatedAt: number }> = []
+  const sessions: Array<{ id: string; title?: string; updatedAt: number }> = []
 
   for (const entry of entries) {
     if (!entry.startsWith('session-')) continue
     const fullPath = resolve(stateDir, entry)
     const info = await stat(fullPath)
     if (info.isDirectory()) {
-      sessions.push({ id: entry, updatedAt: info.mtimeMs })
+      const meta = await loadSessionMeta(entry)
+      sessions.push({ id: entry, title: meta.title, updatedAt: info.mtimeMs })
     }
   }
 
@@ -61,12 +62,45 @@ export async function createSession(): Promise<string> {
 export async function loadSession(sessionId: string): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
   const messages = await loadMessages(sessionId)
+  const meta = await loadSessionMeta(sessionId)
   return {
     id: sessionId,
+    title: meta.title,
     running: isSessionRunning(sessionId),
     state: orchestrator.state,
     messages,
   }
+}
+
+export async function loadSessionExport(sessionId: string): Promise<{
+  id: string
+  title?: string
+  updatedAt: number
+  running: boolean
+  state: Orchestrator['state']
+  messages: Awaited<ReturnType<typeof loadMessages>>
+}> {
+  const [detail, info] = await Promise.all([
+    loadSession(sessionId) as Promise<{
+      id: string
+      title?: string
+      running: boolean
+      state: Orchestrator['state']
+      messages: Awaited<ReturnType<typeof loadMessages>>
+    }>,
+    stat(resolve(stateDir, sessionId)),
+  ])
+
+  return {
+    ...detail,
+    updatedAt: info.mtimeMs,
+  }
+}
+
+export async function updateSessionTitle(sessionId: string, title: string): Promise<unknown> {
+  const nextTitle = title.trim()
+  await saveSessionMeta(sessionId, nextTitle ? { title: nextTitle } : {})
+  return loadSession(sessionId)
 }
 
 export async function updateAllowedPaths(sessionId: string, allowedPaths: string[]): Promise<unknown> {
@@ -114,4 +148,10 @@ export async function removePinnedMemory(sessionId: string, id: string): Promise
 export async function abortSession(sessionId: string): Promise<void> {
   const orchestrator = await getOrchestrator(sessionId)
   orchestrator.abort()
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  activeRuns.delete(sessionId)
+  orchestrators.delete(sessionId)
+  await rm(resolve(stateDir, sessionId), { recursive: true, force: true })
 }

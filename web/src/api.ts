@@ -1,5 +1,6 @@
 export type SessionSummary = {
   id: string
+  title?: string
   updatedAt: number
 }
 
@@ -36,6 +37,7 @@ export type WorldState = {
 
 export type SessionDetail = {
   id: string
+  title?: string
   running: boolean
   state: WorldState
   messages: Message[]
@@ -123,6 +125,13 @@ export async function loadSession(sessionId: string): Promise<SessionDetail> {
   return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`)
 }
 
+export async function updateSessionTitle(sessionId: string, title: string): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+}
+
 export async function loadSessionMetrics(sessionId: string): Promise<SessionMetrics> {
   return jsonRequest<SessionMetrics>(`/api/sessions/${encodeURIComponent(sessionId)}/metrics`)
 }
@@ -160,6 +169,29 @@ export async function forgetPinnedMemory(sessionId: string, id: string): Promise
 
 export async function abortSession(sessionId: string): Promise<void> {
   await jsonRequest<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' })
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await jsonRequest<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}
+
+export async function downloadSessionExport(sessionId: string): Promise<{ blob: Blob; fileName?: string }> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/export`)
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`
+    try {
+      const payload = await res.json()
+      if (typeof payload?.error === 'string') message = payload.error
+    } catch {}
+    throw new Error(message)
+  }
+
+  const contentDisposition = res.headers.get('content-disposition') || ''
+  const fileNameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  return {
+    blob: await res.blob(),
+    fileName: fileNameMatch ? decodeURIComponent(fileNameMatch[1]) : undefined,
+  }
 }
 
 export async function listDirectories(path?: string, options: { roots?: boolean } = {}): Promise<DirectoryListing> {

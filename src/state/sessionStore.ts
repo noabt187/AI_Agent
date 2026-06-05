@@ -20,6 +20,14 @@ function getOrchestratorStatePath(sessionId: string): string {
   return resolve(getSessionDir(sessionId), 'orchestrator-state.json')
 }
 
+function getSessionMetaPath(sessionId: string): string {
+  return resolve(getSessionDir(sessionId), 'meta.json')
+}
+
+export type SessionMeta = {
+  title?: string
+}
+
 export async function loadMessages(sessionId: string): Promise<Message[]> {
   const path = getMessagesPath(sessionId)
   try {
@@ -70,6 +78,23 @@ export async function saveOrchestratorState<T>(sessionId: string, state: T): Pro
   const sessionDir = getSessionDir(sessionId)
   await mkdir(sessionDir, { recursive: true })
   await writeFile(getOrchestratorStatePath(sessionId), JSON.stringify(state, null, 2), 'utf8')
+}
+
+export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
+  try {
+    const raw = await readFile(getSessionMetaPath(sessionId), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return typeof parsed.title === 'string' ? { title: parsed.title } : {}
+  } catch {
+    return {}
+  }
+}
+
+export async function saveSessionMeta(sessionId: string, meta: SessionMeta): Promise<void> {
+  const sessionDir = getSessionDir(sessionId)
+  await mkdir(sessionDir, { recursive: true })
+  await writeFile(getSessionMetaPath(sessionId), JSON.stringify(meta, null, 2), 'utf8')
 }
 
 // ── Compression Failure Counter (Circuit Breaker) ───────────────────
