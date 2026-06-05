@@ -1,5 +1,3 @@
-export type AgentPhase = 'planning' | 'requirement_analysis' | 'solution_design' | 'code_generation' | 'automated_testing'
-
 export type DesignTask = {
   id: string
   title: string
@@ -10,18 +8,33 @@ export type DesignTask = {
   rationale: string
 }
 
-export type CheckpointSnapshot = {
-  goal?: string
-  confirmedRequirement?: string
-  designTasks?: DesignTask[]
-  completedTaskIds: string[]
-  failedTaskIds: string[]
-  phase?: string
+export type MemoryRecallMode = 'auto' | 'off' | 'on'
+
+export type MemorySettings = {
+  recallMode: MemoryRecallMode
+}
+
+export function isMemoryRecallMode(value: unknown): value is MemoryRecallMode {
+  return value === 'auto' || value === 'off' || value === 'on'
+}
+
+export function normalizeMemorySettings(settings?: Partial<MemorySettings>): MemorySettings {
+  return {
+    recallMode: isMemoryRecallMode(settings?.recallMode) ? settings.recallMode : 'auto',
+  }
+}
+
+export function getMemorySettings(state: { memorySettings?: Partial<MemorySettings> }): MemorySettings {
+  return normalizeMemorySettings(state.memorySettings)
 }
 
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
+  memorySettings?: MemorySettings
+  workflow?: {
+    node?: string
+  }
 
   // User intent
   goal?: string
@@ -34,19 +47,23 @@ export type WorldState = {
   errors: Record<string, string>
 
   // Pending confirmation
-  pendingConfirm?: { type: 'requirement' | 'design'; message: string }
+  pendingConfirm?: {
+    allowWrite: boolean
+    message: string
+    workflow?: {
+      currentNode: string
+      nextNode: string
+    }
+  }
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
-
-  // Current phase in the workflow
-  phase?: AgentPhase
 }
 
 export type AgentResult =
   | { action: 'chat'; message: string }
   | { action: 'ask_user'; questions: string[]; message?: string }
-  | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'requirement' | 'design' }
+  | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'allow_write' }
   | { action: 'done'; message: string }
 
 export type AgentEvent =
@@ -55,7 +72,6 @@ export type AgentEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }
-  | { type: 'phase'; phase: string }
   | { type: 'error'; message: string }
 
 export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>

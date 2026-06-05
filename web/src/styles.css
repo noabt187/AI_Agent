@@ -515,6 +515,111 @@ small {
   opacity: 0.5;
 }
 
+.memoryPanel {
+  flex: 0 0 auto;
+  min-height: 180px;
+}
+
+.memoryModeStack {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.memoryModeButton {
+  min-height: 32px;
+  border: 1px solid #cfd7df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #344250;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.memoryModeButton.active {
+  border-color: #0f766e;
+  background: #ecfdf9;
+  color: #0f766e;
+}
+
+.memoryModeButton:disabled,
+.miniActionButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.memoryComposer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.memoryComposer textarea {
+  min-height: 58px;
+  max-height: 96px;
+  resize: vertical;
+  border: 1px solid #cfd7df;
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: #1f2933;
+  padding: 9px 10px;
+}
+
+.miniActionButton {
+  display: inline-grid;
+  min-height: 34px;
+  place-items: center;
+  border: 1px solid #0f766e;
+  border-radius: 8px;
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.memoryList {
+  display: flex;
+  max-height: 170px;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.memoryItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 9px;
+}
+
+.memoryItem p,
+.memoryEmpty,
+.memoryError {
+  color: #485563;
+  font-size: 13px;
+}
+
+.memoryItem p {
+  overflow-wrap: anywhere;
+}
+
+.memoryEmpty {
+  border: 1px dashed #cfd7df;
+  border-radius: 8px;
+  padding: 9px;
+}
+
+.memoryError {
+  border: 1px solid #efb4aa;
+  border-radius: 8px;
+  background: #fff1ef;
+  color: #9f2d20;
+  padding: 9px;
+}
+
 .commentsPanel {
   min-height: 150px;
 }

@@ -1,14 +1,24 @@
 import { exec } from 'node:child_process'
 import { access } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentEventHandler, WorldState } from './types.js'
 import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
-import { saveDesignCheckpoint, loadDesignCheckpoint, createCodeCheckpoint, restoreCodeCheckpoint, listCodeCheckpoints, applySnapshot } from './checkpoint.js'
+import { buildWorkflowSnapshot, loadSkills, resolveNextNode, selectActiveSkills } from '../skills/index.js'
+import {
+  appendPinnedProjectMemory,
+  createAndStoreProjectMemory,
+  deletePinnedProjectMemory,
+  loadPinnedProjectMemories,
+  type PinnedProjectMemory,
+} from '../memory/projectMemory.js'
+import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
 
 const execAsync = promisify(exec)
+const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
 type AskConfirmFn = (question: string) => Promise<boolean>
 type AskInputFn = (question: string) => Promise<string>
@@ -25,11 +35,12 @@ export class Orchestrator {
     this.state = initialState ?? {
       sessionId,
       allowedPaths: [],
+      memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
-      phase: 'planning',
     }
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
@@ -40,15 +51,15 @@ export class Orchestrator {
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
       persisted.errors = persisted.errors || {}
-      if (!persisted.phase) persisted.phase = 'planning'
+      persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
     }
     return new Orchestrator(sessionId, persisted ?? {
       sessionId,
       allowedPaths: [],
+      memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
-      phase: 'planning',
     })
   }
 
@@ -71,12 +82,48 @@ export class Orchestrator {
     await saveOrchestratorState(this.state.sessionId, this.state)
   }
 
-  // ── allowedPaths ──────────────────────────────────────────────────
+  private getProjectDir(): string {
+    return this.state.allowedPaths[0] ?? process.cwd()
+  }
+
+  async getMemoryState(): Promise<{ settings: MemorySettings; pinned: PinnedProjectMemory[] }> {
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
+    return {
+      settings: this.state.memorySettings,
+      pinned: await loadPinnedProjectMemories(this.getProjectDir()),
+    }
+  }
+
+  async setMemoryRecallMode(mode: MemoryRecallMode): Promise<void> {
+    this.state.memorySettings = { recallMode: mode }
+    await this.persist()
+  }
+
+  async rememberProjectMemory(content: string): Promise<{ memory: PinnedProjectMemory; created: boolean }> {
+    return appendPinnedProjectMemory(this.getProjectDir(), content, this.state.sessionId)
+  }
+
+  async forgetProjectMemory(id: string): Promise<boolean> {
+    return deletePinnedProjectMemory(this.getProjectDir(), id)
+  }
+
+  private async resolveConfirmWorkflow(userInput: string, allowWrite: boolean): Promise<{ currentNode: string; nextNode: string } | undefined> {
+    const skills = await loadSkills(SKILLS_DIR)
+    const snapshot = buildWorkflowSnapshot(this.state, userInput)
+    const selected = selectActiveSkills(skills, snapshot)
+    const currentSkill = selected.primary
+    const currentNode = currentSkill?.node || currentSkill?.name || snapshot.node
+    const defaultNext = allowWrite
+      ? currentSkill?.onAllowWriteNext || 'code-generation'
+      : currentSkill?.onConfirmNext || 'solution-design'
+    const nextNode = resolveNextNode(currentNode, defaultNext, skills)
+    return nextNode ? { currentNode, nextNode } : undefined
+  }
 
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
     if (!this.state.allowedPaths || this.state.allowedPaths.length === 0) {
       const defaultPath = process.cwd()
-      await this.emitOutput(`\n[设置操作目录] Agent 可在以下目录中读写文件：`, onEvent)
+      await this.emitOutput('\n[设置操作目录] Agent 可在以下目录中读写文件：', onEvent)
       await this.emitOutput(`  默认: ${defaultPath}`, onEvent)
 
       if (this.askInput) {
@@ -95,12 +142,9 @@ export class Orchestrator {
     }
   }
 
-  // ── Main Entry ──────────────────────────────────────────────────
-
   async handleUserInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     await this.ensureAllowedPaths(onEvent)
 
-    // Hardcoded shortcuts
     if (userInput === '取消' || userInput === 'cancel' || userInput === '不做了') {
       await this.handleCancel(onEvent)
       return
@@ -110,7 +154,7 @@ export class Orchestrator {
       return
     }
     if (userInput.startsWith('/revert')) {
-      await this.handleRevert(userInput)
+      await this.handleRevert(userInput, onEvent)
       return
     }
     if (userInput === '/stats') {
@@ -118,26 +162,22 @@ export class Orchestrator {
       console.log(`\n${report}`)
       return
     }
-    if (userInput === '/checkpoints') {
-      await this.handleListCheckpoints(onEvent)
+    if (userInput === '/memory' || userInput.startsWith('/memory ')) {
+      await this.handleMemoryCommand(userInput, onEvent)
       return
     }
-    if (userInput.startsWith('/checkpoint ')) {
-      const label = userInput.split(/\s+/)[1]
-      await this.handleRestoreCheckpoint(label, onEvent)
+    if (userInput.startsWith('/remember')) {
+      await this.handleRememberCommand(userInput, onEvent)
       return
     }
 
-    // Handle confirmation response
     if (this.isConfirmationInput(userInput) && this.state.pendingConfirm) {
       await this.handleConfirmResponse(userInput, onEvent)
       return
     }
 
-    // Context compression
-    let compressed = false
     try {
-      compressed = await maybeCompressContext(this.state.sessionId)
+      const compressed = await maybeCompressContext(this.state.sessionId)
       if (compressed) {
         await this.emitOutput(`[上下文压缩] 消息过长，已压缩旧对话并保留最近 ${10} 轮`, onEvent)
       }
@@ -146,22 +186,20 @@ export class Orchestrator {
       await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
 
-    // Track goal on first development input
     if (!this.state.goal && !this.state.confirmedRequirement) {
       this.state.goal = userInput
     }
 
-    // Run Agent
     this.abortController = new AbortController()
     const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    await this.handleAgentResult(result, onEvent)
+    await this.handleAgentResult(result, onEvent, userInput)
     await this.persist()
   }
 
-  private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler) {
+  private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler, userInput = '') {
     switch (result.action) {
       case 'chat':
         await this.emitOutput(result.message, onEvent)
@@ -177,17 +215,38 @@ export class Orchestrator {
       case 'confirm':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput(`\n${result.prompt}`, onEvent)
+        const allowWrite = result.confirmType === 'allow_write'
         this.state.pendingConfirm = {
-          type: result.confirmType || 'requirement',
+          allowWrite,
           message: result.message || result.prompt,
+          workflow: await this.resolveConfirmWorkflow(userInput, allowWrite),
+        }
+        if (allowWrite) {
+          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':
         await this.emitOutput(`\n${result.message}`, onEvent)
-        this.state.pendingConfirm = undefined
-        this.state.designConfirmed = false
-        this.state.phase = 'planning'
+        await this.storeProjectMemory(result.message, onEvent)
+        this.clearCurrentTaskState()
         break
+    }
+  }
+
+  private async storeProjectMemory(doneMessage: string, onEvent?: AgentEventHandler) {
+    const projectDir = this.state.allowedPaths[0] ?? process.cwd()
+    try {
+      const memory = await createAndStoreProjectMemory({
+        projectDir,
+        sessionId: this.state.sessionId,
+        state: this.state,
+        doneMessage,
+      })
+      if (memory) {
+        await this.emitOutput('\n[项目记忆] 已保存本次完成任务的结构化记忆。', onEvent)
+      }
+    } catch (err) {
+      console.error('[项目记忆] 保存失败:', err)
     }
   }
 
@@ -198,35 +257,43 @@ export class Orchestrator {
       || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
   }
 
+  private clearCurrentTaskState(): void {
+    this.state.goal = undefined
+    this.state.confirmedRequirement = undefined
+    this.state.designTasks = undefined
+    this.state.completedTaskIds = []
+    this.state.failedTaskIds = []
+    this.state.errors = {}
+    this.state.pendingConfirm = undefined
+    this.state.designConfirmed = false
+    this.state.workflow = undefined
+    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
+  }
+
   private async handleConfirmResponse(userInput: string, onEvent?: AgentEventHandler) {
     const pending = this.state.pendingConfirm!
     this.state.pendingConfirm = undefined
 
-    if (pending.type === 'requirement') {
-      this.state.confirmedRequirement = pending.message
-      await saveDesignCheckpoint(this.state.sessionId, this.state)
-      await this.emitOutput('\n[需求已确认] 正在设计方案...', onEvent)
-    } else {
+    if (pending.allowWrite) {
       this.state.designConfirmed = true
-      this.state.phase = 'code_generation'
-      await onEvent?.({ type: 'phase', phase: 'code_generation' })
-      await saveDesignCheckpoint(this.state.sessionId, this.state)
-      await this.emitOutput('\n[方案已确认] 正在编写代码...', onEvent)
+      await this.emitOutput('\n[已确认] Agent 已获得文件写入权限，开始执行...', onEvent)
+    } else {
+      this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
+      await this.emitOutput('\n[已确认] 正在继续...', onEvent)
     }
+    const nextNode = pending.workflow?.nextNode ?? buildWorkflowSnapshot(this.state, userInput).node
+    this.state.workflow = { node: nextNode }
 
     await this.persist()
 
-    // Call Agent again to proceed to next step
     this.abortController = new AbortController()
     const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    await this.handleAgentResult(result, onEvent)
+    await this.handleAgentResult(result, onEvent, userInput)
     await this.persist()
   }
-
-  // ── Set Directory ─────────────────────────────────────────────────
 
   private async handleSetDirectory(onEvent?: AgentEventHandler) {
     if (this.askInput) {
@@ -240,7 +307,74 @@ export class Orchestrator {
     }
   }
 
-  // ── Revert ──────────────────────────────────────────────────────────
+  private async emitMemoryStatus(onEvent?: AgentEventHandler) {
+    const memory = await this.getMemoryState()
+    await this.emitOutput(`\n[memory] 召回模式: ${memory.settings.recallMode}`, onEvent)
+    await this.emitOutput(`[memory] 项目固定记忆: ${memory.pinned.length} 条`, onEvent)
+  }
+
+  private async handleMemoryCommand(input: string, onEvent?: AgentEventHandler) {
+    const parts = input.trim().split(/\s+/)
+    const action = parts[1]
+
+    if (!action) {
+      await this.emitMemoryStatus(onEvent)
+      await this.emitOutput('[memory] 用法: /memory auto|off|on|list|forget <id>', onEvent)
+      return
+    }
+
+    if (isMemoryRecallMode(action)) {
+      await this.setMemoryRecallMode(action)
+      await this.emitOutput(`\n[memory] 召回模式已设置为 ${action}`, onEvent)
+      return
+    }
+
+    if (action === 'list') {
+      const { pinned } = await this.getMemoryState()
+      await this.emitOutput('\n[memory] 项目固定记忆:', onEvent)
+      if (pinned.length === 0) {
+        await this.emitOutput('  （无）', onEvent)
+        return
+      }
+      for (const item of pinned) {
+        await this.emitOutput(`  ${item.id} - ${item.content}`, onEvent)
+      }
+      return
+    }
+
+    if (action === 'forget') {
+      const id = parts[2]
+      if (!id) {
+        await this.emitOutput('\n[memory] 用法: /memory forget <id>', onEvent)
+        return
+      }
+      const deleted = await this.forgetProjectMemory(id)
+      await this.emitOutput(deleted ? `\n[memory] 已删除固定记忆: ${id}` : `\n[memory] 未找到固定记忆: ${id}`, onEvent)
+      return
+    }
+
+    await this.emitOutput('\n[memory] 未识别的命令。用法: /memory auto|off|on|list|forget <id>', onEvent)
+  }
+
+  private async handleRememberCommand(input: string, onEvent?: AgentEventHandler) {
+    const content = input.replace(/^\/remember\b/, '').trim()
+    if (!content) {
+      await this.emitOutput('\n[remember] 用法: /remember <需要项目内长期记住的内容>', onEvent)
+      return
+    }
+
+    try {
+      const { memory, created } = await this.rememberProjectMemory(content)
+      await this.emitOutput(
+        created
+          ? `\n[remember] 已保存项目固定记忆: ${memory.id}`
+          : `\n[remember] 已存在相同固定记忆: ${memory.id}`,
+        onEvent,
+      )
+    } catch (err) {
+      await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
 
   private async handleRevert(input: string, onEvent?: AgentEventHandler) {
     const parts = input.split(/\s+/)
@@ -268,7 +402,7 @@ export class Orchestrator {
     }
 
     try {
-      await this.emitOutput(`\n[revert] 正在拉取远程最新版本...`, onEvent)
+      await this.emitOutput('\n[revert] 正在拉取远程最新版本...', onEvent)
       await execAsync(`git fetch ${githubRepoUrl}`, { cwd: projectPath })
 
       const { stdout: diffOutput } = await execAsync('git diff HEAD', { cwd: projectPath })
@@ -298,99 +432,16 @@ export class Orchestrator {
       await execAsync('git checkout .', { cwd: projectPath })
       await this.emitOutput('[revert] 已回退到 GitHub 最新版本。', onEvent)
     } catch (err) {
-      console.error(`[revert] 执行失败:`, err instanceof Error ? err.message : err)
+      console.error('[revert] 执行失败:', err instanceof Error ? err.message : err)
       await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
-  }
-
-  // ── Checkpoints ─────────────────────────────────────────────────────
-
-  private async handleListCheckpoints(onEvent?: AgentEventHandler) {
-    // 设计 checkpoint
-    const designSnapshot = await loadDesignCheckpoint(this.state.sessionId)
-    await this.emitOutput('\n[checkpoint] 设计断点：', onEvent)
-    if (designSnapshot) {
-      const preview = designSnapshot.confirmedRequirement?.slice(0, 80) || designSnapshot.goal?.slice(0, 80) || '无'
-      await this.emitOutput(`  design — ${preview}...`, onEvent)
-    } else {
-      await this.emitOutput('  （无）', onEvent)
-    }
-
-    // 代码 checkpoint
-    const codeEntries = await listCodeCheckpoints(this.state.sessionId)
-    await this.emitOutput('\n[checkpoint] 代码断点：', onEvent)
-    if (codeEntries.length === 0) {
-      await this.emitOutput('  （无）', onEvent)
-    } else {
-      for (const entry of codeEntries) {
-        const time = new Date(entry.timestamp).toLocaleTimeString()
-        await this.emitOutput(`  ${entry.label} - ${time} - ${entry.commitHash.slice(0, 8)}`, onEvent)
-      }
-    }
-
-    await this.emitOutput('\n使用 /checkpoint design 回到设计断点（不回退代码）', onEvent)
-    await this.emitOutput('使用 /checkpoint <label> 回到代码断点（回退代码）', onEvent)
-  }
-
-  private async handleRestoreCheckpoint(targetLabel: string, onEvent?: AgentEventHandler) {
-    // 设计 checkpoint：只恢复 WorldState，不回退代码
-    if (targetLabel === 'design') {
-      const snapshot = await loadDesignCheckpoint(this.state.sessionId)
-      if (!snapshot) {
-        await this.emitOutput('\n[checkpoint] 未找到设计断点。', onEvent)
-        return
-      }
-
-      if (this.askConfirm) {
-        const confirmed = await this.askConfirm('确认回到设计断点？当前方案将被恢复。')
-        if (!confirmed) {
-          await this.emitOutput('[checkpoint] 已取消。', onEvent)
-          return
-        }
-      }
-
-      applySnapshot(this.state, snapshot)
-      this.state.pendingConfirm = undefined
-      await this.persist()
-      await this.emitOutput('\n[checkpoint] 已回到设计断点。', onEvent)
-      return
-    }
-
-    // 代码 checkpoint：恢复 WorldState + 回退代码
-    if (this.askConfirm) {
-      const confirmed = await this.askConfirm(`确认回到 "${targetLabel}" 代码断点？代码将被回退。`)
-      if (!confirmed) {
-        await this.emitOutput('[checkpoint] 已取消。', onEvent)
-        return
-      }
-    }
-
-    const snapshot = await restoreCodeCheckpoint(this.state.sessionId, targetLabel, this.state)
-    if (!snapshot) {
-      await this.emitOutput(`\n[checkpoint] 未找到 "${targetLabel}" 代码断点。`, onEvent)
-      return
-    }
-
-    applySnapshot(this.state, snapshot)
-    this.state.pendingConfirm = undefined
-    await this.persist()
-    await this.emitOutput(`\n[checkpoint] 已回到 "${targetLabel}" 代码断点，代码已回退。`, onEvent)
   }
 
   // ── Cancel ────────────────────────────────────────────────────────
 
   private async handleCancel(onEvent?: AgentEventHandler) {
-    // 先中断正在运行的 Agent（如果有的话）
     this.abort()
-    this.state.goal = undefined
-    this.state.confirmedRequirement = undefined
-    this.state.designTasks = undefined
-    this.state.completedTaskIds = []
-    this.state.failedTaskIds = []
-    this.state.errors = {}
-    this.state.pendingConfirm = undefined
-    this.state.designConfirmed = false
-    this.state.phase = 'planning'
+    this.clearCurrentTaskState()
     await this.persist()
     await this.emitOutput('\n[已取消] 当前任务已清除。', onEvent)
   }

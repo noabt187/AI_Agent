@@ -4,27 +4,27 @@ import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
-import { loadSkills, getActiveSkills } from '../skills/index.js'
-import type { AgentEventHandler, WorldState, AgentResult, AgentPhase } from './types.js'
+import { buildWorkflowSnapshot, formatSkillContext, loadSkills, selectActiveSkills } from '../skills/index.js'
+import {
+  extractMemoryTerms,
+  formatPinnedProjectMemoryContext,
+  formatProjectMemoryContext,
+  loadPinnedProjectMemories,
+  searchProjectMemories,
+} from '../memory/projectMemory.js'
+import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
+import { getMemorySettings } from './types.js'
 import type { LlmToolCall } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
+const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
-// ── System Prompt ──────────────────────────────────────────────────
-
-function buildSystemPrompt(allowedPaths: string[], worldStateContext: string, activeSkillTexts: string[]): string {
+export function buildStableSystemPrompt(): string {
   return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
-
-## 可操作目录
-${allowedPaths.join('\n')}
-工具调用的 rootDir 必须使用以上目录之一。
-
-## 当前状态
-${worldStateContext}
 
 ## 工作方式
 你通过"观察→思考→行动"循环工作：
@@ -33,6 +33,7 @@ ${worldStateContext}
 3. 行动：调用工具读取/写入代码，或回复用户
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
+工具调用的 rootDir 必须使用本轮临时上下文中的可操作目录之一。
 当你准备好回复用户时，输出以下 JSON 格式。
 
 ## 可用工具
@@ -40,37 +41,52 @@ ${getToolDescriptionsForScope('write')}
 
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
-{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"requirement|design"}
+{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
+JSON 字符串中不要包含 Markdown 代码块；引用代码时用单引号或普通文字描述，避免未转义双引号导致 JSON 无法解析。
 
 action 说明：
 - chat：直接回复用户（普通对话、回答问题）
 - ask_user：需要用户提供更多信息，questions 数组不能为空
-- confirm：呈现方案或任务列表，等待用户确认，prompt 为确认内容
-  - confirmType="requirement"：需求分析完成，message 中包含需求文档
-  - confirmType="design"：方案设计完成，message 中包含任务列表和需要修改的文件
+- confirm：需要用户确认当前内容后再继续，prompt 为确认内容
+  - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
+  - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
 
-## 重要工作流程
-当用户提出开发需求时，必须按以下顺序执行：
-1. 需求分析：读取代码，理解现状，输出需求文档 → action=confirm, confirmType=requirement
-2. 等待用户确认需求后 → 方案设计：拆解任务，列出需要修改的文件 → action=confirm, confirmType=design
-3. 等待用户确认方案后 → 代码编写：按任务逐个编写代码 → action=done
-不要跳过任何步骤，不要在用户未确认需求时就开始写代码。
+## 流程选择
+根据本轮临时上下文中的 Active Skill Details 选择流程，不要把默认流程视为硬规则。
 
-${activeSkillTexts.join('\n\n')}`
+- 默认简单修改：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
+- 默认复杂功能：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
+- 如果当前加载的 skill 定义了额外理解、学习、审查或仓库操作节点，优先遵循该 skill。
+- 纯分析任务读取代码后可用 chat 直接回答。
+
+**重要规则**：
+- 用户确认前不要调用写工具（writeFile/deleteFile）
+- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
+- 仅在对齐理解、确认需求时，省略 confirmType
+- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
+- 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
+`
 }
 
-// ── WorldState Context ─────────────────────────────────────────────
-
-function buildWorldStateContext(state: WorldState): string {
+export function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
 
   if (state.goal) parts.push(`用户目标: ${state.goal}`)
   if (state.confirmedRequirement) {
-    const preview = state.confirmedRequirement.length > 200
-      ? state.confirmedRequirement.slice(0, 200) + '...'
+    const preview = state.confirmedRequirement.length > 1500
+      ? `${state.confirmedRequirement.slice(0, 1500)}...`
       : state.confirmedRequirement
     parts.push(`需求已确认: ${preview}`)
+  }
+  if (state.pendingConfirm) {
+    const pendingPreview = state.pendingConfirm.message.length > 1200
+      ? `${state.pendingConfirm.message.slice(0, 1200)}...`
+      : state.pendingConfirm.message
+    parts.push(`待确认内容: [${state.pendingConfirm.allowWrite ? 'allow_write' : 'read_only'}] ${pendingPreview}`)
+  }
+  if (state.workflow?.node) {
+    parts.push(`当前流程节点: ${state.workflow.node}`)
   }
 
   if (state.designTasks?.length) {
@@ -82,29 +98,62 @@ function buildWorldStateContext(state: WorldState): string {
         : state.failedTaskIds.includes(t.id) ? '[失败]' : '[待执行]'
       parts.push(`  ${status} ${t.id} [${t.changeType}] ${t.title} → ${t.file}`)
     }
-    if (failed > 0) {
-      const failedTasks = state.failedTaskIds.join(', ')
-      parts.push(`失败任务: ${failedTasks}`)
-    }
+    if (failed > 0) parts.push(`失败任务: ${state.failedTaskIds.join(', ')}`)
   }
 
-  if (state.allowedPaths?.length) parts.push(`操作目录: ${state.allowedPaths[0]}`)
-
-  if (state.phase) {
-    const phaseLabels: Record<string, string> = {
-      planning: '规划中',
-      requirement_analysis: '需求分析',
-      solution_design: '方案设计',
-      code_generation: '代码生成',
-      automated_testing: '自动化测试',
-    }
-    parts.push(`当前阶段: ${phaseLabels[state.phase] || state.phase}`)
+  if (state.allowedPaths?.length) {
+    parts.push(`可操作目录:\n${state.allowedPaths.map((path) => `- ${path}`).join('\n')}`)
   }
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
 }
 
-// ── JSON Parsing ───────────────────────────────────────────────────
+export function buildRuntimeContext(
+  state: WorldState,
+  memoryContext: string,
+  skillContext: string,
+  pinnedMemoryContext = '',
+): string {
+  const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
+  if (pinnedMemoryContext.trim()) {
+    parts.push(`## 项目固定记忆（用户明确要求）\n${pinnedMemoryContext.trim()}`)
+  }
+  if (memoryContext.trim()) {
+    parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
+  }
+  if (skillContext.trim()) {
+    parts.push(`## 当前加载的 Skills\n${skillContext.trim()}`)
+  }
+  return parts.join('\n\n')
+}
+
+export function isPureConfirmationInput(input: string): boolean {
+  const trimmed = input.trim().toLowerCase()
+  return trimmed === '确认' || trimmed === '是' || trimmed === 'yes' || trimmed === 'y'
+    || trimmed === 'ok' || trimmed === '好' || trimmed === '可以' || trimmed === '开始'
+    || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
+}
+
+export function shouldRecallTaskMemories(state: WorldState, userInput: string): boolean {
+  const mode = getMemorySettings(state).recallMode
+  if (mode === 'off') return false
+  if (mode === 'on') return true
+  if (isPureConfirmationInput(userInput)) return false
+  return !state.pendingConfirm && !state.confirmedRequirement && !state.designConfirmed
+}
+
+export function buildTaskMemorySearchQuery(state: WorldState, userInput: string): string {
+  const trimmed = userInput.trim()
+  const userTerms = extractMemoryTerms(trimmed)
+  if (isPureConfirmationInput(trimmed) || userTerms.length === 0) {
+    return (state.confirmedRequirement || state.goal || trimmed).trim()
+  }
+
+  const parts: string[] = []
+  if (state.goal && state.goal.trim() !== trimmed) parts.push(state.goal)
+  parts.push(trimmed)
+  return parts.join('\n').trim()
+}
 
 function extractJsonText(raw: string): string {
   const trimmed = raw.trim()
@@ -121,26 +170,48 @@ function extractJsonText(raw: string): string {
   return trimmed
 }
 
-function parseAgentResult(raw: string): AgentResult | null {
+function isToolOperationConfirmationText(text: string): boolean {
+  return /\bpr\b|pull request|createPullRequest|提交\s*pr|创建\s*pr|发起\s*pr|PR\s*参数|PR\s*标题|PR\s*目标仓库/i.test(text)
+    || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
+}
+
+function normalizeConfirmType(confirmType: 'allow_write' | undefined, text: string): 'allow_write' | undefined {
+  if (!confirmType && isToolOperationConfirmationText(text)) return 'allow_write'
+  return confirmType
+}
+
+function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
+  const text = raw.trim()
+  if (!text || !isToolOperationConfirmationText(text)) return null
+  if (!/请确认|确认以上|确认执行|是否正确|是否以上述|是否使用/.test(text)) return null
+  return {
+    action: 'confirm',
+    confirmType: 'allow_write',
+    prompt: text,
+    message: text,
+  }
+}
+
+export function parseAgentResult(raw: string): AgentResult | null {
   const jsonText = extractJsonText(raw)
   try {
     const obj = JSON.parse(jsonText)
     const action = obj.action
-    if (action === 'chat') {
-      return { action: 'chat', message: String(obj.message || raw.trim()) }
-    }
+    if (action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
     if (action === 'ask_user') {
       const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
       if (questions.length === 0) return null
       return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
     }
     if (action === 'confirm') {
-      const ct = obj.confirmType === 'design' ? 'design' : 'requirement'
-      return { action: 'confirm', prompt: String(obj.prompt || ''), message: obj.message ? String(obj.message) : undefined, confirmType: ct }
+      const prompt = String(obj.prompt || '')
+      const message = obj.message ? String(obj.message) : undefined
+      // 'design' is legacy alias for 'allow_write'
+      const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+      const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
+      return { action: 'confirm', prompt, message, confirmType: ct }
     }
-    if (action === 'done') {
-      return { action: 'done', message: String(obj.message || '任务完成') }
-    }
+    if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
     return null
   } catch {
     try {
@@ -155,16 +226,18 @@ function parseAgentResult(raw: string): AgentResult | null {
         if (questions.length > 0) return { action: 'ask_user', questions }
       }
       if (obj.action === 'confirm') {
-        const ct = obj.confirmType === 'design' ? 'design' : 'requirement'
-        return { action: 'confirm', prompt: String(obj.prompt || ''), message: obj.message ? String(obj.message) : undefined, confirmType: ct }
+        const prompt = String(obj.prompt || '')
+        const message = obj.message ? String(obj.message) : undefined
+        // 'design' is legacy alias for 'allow_write'
+        const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+        const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
+        return { action: 'confirm', prompt, message, confirmType: ct }
       }
       if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
     } catch {}
-    return null
+    return parseToolOperationMarkdownConfirm(raw)
   }
 }
-
-// ── Agent ──────────────────────────────────────────────────────────
 
 export class Agent {
   async run(
@@ -180,16 +253,20 @@ export class Agent {
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
-    const worldStateContext = buildWorldStateContext(state)
-
-    // Load skills from markdown files
     const allSkills = await loadSkills(SKILLS_DIR)
-    const activeSkills = getActiveSkills(allSkills, state)
-    const activeSkillTexts = activeSkills.map((s) => s.content)
+    const workflowSnapshot = buildWorkflowSnapshot(state, userInput)
+    const skillContext = formatSkillContext(allSkills, selectActiveSkills(allSkills, workflowSnapshot))
+    const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
+    const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
+    const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
+    const memories = shouldRecallTaskMemories(state, userInput)
+      ? await searchProjectMemories(effectiveAllowedPaths[0], taskMemoryQuery, TASK_MEMORY_LIMIT)
+      : []
+    const memoryContext = formatProjectMemoryContext(memories)
 
-    const systemPrompt = buildSystemPrompt(effectiveAllowedPaths, worldStateContext, activeSkillTexts)
+    const systemPrompt = buildStableSystemPrompt()
+    const runtimeContext = buildRuntimeContext(state, memoryContext, skillContext, pinnedMemoryContext)
 
-    // Inject/replace system prompt
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
     if (!hasCorrectPrompt) {
       const sysMsg = { uuid: SYS_UUID, role: 'system' as const, content: systemPrompt, createdAt: Date.now() }
@@ -203,103 +280,11 @@ export class Agent {
     }
 
     const tools = toolDefsToOpenAI('write')
-
-    // Virtual tool: setPhase — model calls this to declare its current phase
-    // code_generation is NOT an option — only the system sets it
-    const setPhaseTool: import('../llm/types.js').ToolDefinition = {
-      type: 'function',
-      function: {
-        name: 'setPhase',
-        description: '在切换工作阶段时第一时间调用，让系统知晓你当前所处的阶段。可选值: planning(规划), requirement_analysis(需求分析), solution_design(方案设计), automated_testing(自动化测试)。code_generation 由系统自动设置，不可手动调用。',
-        parameters: {
-          type: 'object',
-          properties: {
-            phase: {
-              type: 'string',
-              description: '当前阶段，可选值: planning, requirement_analysis, solution_design, automated_testing',
-            },
-          },
-          required: ['phase'],
-        },
-      },
-    }
-    tools.push(setPhaseTool)
-
-    // Submit user message and enter tool call loop
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
     try {
-      for await (const evt of engine.submitMessage(userInput, { tools, signal })) {
-      if (evt.kind === 'delta') {
-        fullText += evt.delta
-        await onEvent?.({ type: 'delta', text: evt.delta })
-      }
-      if (evt.kind === 'tool_calls') {
-        toolCalls = evt.toolCalls
-        for (const tc of toolCalls) {
-          await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
-        }
-      }
-    }
-
-    // Tool call loop
-    const toolFailureCounts = new Map<string, number>()
-
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      if (signal?.aborted) break
-      if (toolCalls.length === 0) break
-
-      for (const tc of toolCalls) {
-        if (signal?.aborted) break
-        let args: Record<string, string>
-        try { args = JSON.parse(tc.arguments) } catch { continue }
-
-        // ── Virtual tool: setPhase ──────────────────────────────────
-        if (tc.name === 'setPhase') {
-          const newPhase = args.phase
-          const validPhases = ['planning', 'requirement_analysis', 'solution_design', 'automated_testing']
-          if (!validPhases.includes(newPhase)) {
-            const errMsg = `无效阶段 "${newPhase}"，可选值: ${validPhases.join(', ')}`
-            await engine.appendToolResult(tc.id, 'setPhase', errMsg)
-            await onEvent?.({ type: 'tool_result', name: 'setPhase', result: errMsg })
-            continue
-          }
-          // Only emit if phase actually changed
-          if (newPhase !== state.phase) {
-            state.phase = newPhase as AgentPhase
-            await onEvent?.({ type: 'phase', phase: newPhase })
-          }
-          const okMsg = `阶段已切换为: ${newPhase}`
-          await engine.appendToolResult(tc.id, 'setPhase', okMsg)
-          await onEvent?.({ type: 'tool_result', name: 'setPhase', result: okMsg })
-          continue
-        }
-
-        // 检查该工具+参数组合是否已失败超过上限
-        const failureKey = `${tc.name}:${tc.arguments}`
-        const failCount = toolFailureCounts.get(failureKey) ?? 0
-        if (failCount >= MAX_TOOL_RETRIES) {
-          await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
-          continue
-        }
-
-        const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed, state.phase)
-        await onEvent?.({ type: 'tool_result', name: tc.name, result })
-        await engine.appendToolResult(tc.id, tc.name, result)
-
-        // 记录失败
-        if (result.startsWith('工具执行错误')) {
-          toolFailureCounts.set(failureKey, failCount + 1)
-        } else {
-          toolFailureCounts.delete(failureKey)  // 成功则重置计数
-        }
-      }
-
-      if (signal?.aborted) break
-      fullText = ''
-      toolCalls = []
-      for await (const evt of engine.continueFromToolResults(tools, signal)) {
+      for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })
@@ -311,43 +296,84 @@ export class Agent {
           }
         }
       }
-    }
 
-    // Abort check
-    if (signal?.aborted) {
-      return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-    }
+      const toolFailureCounts = new Map<string, number>()
 
-    // 达到迭代上限 — 让 LLM 基于已有结果生成最终回答
-    if (toolCalls.length > 0) {
-      const prevText = fullText
-      fullText = ''
-      toolCalls = []
-      try {
-        for await (const evt of engine.submitMessage(
-          `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
-          { tools: [], signal },
-        )) {
-          if (evt.kind === 'delta') fullText += evt.delta
+      for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+        if (signal?.aborted) break
+        if (toolCalls.length === 0) break
+
+        for (const tc of toolCalls) {
+          if (signal?.aborted) break
+          let args: Record<string, string>
+          try { args = JSON.parse(tc.arguments) } catch { continue }
+
+          const failureKey = `${tc.name}:${tc.arguments}`
+          const failCount = toolFailureCounts.get(failureKey) ?? 0
+          if (failCount >= MAX_TOOL_RETRIES) {
+            await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
+            continue
+          }
+
+          const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
+          await onEvent?.({ type: 'tool_result', name: tc.name, result })
+          await engine.appendToolResult(tc.id, tc.name, result)
+
+          if (result.startsWith('工具执行错误')) {
+            toolFailureCounts.set(failureKey, failCount + 1)
+          } else {
+            toolFailureCounts.delete(failureKey)
+          }
         }
-      } catch (err) {
-        console.error('[Agent] 最终总结 LLM 调用失败:', err)
+
+        if (signal?.aborted) break
+        fullText = ''
+        toolCalls = []
+        for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
+          if (evt.kind === 'delta') {
+            fullText += evt.delta
+            await onEvent?.({ type: 'delta', text: evt.delta })
+          }
+          if (evt.kind === 'tool_calls') {
+            toolCalls = evt.toolCalls
+            for (const tc of toolCalls) {
+              await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
+            }
+          }
+        }
       }
-      // 如果总结调用失败或为空，用之前累积的文字
-      if (!fullText.trim() && prevText.trim()) {
-        fullText = prevText
+
+      if (signal?.aborted) {
+        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
       }
-    }
 
-    // Parse final response
-    if (!fullText.trim()) {
-      return { action: 'chat', message: '(Agent 返回了空响应)' }
-    }
+      if (toolCalls.length > 0) {
+        const prevText = fullText
+        fullText = ''
+        toolCalls = []
+        try {
+          for await (const evt of engine.submitMessage(
+            `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
+            { tools: [], signal, runtimeContext },
+          )) {
+            if (evt.kind === 'delta') fullText += evt.delta
+          }
+        } catch (err) {
+          console.error('[Agent] 最终总结 LLM 调用失败:', err)
+        }
+        if (!fullText.trim() && prevText.trim()) {
+          fullText = prevText
+        }
+      }
 
-    const parsed = parseAgentResult(fullText)
-    if (parsed) return parsed
+      if (!fullText.trim()) {
+        return { action: 'chat', message: '(Agent 返回了空响应)' }
+      }
 
-    return { action: 'chat', message: fullText.trim() }
+      const parsed = parseAgentResult(fullText)
+      if (parsed) return parsed
+
+      return { action: 'chat', message: fullText.trim() }
     } catch (err) {
       if (signal?.aborted) {
         return { action: 'chat', message: '[已中断] 操作被用户取消。' }

@@ -13,10 +13,25 @@ export type Message = {
   isCompressed?: boolean
 }
 
+export type MemoryRecallMode = 'auto' | 'off' | 'on'
+
+export type MemorySettings = {
+  recallMode: MemoryRecallMode
+}
+
+export type PinnedProjectMemory = {
+  id: string
+  createdAt: number
+  content: string
+  keywords: string[]
+  sourceSessionId: string
+}
+
 export type WorldState = {
   sessionId: string
   allowedPaths: string[]
-  pendingConfirm?: { type: 'requirement' | 'design'; message: string }
+  memorySettings?: MemorySettings
+  pendingConfirm?: { allowWrite: boolean; message: string }
   goal?: string
 }
 
@@ -75,6 +90,11 @@ export type SessionMetrics = {
   summary: MetricsSummary
 }
 
+export type SessionMemory = {
+  settings: MemorySettings
+  pinned: PinnedProjectMemory[]
+}
+
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -120,6 +140,30 @@ export async function updateAllowedPaths(sessionId: string, allowedPaths: string
   return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/paths`, {
     method: 'POST',
     body: JSON.stringify({ allowedPaths }),
+  })
+}
+
+export async function loadSessionMemory(sessionId: string): Promise<SessionMemory> {
+  return jsonRequest<SessionMemory>(`/api/sessions/${encodeURIComponent(sessionId)}/memory`)
+}
+
+export async function updateMemorySettings(sessionId: string, recallMode: MemoryRecallMode): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/memory-settings`, {
+    method: 'POST',
+    body: JSON.stringify({ recallMode }),
+  })
+}
+
+export async function rememberPinnedMemory(sessionId: string, content: string): Promise<{ memoryState: SessionMemory }> {
+  return jsonRequest<{ memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export async function forgetPinnedMemory(sessionId: string, id: string): Promise<{ deleted: boolean; memoryState: SessionMemory }> {
+  return jsonRequest<{ deleted: boolean; memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
   })
 }
 

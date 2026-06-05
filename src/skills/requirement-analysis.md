@@ -1,7 +1,13 @@
 ---
 name: requirement-analysis
 description: 需求分析指引
-trigger: always
+summary: 新需求阶段，读取代码并澄清或确认需求
+trigger: workflow
+node: requirement-analysis
+entry: development
+onConfirmNext: solution-design
+onAllowWriteNext: code-generation
+priority: 100
 ---
 
 ## Skill: 需求分析

@@ -2,17 +2,21 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { URL } from 'node:url'
 import {
   abortSession,
+  addPinnedMemory,
   createSession,
   deleteSession,
   getOrchestrator,
   isSessionRunning,
   listSessions,
   loadSessionExport,
+  loadSessionMemory,
   loadSession,
   markSessionIdle,
   markSessionRunning,
+  removePinnedMemory,
   updateAllowedPaths,
   updateSessionTitle,
+  updateMemorySettings,
 } from './sessionApi.js'
 import { startJsonStream, writeStreamEvent } from './stream.js'
 import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
@@ -210,6 +214,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
         throw err
       }
+      return
+    }
+
+    if (sessionId && method === 'GET' && pathname.endsWith('/memory')) {
+      sendJson(res, 200, await loadSessionMemory(sessionId))
+      return
+    }
+
+    if (sessionId && method === 'POST' && pathname.endsWith('/memory-settings')) {
+      const body = await readJson(req)
+      sendJson(res, 200, await updateMemorySettings(sessionId, body.recallMode))
+      return
+    }
+
+    if (sessionId && method === 'POST' && pathname.endsWith('/memory/pinned')) {
+      const body = await readJson(req)
+      sendJson(res, 200, await addPinnedMemory(sessionId, body.content))
+      return
+    }
+
+    const pinnedDeleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/memory\/pinned\/([^/]+)$/)
+    if (sessionId && pinnedDeleteMatch && method === 'DELETE') {
+      sendJson(res, 200, await removePinnedMemory(sessionId, decodeURIComponent(pinnedDeleteMatch[2])))
       return
     }
 

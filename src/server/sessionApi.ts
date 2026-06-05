@@ -2,6 +2,7 @@ import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
+import { isMemoryRecallMode, type MemoryRecallMode } from '../orchestrator/types.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
@@ -107,6 +108,41 @@ export async function updateAllowedPaths(sessionId: string, allowedPaths: string
   orchestrator.state.allowedPaths = allowedPaths
   await orchestrator.persist()
   return loadSession(sessionId)
+}
+
+export async function loadSessionMemory(sessionId: string): Promise<unknown> {
+  const orchestrator = await getOrchestrator(sessionId)
+  return orchestrator.getMemoryState()
+}
+
+export async function updateMemorySettings(sessionId: string, recallMode: unknown): Promise<unknown> {
+  if (!isMemoryRecallMode(recallMode)) {
+    throw new Error('recallMode 必须是 auto、off 或 on')
+  }
+  const orchestrator = await getOrchestrator(sessionId)
+  await orchestrator.setMemoryRecallMode(recallMode as MemoryRecallMode)
+  return loadSession(sessionId)
+}
+
+export async function addPinnedMemory(sessionId: string, content: unknown): Promise<unknown> {
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('content 不能为空')
+  }
+  const orchestrator = await getOrchestrator(sessionId)
+  const result = await orchestrator.rememberProjectMemory(content)
+  return {
+    ...result,
+    memoryState: await orchestrator.getMemoryState(),
+  }
+}
+
+export async function removePinnedMemory(sessionId: string, id: string): Promise<unknown> {
+  const orchestrator = await getOrchestrator(sessionId)
+  const deleted = await orchestrator.forgetProjectMemory(id)
+  return {
+    deleted,
+    memoryState: await orchestrator.getMemoryState(),
+  }
 }
 
 export async function abortSession(sessionId: string): Promise<void> {

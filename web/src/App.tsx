@@ -26,16 +26,22 @@ import {
   createSession,
   deleteSession,
   downloadSessionExport,
+  forgetPinnedMemory,
   listSessions,
   listDirectories,
   loadSession,
+  loadSessionMemory,
   loadSessionMetrics,
   pickDirectory,
+  rememberPinnedMemory,
   streamPrompt,
+  updateMemorySettings,
   updateAllowedPaths,
   updateSessionTitle,
   type Message,
   type DirectoryListing,
+  type MemoryRecallMode,
+  type SessionMemory,
   type SessionMetrics,
   type SessionDetail,
   type SessionSummary,
@@ -55,7 +61,7 @@ type ActivityItem = {
 }
 
 type PendingConfirm = {
-  type: 'requirement' | 'design'
+  allowWrite: boolean
   message: string
 }
 
@@ -202,7 +208,7 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
   if (!waitingForConfirm) return undefined
 
   return {
-    type: /方案|设计|任务顺序|待执行/.test(content) ? 'design' : 'requirement',
+    allowWrite: /方案|设计|任务顺序|待执行/.test(content),
     message: content,
   }
 }
@@ -228,6 +234,10 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metrics, setMetrics] = useState<SessionMetrics | null>(null)
   const [metricsError, setMetricsError] = useState('')
+  const [sessionMemory, setSessionMemory] = useState<SessionMemory | null>(null)
+  const [memoryDraft, setMemoryDraft] = useState('')
+  const [memoryError, setMemoryError] = useState('')
+  const [memoryBusy, setMemoryBusy] = useState(false)
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [annotateActive, setAnnotateActive] = useState(false)
@@ -313,6 +323,10 @@ export function App() {
       timelineEl.scrollTop = timelineEl.scrollHeight
     })
   }, [selectedSessionId, viewMode, timeline.length, activityItems.length])
+
+  useEffect(() => {
+    if (selectedSessionId) void refreshMemory(selectedSessionId)
+  }, [selectedSessionId])
 
   useEffect(() => {
     if (viewMode === 'metrics' && selectedSessionId) {
@@ -474,6 +488,62 @@ export function App() {
     }
   }
 
+  async function refreshMemory(sessionId = selectedSessionId) {
+    if (!sessionId) return
+    setMemoryError('')
+    try {
+      setSessionMemory(await loadSessionMemory(sessionId))
+    } catch (err) {
+      setSessionMemory(null)
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleMemoryModeChange(mode: MemoryRecallMode) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const detail = await updateMemorySettings(selectedSessionId, mode)
+      setSession(detail)
+      await refreshMemory(selectedSessionId)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
+  async function handleRememberPinned() {
+    const content = memoryDraft.trim()
+    if (!selectedSessionId || !content || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const result = await rememberPinnedMemory(selectedSessionId, content)
+      setSessionMemory(result.memoryState)
+      setMemoryDraft('')
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
+  async function handleForgetPinned(id: string) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      const result = await forgetPinnedMemory(selectedSessionId, id)
+      setSessionMemory(result.memoryState)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
   function getDirectoryStartPath(): string | undefined {
     return operationRoot || undefined
   }
@@ -517,6 +587,7 @@ export function App() {
     if (!selectedSessionId) return
     const detail = await updateAllowedPaths(selectedSessionId, [path])
     setSession(detail)
+    await refreshMemory(selectedSessionId)
     setDirectoryPickerOpen(false)
     setDirectoryError('')
     setStatus('目录已更新')
@@ -767,21 +838,21 @@ export function App() {
 
   function buildConfirmEditPrompt(feedback: string): string {
     if (!pendingConfirm) return feedback
-    if (pendingConfirm.type === 'design') {
+    if (pendingConfirm.allowWrite) {
       return [
-        '用户正在修改待确认的方案设计。',
-        `原待确认方案是：\n${pendingConfirm.message}`,
+        '用户正在修改待确认的方案（含写权限）。',
+        `原待确认内容是：\n${pendingConfirm.message}`,
         `用户修改意见是：\n${feedback}`,
-        '请重新设计方案；如果修改意见改变了需求范围，请回到 requirement confirm，否则返回新的 design confirm。',
+        '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
         '不要写代码。',
       ].join('\n\n')
     }
 
     return [
-      '用户正在修改待确认的需求分析。',
-      `原待确认需求是：\n${pendingConfirm.message}`,
+      '用户正在修改待确认的内容。',
+      `原待确认内容是：\n${pendingConfirm.message}`,
       `用户修改意见是：\n${feedback}`,
-      '请重新分析需求；如信息足够，返回新的 requirement confirm；如信息不足，ask_user。',
+      '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
       '不要写代码。',
     ].join('\n\n')
   }
@@ -801,7 +872,7 @@ export function App() {
   const workspaceSubtitle = useMemo(() => {
     if (viewMode === 'metrics') return '会话监控信息'
     if (viewMode === 'preview' && previewUrl) return previewUrl
-    if (pendingConfirm) return `等待确认：${pendingConfirm.type === 'design' ? '方案' : '需求'}`
+    if (pendingConfirm) return `等待确认：${pendingConfirm.allowWrite ? '代码修改' : '内容'}`
     return '本地 Agent 工作台'
   }, [pendingConfirm, previewUrl, viewMode])
 
@@ -812,6 +883,8 @@ export function App() {
       count: activityItems.length,
     }
   }, [activityItems, running])
+
+  const memoryMode = sessionMemory?.settings.recallMode || session?.state.memorySettings?.recallMode || 'auto'
 
   return (
     <main className={sidebarCollapsed ? 'appShell sidebarCollapsed' : 'appShell'}>
@@ -904,6 +977,55 @@ export function App() {
               </button>
             </div>
           ) : null}
+        </section>
+
+        <section className="panel memoryPanel">
+          <div className="panelHeader">
+            <span>记忆</span>
+            <small>{memoryMode}</small>
+          </div>
+          <div className="memoryModeStack" role="group" aria-label="记忆召回模式">
+            {(['auto', 'off', 'on'] as MemoryRecallMode[]).map((mode) => (
+              <button
+                type="button"
+                key={mode}
+                className={memoryMode === mode ? 'memoryModeButton active' : 'memoryModeButton'}
+                disabled={!selectedSessionId || memoryBusy}
+                onClick={() => void handleMemoryModeChange(mode)}
+              >
+                {mode === 'auto' ? 'Auto' : mode === 'off' ? 'Off' : 'On'}
+              </button>
+            ))}
+          </div>
+          <div className="memoryComposer">
+            <textarea
+              value={memoryDraft}
+              onChange={(event) => setMemoryDraft(event.target.value)}
+              placeholder="写入项目约束或偏好"
+              disabled={!selectedSessionId || memoryBusy}
+            />
+            <button
+              type="button"
+              className="miniActionButton"
+              title="添加固定记忆"
+              disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
+              onClick={() => void handleRememberPinned()}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+          {memoryError ? <div className="memoryError">{memoryError}</div> : null}
+          <div className="memoryList">
+            {(sessionMemory?.pinned || []).map((item) => (
+              <article className="memoryItem" key={item.id}>
+                <p>{item.content}</p>
+                <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
+                  <Trash2 size={15} />
+                </button>
+              </article>
+            ))}
+            {sessionMemory && sessionMemory.pinned.length === 0 ? <div className="memoryEmpty">无固定记忆</div> : null}
+          </div>
         </section>
 
         <section className="panel commentsPanel">
@@ -1171,7 +1293,7 @@ export function App() {
                 <textarea
                   value={confirmDraft}
                   onChange={(event) => setConfirmDraft(event.target.value)}
-                  placeholder={`输入你想调整的${pendingConfirm.type === 'design' ? '方案' : '需求'}内容`}
+                  placeholder={`输入你想调整的内容`}
                   autoFocus
                 />
                 <div className="confirmActions">
