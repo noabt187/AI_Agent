@@ -23,6 +23,13 @@ import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
 import { listDirectories, pickDirectory } from './fileBrowser.js'
 import { loadMetricsFromStateDir } from './metrics.js'
 import { loadAppConfig } from '../config/appConfig.js'
+import {
+  deleteManagedSkill,
+  listManagedSkills,
+  setManagedSkillEnabled,
+  SkillRegistryError,
+  uploadManagedSkill,
+} from '../skills/registry.js'
 
 const { serverPort: port } = loadAppConfig()
 const stateDir = 'state'
@@ -36,10 +43,15 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Content-Type': 'application/json; charset=utf-8',
   })
   res.end(JSON.stringify(payload))
+}
+
+function errorStatus(err: unknown): number {
+  if (err instanceof SkillRegistryError) return err.statusCode
+  return 500
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -171,6 +183,35 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return
     }
 
+    if (method === 'GET' && pathname === '/api/skills') {
+      sendJson(res, 200, { skills: await listManagedSkills() })
+      return
+    }
+
+    if (method === 'POST' && pathname === '/api/skills/upload') {
+      const body = await readJson(req)
+      const fileName = typeof body.fileName === 'string' ? body.fileName : ''
+      const content = typeof body.content === 'string' ? body.content : ''
+      sendJson(res, 201, { skill: await uploadManagedSkill({ fileName, content }) })
+      return
+    }
+
+    const skillEnableMatch = pathname.match(/^\/api\/skills\/([^/]+)\/enabled$/)
+    if (method === 'POST' && skillEnableMatch) {
+      const body = await readJson(req)
+      if (typeof body.enabled !== 'boolean') throw new SkillRegistryError('enabled 必须是 boolean')
+      const skillId = decodeURIComponent(skillEnableMatch[1])
+      sendJson(res, 200, { skill: await setManagedSkillEnabled(skillId, body.enabled) })
+      return
+    }
+
+    const skillDeleteMatch = pathname.match(/^\/api\/skills\/([^/]+)$/)
+    if (method === 'DELETE' && skillDeleteMatch) {
+      const skillId = decodeURIComponent(skillDeleteMatch[1])
+      sendJson(res, 200, await deleteManagedSkill(skillId))
+      return
+    }
+
     if (method === 'GET' && pathname === '/api/sessions') {
       sendJson(res, 200, { sessions: await listSessions() })
       return
@@ -280,7 +321,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
     sendJson(res, 404, { error: 'Not found' })
   } catch (err) {
-    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
+    sendJson(res, errorStatus(err), { error: err instanceof Error ? err.message : String(err) })
   }
 }
 
