@@ -1,5 +1,6 @@
 import { exec } from 'node:child_process'
 import { access } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentEventHandler, WorldState } from './types.js'
 import { Agent } from './agent.js'
@@ -202,11 +203,12 @@ export class Orchestrator {
       case 'confirm':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput(`\n${result.prompt}`, onEvent)
+        const allowWrite = result.confirmType === 'allow_write'
         this.state.pendingConfirm = {
-          allowWrite: result.confirmType === 'allow_write',
+          allowWrite,
           message: result.message || result.prompt,
         }
-        if (result.confirmType === 'allow_write') {
+        if (allowWrite) {
           await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
         }
         break
@@ -262,10 +264,9 @@ export class Orchestrator {
       this.state.designConfirmed = true
       await this.emitOutput('\n[已确认] Agent 已获得文件写入权限，开始执行...', onEvent)
     } else {
-      this.state.confirmedRequirement = pending.message
+      this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
       await this.emitOutput('\n[已确认] 正在继续...', onEvent)
     }
-
     await this.persist()
 
     this.abortController = new AbortController()
