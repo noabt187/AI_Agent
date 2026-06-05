@@ -1,7 +1,11 @@
 ---
 name: solution-design
 description: 方案设计指引
-trigger: always
+summary: 已确认需求后，拆解任务和写入前方案
+trigger: workflow
+node: solution-design
+onAllowWriteNext: code-generation
+priority: 90
 ---
 
 ## Skill: 方案设计

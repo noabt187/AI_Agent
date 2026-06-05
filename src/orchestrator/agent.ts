@@ -4,7 +4,7 @@ import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
-import { getActiveSkills, loadSkills } from '../skills/index.js'
+import { buildWorkflowSnapshot, formatSkillContext, loadSkills, selectActiveSkills } from '../skills/index.js'
 import {
   extractMemoryTerms,
   formatPinnedProjectMemoryContext,
@@ -52,13 +52,13 @@ action 说明：
   - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
 
-## 工作方式
-根据任务需要选择合适的流程，不要总是固定步骤：
+## 流程选择
+根据本轮临时上下文中的 Active Skill Details 选择流程，不要把默认流程视为硬规则。
 
-- **简单修改**（改文案、修小bug）：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
-- **复杂功能**（新功能、跨文件重构）：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
-- **纯分析**（审查代码、回答问题）：读代码 → chat 直接回答
-- **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
+- 默认简单修改：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
+- 默认复杂功能：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
+- 如果当前加载的 skill 定义了额外理解、学习、审查或仓库操作节点，优先遵循该 skill。
+- 纯分析任务读取代码后可用 chat 直接回答。
 
 **重要规则**：
 - 用户确认前不要调用写工具（writeFile/deleteFile）
@@ -84,6 +84,9 @@ export function buildWorldStateContext(state: WorldState): string {
       ? `${state.pendingConfirm.message.slice(0, 1200)}...`
       : state.pendingConfirm.message
     parts.push(`待确认内容: [${state.pendingConfirm.allowWrite ? 'allow_write' : 'read_only'}] ${pendingPreview}`)
+  }
+  if (state.workflow?.node) {
+    parts.push(`当前流程节点: ${state.workflow.node}`)
   }
 
   if (state.designTasks?.length) {
@@ -251,8 +254,8 @@ export class Agent {
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
     const allSkills = await loadSkills(SKILLS_DIR)
-    const activeSkills = getActiveSkills(allSkills, state, userInput)
-    const skillContext = activeSkills.map((skill) => skill.content).join('\n\n')
+    const workflowSnapshot = buildWorkflowSnapshot(state, userInput)
+    const skillContext = formatSkillContext(allSkills, selectActiveSkills(allSkills, workflowSnapshot))
     const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
     const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
