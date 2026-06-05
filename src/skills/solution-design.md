@@ -1,7 +1,6 @@
 ---
 name: solution-design
-description: 方案设计指引
-trigger: always
+description: 方案设计指引 — 需求明确后将实现方案拆解为任务列表，适用于需求已确认时
 ---
 
 ## Skill: 方案设计

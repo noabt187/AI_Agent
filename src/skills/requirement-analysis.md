@@ -1,7 +1,6 @@
 ---
 name: requirement-analysis
-description: 需求分析指引
-trigger: always
+description: 需求分析指引 — 分析用户需求、阅读相关代码、输出需求文档，适用于新任务开始时
 ---
 
 ## Skill: 需求分析

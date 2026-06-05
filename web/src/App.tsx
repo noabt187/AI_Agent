@@ -76,8 +76,14 @@ function messageContent(message: Message): string {
   const raw = message.content.trim()
   if (!raw.startsWith('{')) return message.content
   try {
-    const parsed = JSON.parse(raw) as { message?: string; prompt?: string }
-    return [parsed.message, parsed.prompt].filter(Boolean).join('\n\n') || message.content
+    const parsed = JSON.parse(raw) as { message?: string; prompt?: string; questions?: string[] }
+    const parts: string[] = []
+    if (parsed.message) parts.push(parsed.message)
+    if (parsed.questions?.length) {
+      parts.push(parsed.questions.map((q, i) => `${i + 1}. ${q}`).join('\n'))
+    }
+    if (parsed.prompt) parts.push(parsed.prompt)
+    return parts.join('\n\n') || message.content
   } catch {
     return message.content
   }

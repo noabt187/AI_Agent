@@ -1,10 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { resolve, extname } from 'node:path'
-import type { WorldState } from '../orchestrator/types.js'
 
 export type Skill = {
   name: string
-  trigger: string
+  description: string
   content: string
 }
 
@@ -45,10 +44,10 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
     try {
       const raw = await readFile(filePath, 'utf8')
       const { meta, body } = parseFrontmatter(raw)
-      if (meta.name && meta.trigger && body) {
+      if (meta.name && meta.description && body) {
         skills.push({
           name: meta.name,
-          trigger: meta.trigger,
+          description: meta.description,
           content: body,
         })
       }
@@ -60,38 +59,14 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
   return skills
 }
 
-function matchesRepositoryRequest(input: string): boolean {
-  return /fork|clone|克隆|远程仓库|repository|创建\s*fork|新建\s*fork/i.test(input)
+export function useSkill(skills: Skill[], skillName: string): string | null {
+  const skill = skills.find((s) => s.name === skillName)
+  return skill ? skill.content : null
 }
 
-function matchesPullRequest(input: string): boolean {
-  return /\bpr\b|pull request|提\s*pr|提交\s*pr|创建\s*pr|发起\s*pr/i.test(input)
-}
-
-function matchesOperationalRequest(input: string): boolean {
-  return matchesPullRequest(input) || matchesRepositoryRequest(input)
-}
-
-function matchesTrigger(trigger: string, state: WorldState, userInput = ''): boolean {
-  const requestText = `${state.goal ?? ''}\n${userInput}`
-  switch (trigger) {
-    case 'always':
-      return true
-    case 'has_goal_no_requirement':
-      return !!state.goal && !state.confirmedRequirement && !matchesOperationalRequest(requestText)
-    case 'has_requirement_no_tasks':
-      return !!state.confirmedRequirement && !state.designConfirmed && !state.designTasks?.length
-    case 'has_tasks':
-      return !!state.designConfirmed || !!state.designTasks?.length
-    case 'repository_request':
-      return matchesRepositoryRequest(requestText)
-    case 'pull_request_request':
-      return matchesPullRequest(requestText)
-    default:
-      return true
-  }
-}
-
-export function getActiveSkills(skills: Skill[], state: WorldState, userInput = ''): Skill[] {
-  return skills.filter((s) => matchesTrigger(s.trigger, state, userInput))
+export function getSkillCatalog(skills: Skill[]): string {
+  if (skills.length === 0) return ''
+  return skills
+    .map((s) => `- ${s.name}: ${s.description}`)
+    .join('\n')
 }

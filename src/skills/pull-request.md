@@ -1,7 +1,6 @@
 ---
 name: pull-request
-description: PR 提交指引
-trigger: pull_request_request
+description: PR 提交指引 — 创建 GitHub Pull Request 的完整流程，适用于需要提交代码时
 ---
 
 ## Skill: PR 提交

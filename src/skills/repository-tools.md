@@ -1,7 +1,6 @@
 ---
 name: repository-tools
-description: 仓库 fork 和 clone 工具指引
-trigger: repository_request
+description: 仓库 Fork/Clone 工具指引 — Fork 或 Clone GitHub 仓库的操作规范，适用于需要操作远程仓库时
 ---
 
 ## Skill: 仓库工具

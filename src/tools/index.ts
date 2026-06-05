@@ -103,18 +103,6 @@ const toolRegistry: Record<string, ToolDef> = {
   },
 }
 
-// ── Tool Descriptions ───────────────────────────────────────────────
-
-export function getToolDescriptionsForScope(scope: ToolScope): string {
-  return Object.entries(toolRegistry)
-    .filter(([, def]) => scope === 'write' || def.scope === 'read')
-    .map(([name, def]) => {
-      const args = def.argNames.map((a) => `${a}: string`).join(', ')
-      return `- ${name}(${args}): ${def.description}`
-    })
-    .join('\n')
-}
-
 // ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
