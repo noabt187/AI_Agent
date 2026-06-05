@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent as ReactChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   CheckCircle2,
   CircleStop,
@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Eye,
+  FileUp,
   FolderOpen,
   Gauge,
   MessageSquare,
@@ -14,8 +15,11 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
+  Power,
+  PowerOff,
   RefreshCcw,
   Send,
+  Settings2,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -25,9 +29,11 @@ import {
   abortSession,
   createSession,
   deleteSession,
+  deleteSkill,
   downloadSessionExport,
   forgetPinnedMemory,
   listSessions,
+  listSkills,
   listDirectories,
   loadSession,
   loadSessionMemory,
@@ -37,9 +43,12 @@ import {
   streamPrompt,
   updateMemorySettings,
   updateAllowedPaths,
+  updateSkillEnabled,
   updateSessionTitle,
+  uploadSkill,
   type Message,
   type DirectoryListing,
+  type ManagedSkill,
   type MemoryRecallMode,
   type SessionMemory,
   type SessionMetrics,
@@ -75,6 +84,11 @@ type NegativeFeedbackDraft = {
 }
 type SessionContextMenu = {
   sessionId: string
+  x: number
+  y: number
+}
+type SkillContextMenu = {
+  skillId: string
   x: number
   y: number
 }
@@ -217,6 +231,8 @@ export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
@@ -252,6 +268,11 @@ export function App() {
   const [copiedResponseId, setCopiedResponseId] = useState('')
   const [negativeFeedbackDraft, setNegativeFeedbackDraft] = useState<NegativeFeedbackDraft | null>(null)
   const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenu | null>(null)
+  const [skills, setSkills] = useState<ManagedSkill[]>([])
+  const [skillsBusy, setSkillsBusy] = useState(false)
+  const [skillError, setSkillError] = useState('')
+  const [skillManagerOpen, setSkillManagerOpen] = useState(false)
+  const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
 
@@ -262,6 +283,14 @@ export function App() {
 
   const pendingConfirm = session?.state.pendingConfirm || inferPendingConfirm(timeline, running)
   const operationRoot = session?.state.allowedPaths[0] || ''
+  const enabledSkillCount = skills.filter((skill) => skill.enabled).length
+  const sortedSkills = useMemo(
+    () => [...skills].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)),
+    [skills],
+  )
+  const selectedSkillMenuItem = skillContextMenu
+    ? skills.find((skill) => skill.id === skillContextMenu.skillId) || null
+    : null
 
   function clearPendingConfirmLocal() {
     setSession((current) => current
@@ -298,6 +327,7 @@ export function App() {
 
   useEffect(() => {
     void refreshSessions()
+    void refreshSkills()
   }, [])
 
   useEffect(() => {
@@ -307,8 +337,12 @@ export function App() {
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       const target = event.target
-      if (target instanceof Node && contextMenuRef.current?.contains(target)) return
+      if (
+        target instanceof Node
+        && (contextMenuRef.current?.contains(target) || skillContextMenuRef.current?.contains(target))
+      ) return
       setSessionContextMenu(null)
+      setSkillContextMenu(null)
     }
 
     window.addEventListener('pointerdown', handlePointerDown)
@@ -542,6 +576,84 @@ export function App() {
     } finally {
       setMemoryBusy(false)
     }
+  }
+
+  async function refreshSkills() {
+    setSkillError('')
+    try {
+      setSkills(await listSkills())
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  function handleUploadSkillClick() {
+    skillUploadInputRef.current?.click()
+  }
+
+  async function handleSkillFileSelected(event: ReactChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file || skillsBusy) return
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      setSkillError('Skill 文件必须是 .md')
+      return
+    }
+
+    setSkillsBusy(true)
+    setSkillError('')
+    try {
+      await uploadSkill(file.name, await file.text())
+      await refreshSkills()
+      setStatus(`Skill 已上传：${file.name}`)
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSkillsBusy(false)
+    }
+  }
+
+  async function handleSkillEnabled(skill: ManagedSkill, enabled: boolean) {
+    if (skillsBusy || skill.enabled === enabled) return
+    setSkillsBusy(true)
+    setSkillError('')
+    try {
+      const result = await updateSkillEnabled(skill.id, enabled)
+      setSkills((current) => current.map((item) => item.id === result.skill.id ? result.skill : item))
+      setStatus(`${enabled ? '已启用' : '已卸载'} Skill：${skill.name}`)
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSkillsBusy(false)
+    }
+  }
+
+  async function handleDeleteSkill(skill: ManagedSkill) {
+    if (skillsBusy || skill.source !== 'custom') return
+    const confirmed = window.confirm(`删除上传的 Skill「${skill.name}」？`)
+    if (!confirmed) return
+
+    setSkillsBusy(true)
+    setSkillError('')
+    setSkillContextMenu(null)
+    try {
+      await deleteSkill(skill.id)
+      setSkills((current) => current.filter((item) => item.id !== skill.id))
+      setStatus(`Skill 已删除：${skill.name}`)
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSkillsBusy(false)
+    }
+  }
+
+  function handleSkillContextMenu(event: ReactMouseEvent<HTMLElement>, skillId: string) {
+    event.preventDefault()
+    setSkillContextMenu({
+      skillId,
+      x: event.clientX,
+      y: event.clientY,
+    })
   }
 
   function getDirectoryStartPath(): string | undefined {
@@ -1052,6 +1164,45 @@ export function App() {
             发送给 Agent
           </button>
         </section>
+
+        <section className="panel skillPanel">
+          <div className="panelHeader">
+            <span>SKILL</span>
+            <small>{enabledSkillCount}/{skills.length}</small>
+          </div>
+          <div className="skillPanelSummary">
+            <span className="skillStatusDot enabled" />
+            <span>{enabledSkillCount} enabled</span>
+            <span className="skillStatusDot" />
+            <span>{skills.length - enabledSkillCount} unloaded</span>
+          </div>
+          <div className="skillPanelActions">
+            <button type="button" disabled={skillsBusy} onClick={handleUploadSkillClick}>
+              <FileUp size={16} />
+              上传
+            </button>
+            <button
+              type="button"
+              disabled={skillsBusy}
+              onClick={() => {
+                setSkillContextMenu(null)
+                setSkillManagerOpen(true)
+                void refreshSkills()
+              }}
+            >
+              <Settings2 size={16} />
+              管理
+            </button>
+          </div>
+          <input
+            ref={skillUploadInputRef}
+            type="file"
+            accept=".md,text/markdown"
+            className="hiddenFileInput"
+            onChange={(event) => void handleSkillFileSelected(event)}
+          />
+          {skillError ? <div className="skillError">{skillError}</div> : null}
+        </section>
       </aside>
 
       <aside className="collapsedRail" aria-label="已收起的侧边栏">
@@ -1390,6 +1541,96 @@ export function App() {
                 <div className="emptyDirectory">当前文件夹没有子文件夹</div>
               ) : null}
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {skillManagerOpen ? (
+        <div className="modalBackdrop">
+          <section className="skillManagerModal" aria-label="Skill 管理">
+            <header>
+              <div>
+                <h3>Skill 管理</h3>
+                <p>启用的 Skill 会进入 Agent 的渐进式披露上下文；卸载后文件仍保留。</p>
+              </div>
+              <button className="miniIconButton static" title="关闭" onClick={() => {
+                setSkillContextMenu(null)
+                setSkillManagerOpen(false)
+              }}>
+                <X size={17} />
+              </button>
+            </header>
+
+            {skillError ? <div className="skillManagerError">{skillError}</div> : null}
+
+            <div className="skillManagerList">
+              {sortedSkills.map((skill) => (
+                <article
+                  className="skillManagerItem"
+                  key={skill.id}
+                  onContextMenu={(event) => handleSkillContextMenu(event, skill.id)}
+                >
+                  <button
+                    type="button"
+                    className="skillLampButton"
+                    title={skill.enabled ? '卸载 Skill' : '启用 Skill'}
+                    disabled={skillsBusy}
+                    onClick={() => void handleSkillEnabled(skill, !skill.enabled)}
+                  >
+                    <span className={skill.enabled ? 'skillStatusDot enabled' : 'skillStatusDot'} />
+                  </button>
+                  <div className="skillManagerMain">
+                    <strong>{skill.name}</strong>
+                    <span>{skill.summary || skill.trigger}</span>
+                  </div>
+                  <div className="skillManagerMeta">
+                    <small>{skill.source === 'builtin' ? '内置' : '上传'}</small>
+                    <code>{skill.node || skill.entry || skill.trigger}</code>
+                  </div>
+                </article>
+              ))}
+              {sortedSkills.length === 0 ? <div className="skillManagerEmpty">暂无可用 Skill</div> : null}
+            </div>
+
+            {skillContextMenu && selectedSkillMenuItem ? (
+              <div
+                ref={skillContextMenuRef}
+                className="contextMenu"
+                style={{
+                  left: `${skillContextMenu.x}px`,
+                  top: `${skillContextMenu.y}px`,
+                }}
+              >
+                <button
+                  disabled={selectedSkillMenuItem.enabled || skillsBusy}
+                  onClick={() => {
+                    setSkillContextMenu(null)
+                    void handleSkillEnabled(selectedSkillMenuItem, true)
+                  }}
+                >
+                  <Power size={15} />
+                  启用
+                </button>
+                <button
+                  disabled={!selectedSkillMenuItem.enabled || skillsBusy}
+                  onClick={() => {
+                    setSkillContextMenu(null)
+                    void handleSkillEnabled(selectedSkillMenuItem, false)
+                  }}
+                >
+                  <PowerOff size={15} />
+                  卸载
+                </button>
+                <button
+                  className="danger"
+                  disabled={selectedSkillMenuItem.source !== 'custom' || skillsBusy}
+                  onClick={() => void handleDeleteSkill(selectedSkillMenuItem)}
+                >
+                  <Trash2 size={15} />
+                  删除
+                </button>
+              </div>
+            ) : null}
           </section>
         </div>
       ) : null}

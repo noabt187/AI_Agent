@@ -1,6 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { resolve, extname } from 'node:path'
 import type { WorldState } from '../orchestrator/types.js'
+import { loadEnabledSkills } from './registry.js'
 
 export type Skill = {
   name: string
@@ -33,65 +32,8 @@ export type SelectedSkills = {
   details: Skill[]
 }
 
-function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
-  const trimmed = raw.trim()
-  if (!trimmed.startsWith('---')) return { meta: {}, body: trimmed }
-
-  const endIdx = trimmed.indexOf('---', 3)
-  if (endIdx === -1) return { meta: {}, body: trimmed }
-
-  const frontmatter = trimmed.slice(3, endIdx).trim()
-  const body = trimmed.slice(endIdx + 3).trim()
-
-  const meta: Record<string, string> = {}
-  for (const line of frontmatter.split('\n')) {
-    const colonIdx = line.indexOf(':')
-    if (colonIdx === -1) continue
-    const key = line.slice(0, colonIdx).trim()
-    const value = line.slice(colonIdx + 1).trim()
-    if (key && value) meta[key] = value
-  }
-
-  return { meta, body }
-}
-
 export async function loadSkills(skillsDir: string): Promise<Skill[]> {
-  const skills: Skill[] = []
-  let entries: string[]
-  try {
-    entries = await readdir(skillsDir)
-  } catch {
-    return skills
-  }
-
-  for (const entry of entries) {
-    if (extname(entry) !== '.md') continue
-    const filePath = resolve(skillsDir, entry)
-    try {
-      const raw = await readFile(filePath, 'utf8')
-      const { meta, body } = parseFrontmatter(raw)
-      if (meta.name && meta.trigger && body) {
-        skills.push({
-          name: meta.name,
-          trigger: meta.trigger,
-          description: meta.description,
-          summary: meta.summary || meta.description,
-          node: meta.node,
-          entry: meta.entry,
-          onConfirmNext: meta.onConfirmNext,
-          onAllowWriteNext: meta.onAllowWriteNext,
-          insertAfter: meta.insertAfter,
-          insertBefore: meta.insertBefore,
-          priority: Number.parseInt(meta.priority || '0', 10) || 0,
-          content: body,
-        })
-      }
-    } catch {
-      continue
-    }
-  }
-
-  return skills
+  return loadEnabledSkills(skillsDir)
 }
 
 const NEGATION_BEFORE_RE = /(?:不要|不用|无需|不需要|不想|不打算|不做|不提|不提交|不创建|不发起|不是|不|别|禁止|先不|暂不|no|not|don't|do not|without)\s*$/i
