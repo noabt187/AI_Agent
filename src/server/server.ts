@@ -3,13 +3,16 @@ import { URL } from 'node:url'
 import {
   abortSession,
   createSession,
+  deleteSession,
   getOrchestrator,
   isSessionRunning,
   listSessions,
+  loadSessionExport,
   loadSession,
   markSessionIdle,
   markSessionRunning,
   updateAllowedPaths,
+  updateSessionTitle,
 } from './sessionApi.js'
 import { startJsonStream, writeStreamEvent } from './stream.js'
 import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
@@ -19,6 +22,11 @@ import { loadAppConfig } from '../config/appConfig.js'
 
 const { serverPort: port } = loadAppConfig()
 const stateDir = 'state'
+
+function buildDownloadFileName(sessionId: string, title?: string): string {
+  const baseName = (title?.trim() || sessionId).replace(/[\\/:*?"<>|]+/g, '-').trim() || sessionId
+  return `${baseName}.json`
+}
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, {
@@ -176,6 +184,35 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return
     }
 
+    if (sessionId && method === 'GET' && pathname.endsWith('/export')) {
+      try {
+        const [sessionExport, metrics] = await Promise.all([
+          loadSessionExport(sessionId),
+          loadMetricsFromStateDir(stateDir, sessionId),
+        ])
+        const fileName = buildDownloadFileName(sessionExport.id, sessionExport.title)
+        const payload = {
+          exportedAt: Date.now(),
+          session: sessionExport,
+          metrics,
+        }
+        res.writeHead(200, {
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache',
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+          'Content-Type': 'application/json; charset=utf-8',
+        })
+        res.end(JSON.stringify(payload, null, 2))
+      } catch (err) {
+        if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+          sendJson(res, 404, { error: '会话不存在' })
+          return
+        }
+        throw err
+      }
+      return
+    }
+
     if (sessionId && method === 'GET' && pathname.endsWith('/metrics')) {
       sendJson(res, 200, await loadMetricsFromStateDir(stateDir, sessionId))
       return
@@ -190,8 +227,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return
     }
 
+    if (sessionId && method === 'POST' && pathname.endsWith('/title')) {
+      const body = await readJson(req)
+      const title = typeof body.title === 'string' ? body.title : ''
+      sendJson(res, 200, await updateSessionTitle(sessionId, title))
+      return
+    }
+
     if (sessionId && method === 'POST' && pathname.endsWith('/abort')) {
       await abortSession(sessionId)
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    if (sessionId && method === 'DELETE' && pathname === `/api/sessions/${encodeURIComponent(sessionId)}`) {
+      await deleteSession(sessionId)
       sendJson(res, 200, { ok: true })
       return
     }

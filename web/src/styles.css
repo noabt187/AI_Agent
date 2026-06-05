@@ -242,6 +242,7 @@ small {
 }
 
 .panel {
+  position: relative;
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -296,6 +297,13 @@ small {
   transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
+.sessionItemMeta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .sessionItem:hover {
   border-color: rgba(34, 211, 238, 0.5);
   background: rgba(15, 31, 56, 0.82);
@@ -314,6 +322,19 @@ small {
   flex: 0 0 auto;
 }
 
+.sessionItemMeta small {
+  color: #91a6bd;
+  font-size: 12px;
+}
+
+.sessionItem.editing {
+  cursor: default;
+}
+
+.sessionItem.editing:hover {
+  transform: none;
+}
+
 .sessionItem.active {
   border-color: rgba(34, 211, 238, 0.72);
   background:
@@ -325,6 +346,58 @@ small {
 .sessionItem.active small,
 .sessionItem.active span {
   color: #f3f8ff;
+}
+
+.sessionTitleInput {
+  width: min(220px, 100%);
+  border: 1px solid rgba(125, 211, 252, 0.34);
+  border-radius: 6px;
+  background: rgba(8, 18, 34, 0.84);
+  color: #f3f8ff;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.sessionTitleInput:focus {
+  border-color: rgba(34, 211, 238, 0.72);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.16);
+}
+
+.contextMenu {
+  position: fixed;
+  z-index: 30;
+  min-width: 148px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 10px;
+  background: rgba(9, 18, 34, 0.96);
+  box-shadow: 0 14px 32px rgba(5, 12, 24, 0.48);
+  padding: 6px;
+  backdrop-filter: blur(10px);
+}
+
+.contextMenu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #d9e9ff;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.contextMenu button:hover {
+  background: rgba(34, 211, 238, 0.12);
+}
+
+.contextMenu button.danger {
+  color: #fca5a5;
+}
+
+.contextMenu button.danger:hover {
+  background: rgba(248, 113, 113, 0.14);
 }
 
 .selectedPathBox {
@@ -821,10 +894,21 @@ small {
 }
 
 .bubble.user {
-  align-self: flex-end;
+  align-self: stretch;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.26);
   color: #dcecff;
-  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: none;
+  padding-bottom: 14px;
+  text-align: left;
   text-shadow: 0 0 18px rgba(96, 165, 250, 0.24);
+}
+
+.bubble.user pre {
+  max-width: min(860px, 92%);
+  width: fit-content;
 }
 
 .bubble.assistant {

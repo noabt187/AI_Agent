@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   CheckCircle2,
   CircleStop,
   Check,
   Copy,
+  Download,
   Eye,
   FolderOpen,
   Gauge,
@@ -11,6 +12,7 @@ import {
   MousePointer2,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
   RefreshCcw,
   Send,
@@ -22,6 +24,8 @@ import {
 import {
   abortSession,
   createSession,
+  deleteSession,
+  downloadSessionExport,
   listSessions,
   listDirectories,
   loadSession,
@@ -29,6 +33,7 @@ import {
   pickDirectory,
   streamPrompt,
   updateAllowedPaths,
+  updateSessionTitle,
   type Message,
   type DirectoryListing,
   type SessionMetrics,
@@ -61,6 +66,20 @@ type NegativeFeedbackDraft = {
   content: string
   reasons: string[]
   detail: string
+}
+type SessionContextMenu = {
+  sessionId: string
+  x: number
+  y: number
+}
+
+function displaySessionTitle(session: Pick<SessionSummary, 'id' | 'title'>): string {
+  return session.title?.trim() || session.id
+}
+
+function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'>): string {
+  const baseName = displaySessionTitle(session).replace(/[\\/:*?"<>|]+/g, '-').trim() || session.id
+  return `${baseName}.json`
 }
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
@@ -191,6 +210,8 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
 export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const skipSessionRenameBlurRef = useRef('')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [session, setSession] = useState<SessionDetail | null>(null)
@@ -220,6 +241,14 @@ export function App() {
   const [responseFeedback, setResponseFeedback] = useState<Record<string, 'up' | 'down'>>({})
   const [copiedResponseId, setCopiedResponseId] = useState('')
   const [negativeFeedbackDraft, setNegativeFeedbackDraft] = useState<NegativeFeedbackDraft | null>(null)
+  const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenu | null>(null)
+  const [editingSessionId, setEditingSessionId] = useState('')
+  const [editingSessionTitle, setEditingSessionTitle] = useState('')
+
+  const selectedSessionSummary = useMemo(
+    () => sessions.find((item) => item.id === selectedSessionId) ?? null,
+    [selectedSessionId, sessions],
+  )
 
   const pendingConfirm = session?.state.pendingConfirm || inferPendingConfirm(timeline, running)
   const operationRoot = session?.state.allowedPaths[0] || ''
@@ -238,11 +267,13 @@ export function App() {
     setConfirmDraft('')
   }
 
-  async function refreshSessions(preferredId?: string) {
+  async function refreshSessions(preferredId?: string | null) {
     const nextSessions = await listSessions()
     setSessions(nextSessions)
-    const nextId = preferredId || selectedSessionId || nextSessions[0]?.id || ''
-    if (nextId) setSelectedSessionId(nextId)
+    const nextId = preferredId === undefined
+      ? selectedSessionId || nextSessions[0]?.id || ''
+      : preferredId || nextSessions[0]?.id || ''
+    setSelectedSessionId(nextId)
   }
 
   async function refreshSession(sessionId = selectedSessionId, options: { updateTimeline?: boolean } = {}) {
@@ -262,6 +293,17 @@ export function App() {
   useEffect(() => {
     if (selectedSessionId) void refreshSession(selectedSessionId)
   }, [selectedSessionId])
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (target instanceof Node && contextMenuRef.current?.contains(target)) return
+      setSessionContextMenu(null)
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    return () => window.removeEventListener('pointerdown', handlePointerDown)
+  }, [])
 
   useEffect(() => {
     if (viewMode !== 'chat') return
@@ -312,6 +354,113 @@ export function App() {
     const sessionId = await createSession()
     await refreshSessions(sessionId)
     await refreshSession(sessionId)
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    const currentIndex = sessions.findIndex((item) => item.id === sessionId)
+    const fallbackSessionId = sessions.find((item) => item.id !== sessionId)?.id
+      || (currentIndex >= 0 ? sessions[currentIndex + 1]?.id || sessions[currentIndex - 1]?.id || '' : '')
+
+    setSessionContextMenu(null)
+    cancelSessionRename()
+
+    try {
+      await deleteSession(sessionId)
+      const nextSelectedId = selectedSessionId === sessionId ? fallbackSessionId : selectedSessionId
+      if (selectedSessionId === sessionId) {
+        setSelectedSessionId(nextSelectedId)
+        setSession(null)
+        setTimeline([])
+        setActivityItems([])
+        setMetrics(null)
+      }
+      await refreshSessions(nextSelectedId)
+      if (nextSelectedId) {
+        await refreshSession(nextSelectedId)
+      } else {
+        setSession(null)
+        setSelectedSessionId('')
+      }
+      setStatus('会话已删除')
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '删除会话失败')
+    }
+  }
+
+  async function handleDownloadSession(sessionId: string) {
+    const current = sessions.find((item) => item.id === sessionId) || { id: sessionId }
+    setSessionContextMenu(null)
+
+    try {
+      const { blob, fileName } = await downloadSessionExport(sessionId)
+      const objectUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = fileName || buildSessionExportFilename(current)
+      document.body.append(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+      setStatus('会话已下载')
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '下载会话失败')
+    }
+  }
+
+  function openSessionRename(sessionId: string) {
+    const current = sessions.find((item) => item.id === sessionId)
+    setSessionContextMenu(null)
+    setEditingSessionId(sessionId)
+    setEditingSessionTitle(current?.title?.trim() || '')
+  }
+
+  function cancelSessionRename() {
+    setEditingSessionId('')
+    setEditingSessionTitle('')
+  }
+
+  async function submitSessionRename(sessionId: string) {
+    const nextTitle = editingSessionTitle.trim()
+    const current = sessions.find((item) => item.id === sessionId)
+    const currentTitle = current?.title?.trim() || ''
+    if (nextTitle === currentTitle) {
+      cancelSessionRename()
+      return
+    }
+
+    try {
+      const detail = await updateSessionTitle(sessionId, nextTitle)
+      setSession(detail)
+      await refreshSessions(sessionId)
+      setStatus(nextTitle ? '会话名称已更新' : '已恢复默认会话名称')
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '更新会话名称失败')
+    } finally {
+      cancelSessionRename()
+    }
+  }
+
+  function handleSessionTitleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>, sessionId: string) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      skipSessionRenameBlurRef.current = sessionId
+      void submitSessionRename(sessionId)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      skipSessionRenameBlurRef.current = sessionId
+      cancelSessionRename()
+    }
+  }
+
+  function handleSessionContextMenu(event: ReactMouseEvent<HTMLButtonElement>, sessionId: string) {
+    event.preventDefault()
+    setSessionContextMenu({
+      sessionId,
+      x: event.clientX,
+      y: event.clientY,
+    })
   }
 
   async function refreshMetrics(sessionId = selectedSessionId) {
@@ -691,16 +840,70 @@ export function App() {
           </div>
           <div className="sessionList">
             {sessions.map((item) => (
-              <button
-                key={item.id}
-                className={item.id === selectedSessionId ? 'sessionItem active' : 'sessionItem'}
-                onClick={() => setSelectedSessionId(item.id)}
-              >
-                <span>{item.id}</span>
-                <small>{formatTime(item.updatedAt)}</small>
-              </button>
+              editingSessionId === item.id ? (
+                <div
+                  key={item.id}
+                  className={item.id === selectedSessionId ? 'sessionItem active editing' : 'sessionItem editing'}
+                >
+                  <div className="sessionItemMeta">
+                    <input
+                      className="sessionTitleInput"
+                      value={editingSessionTitle}
+                      onChange={(event) => setEditingSessionTitle(event.target.value)}
+                      onKeyDown={(event) => handleSessionTitleKeyDown(event, item.id)}
+                      onBlur={() => {
+                        if (skipSessionRenameBlurRef.current === item.id) {
+                          skipSessionRenameBlurRef.current = ''
+                          return
+                        }
+                        void submitSessionRename(item.id)
+                      }}
+                      placeholder={item.id}
+                      autoFocus
+                    />
+                    <small>{item.id}</small>
+                  </div>
+                  <small>{formatTime(item.updatedAt)}</small>
+                </div>
+              ) : (
+                <button
+                  key={item.id}
+                  className={item.id === selectedSessionId ? 'sessionItem active' : 'sessionItem'}
+                  onClick={() => setSelectedSessionId(item.id)}
+                  onContextMenu={(event) => handleSessionContextMenu(event, item.id)}
+                  title="右键可编辑会话名称"
+                >
+                  <div className="sessionItemMeta">
+                    <span>{displaySessionTitle(item)}</span>
+                  </div>
+                  <small>{formatTime(item.updatedAt)}</small>
+                </button>
+              )
             ))}
           </div>
+          {sessionContextMenu ? (
+            <div
+              ref={contextMenuRef}
+              className="contextMenu"
+              style={{
+                left: `${sessionContextMenu.x}px`,
+                top: `${sessionContextMenu.y}px`,
+              }}
+            >
+              <button onClick={() => openSessionRename(sessionContextMenu.sessionId)}>
+                <Pencil size={15} />
+                编辑名称
+              </button>
+              <button onClick={() => void handleDownloadSession(sessionContextMenu.sessionId)}>
+                <Download size={15} />
+                下载会话
+              </button>
+              <button className="danger" onClick={() => void handleDeleteSession(sessionContextMenu.sessionId)}>
+                <Trash2 size={15} />
+                删除会话
+              </button>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel commentsPanel">
@@ -738,7 +941,7 @@ export function App() {
       <section className="workspace">
         <header className="workspaceHeader">
           <div className="workspaceTitle">
-            <h2>{selectedSessionId || '未选择会话'}</h2>
+            <h2>{selectedSessionSummary ? displaySessionTitle(selectedSessionSummary) : '未选择会话'}</h2>
             <p>{workspaceSubtitle}</p>
           </div>
 
