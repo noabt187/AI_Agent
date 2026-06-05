@@ -32,6 +32,9 @@ export type WorldState = {
   sessionId: string
   allowedPaths: string[]
   memorySettings?: MemorySettings
+  workflow?: {
+    node?: string
+  }
 
   // User intent
   goal?: string
@@ -44,7 +47,14 @@ export type WorldState = {
   errors: Record<string, string>
 
   // Pending confirmation
-  pendingConfirm?: { allowWrite: boolean; message: string }
+  pendingConfirm?: {
+    allowWrite: boolean
+    message: string
+    workflow?: {
+      currentNode: string
+      nextNode: string
+    }
+  }
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean

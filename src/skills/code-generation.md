@@ -1,7 +1,10 @@
 ---
 name: code-generation
 description: 代码生成指引
-trigger: always
+summary: 已获得写入权限后，修改代码并验证
+trigger: workflow
+node: code-generation
+priority: 80
 ---
 
 ## Skill: 代码生成

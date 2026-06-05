@@ -1,7 +1,12 @@
 ---
 name: pull-request
 description: PR 提交指引
+summary: PR 参数确认、提交和创建
 trigger: pull_request_request
+node: pull-request
+entry: pull_request_request
+onAllowWriteNext: pull-request
+priority: 200
 ---
 
 ## Skill: PR 提交
