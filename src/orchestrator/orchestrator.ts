@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentEventHandler, WorldState } from './types.js'
-import { Agent } from './agent.js'
+import { Agent, isPureConfirmationInput } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
@@ -40,7 +40,6 @@ export class Orchestrator {
       memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
-      errors: {},
     }
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
@@ -52,7 +51,6 @@ export class Orchestrator {
       persisted.allowedPaths = persisted.allowedPaths || []
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
-      persisted.errors = persisted.errors || {}
       persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
     }
     return new Orchestrator(sessionId, persisted ?? {
@@ -61,7 +59,6 @@ export class Orchestrator {
       memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
-      errors: {},
     })
   }
 
@@ -168,7 +165,7 @@ export class Orchestrator {
       return
     }
 
-    if (this.isConfirmationInput(userInput) && this.state.pendingConfirm) {
+    if (isPureConfirmationInput(userInput) && this.state.pendingConfirm) {
       await this.handleConfirmResponse(userInput, onEvent)
       return
     }
@@ -246,20 +243,12 @@ export class Orchestrator {
     }
   }
 
-  private isConfirmationInput(input: string): boolean {
-    const trimmed = input.trim().toLowerCase()
-    return trimmed === '确认' || trimmed === '是' || trimmed === 'yes' || trimmed === 'y'
-      || trimmed === 'ok' || trimmed === '好' || trimmed === '可以' || trimmed === '开始'
-      || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
-  }
-
   private clearCurrentTaskState(): void {
     this.state.goal = undefined
     this.state.confirmedRequirement = undefined
     this.state.designTasks = undefined
     this.state.completedTaskIds = []
     this.state.failedTaskIds = []
-    this.state.errors = {}
     this.state.pendingConfirm = undefined
     this.state.designConfirmed = false
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)

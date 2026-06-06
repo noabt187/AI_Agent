@@ -41,7 +41,6 @@ export type WorldState = {
   designTasks?: DesignTask[]
   completedTaskIds: string[]
   failedTaskIds: string[]
-  errors: Record<string, string>
 
   // Pending confirmation
   pendingConfirm?: { allowWrite: boolean; message: string }

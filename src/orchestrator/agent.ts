@@ -212,48 +212,37 @@ function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
   }
 }
 
+function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: string): AgentResult | null {
+  const action = obj.action
+  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText) }
+  if (action === 'ask_user') {
+    const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
+    if (questions.length === 0) return null
+    return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
+  }
+  if (action === 'confirm') {
+    const prompt = String(obj.prompt || '')
+    const message = obj.message ? String(obj.message) : undefined
+    // 'design' is legacy alias for 'allow_write'
+    const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+    const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
+    return { action: 'confirm', prompt, message, confirmType: ct }
+  }
+  if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
+  return null
+}
+
 export function parseAgentResult(raw: string): AgentResult | null {
   const jsonText = extractJsonText(raw)
   try {
-    const obj = JSON.parse(jsonText)
-    const action = obj.action
-    if (action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
-    if (action === 'ask_user') {
-      const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
-      if (questions.length === 0) return null
-      return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
-    }
-    if (action === 'confirm') {
-      const prompt = String(obj.prompt || '')
-      const message = obj.message ? String(obj.message) : undefined
-      // 'design' is legacy alias for 'allow_write'
-      const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
-      const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
-      return { action: 'confirm', prompt, message, confirmType: ct }
-    }
-    if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
-    return null
+    return agentResultFromParsed(JSON.parse(jsonText), raw.trim())
   } catch {
     try {
       let fixed = jsonText
       fixed = fixed.replace(/("thinking"\s*:\s*")([\s\S]*?)(")(?=\s*,\s*")/g, (_match, prefix, content) => {
         return prefix + content.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
       })
-      const obj = JSON.parse(fixed)
-      if (obj.action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
-      if (obj.action === 'ask_user') {
-        const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
-        if (questions.length > 0) return { action: 'ask_user', questions }
-      }
-      if (obj.action === 'confirm') {
-        const prompt = String(obj.prompt || '')
-        const message = obj.message ? String(obj.message) : undefined
-        // 'design' is legacy alias for 'allow_write'
-        const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
-        const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
-        return { action: 'confirm', prompt, message, confirmType: ct }
-      }
-      if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
+      return agentResultFromParsed(JSON.parse(fixed), raw.trim())
     } catch {}
     return parseToolOperationMarkdownConfirm(raw)
   }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, extname, resolve } from 'node:path'
 import type { Skill } from './index.js'
+import { parseFrontmatter } from './index.js'
 
 type SkillSource = 'builtin' | 'custom'
 
@@ -25,11 +26,6 @@ type LoadedSkill = Skill & {
   summary?: string
   node?: string
   entry?: string
-  onConfirmNext?: string
-  onAllowWriteNext?: string
-  insertAfter?: string
-  insertBefore?: string
-  priority?: number
 }
 
 type StoredRegistry = {
@@ -49,28 +45,6 @@ const BUILTIN_SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd())
 const CUSTOM_SKILLS_DIR = resolve(process.cwd(), 'state', 'custom-skills')
 const REGISTRY_PATH = resolve(process.cwd(), 'state', 'skills', 'registry.json')
 
-function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
-  const trimmed = raw.trim()
-  if (!trimmed.startsWith('---')) return { meta: {}, body: trimmed }
-
-  const endIdx = trimmed.indexOf('---', 3)
-  if (endIdx === -1) return { meta: {}, body: trimmed }
-
-  const frontmatter = trimmed.slice(3, endIdx).trim()
-  const body = trimmed.slice(endIdx + 3).trim()
-
-  const meta: Record<string, string> = {}
-  for (const line of frontmatter.split('\n')) {
-    const colonIdx = line.indexOf(':')
-    if (colonIdx === -1) continue
-    const key = line.slice(0, colonIdx).trim()
-    const value = line.slice(colonIdx + 1).trim()
-    if (key && value) meta[key] = value
-  }
-
-  return { meta, body }
-}
-
 function skillId(source: SkillSource, name: string): string {
   return `${source}:${name}`
 }
@@ -87,11 +61,6 @@ function asSkill(raw: string, filePath: string, source: SkillSource): LoadedSkil
     summary: meta.summary || meta.description,
     node: meta.node,
     entry: meta.entry,
-    onConfirmNext: meta.onConfirmNext,
-    onAllowWriteNext: meta.onAllowWriteNext,
-    insertAfter: meta.insertAfter,
-    insertBefore: meta.insertBefore,
-    priority: Number.parseInt(meta.priority || '0', 10) || 0,
     content: body,
     filePath,
     source,
