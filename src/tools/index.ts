@@ -6,10 +6,11 @@ import { verifyCodeTool } from './verifyCode.js'
 import { createPullRequestTool } from './createPullRequest.js'
 import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
+import { writeMemoryTool } from './writeMemory.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 
-type ToolScope = 'read' | 'write'
+type ToolScope = 'read' | 'write' | 'memory'
 
 type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
@@ -21,6 +22,10 @@ type ToolDef = {
   requiredArgNames?: string[]
   pathArgNames?: string[]
   argDescriptions?: Record<string, string>
+}
+
+type ExecuteToolOptions = {
+  turnLoadedSkills?: Set<string>
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -117,13 +122,20 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['rootDir', 'sessionId'],
     scope: 'read',
   },
+  writeMemory: {
+    fn: writeMemoryTool,
+    description: 'Write a durable project/global Markdown memory item. Use only after calling use_skill("auto-memory") in the same turn.',
+    argNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
+    scope: 'memory',
+    requiredArgNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
+  },
 }
 
 // ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
   return Object.entries(toolRegistry)
-    .filter(([, def]) => scope === 'write' || def.scope === 'read')
+    .filter(([, def]) => def.scope === 'read' || (scope === 'write' && (def.scope === 'write' || def.scope === 'memory')))
     .map(([name, def]) => {
       const properties: Record<string, { type: string; description: string }> = {}
       for (const arg of def.argNames) {
@@ -156,6 +168,7 @@ export async function executeTool(
   allowedPaths: string[],
   designConfirmed?: boolean,
   signal?: AbortSignal,
+  options?: ExecuteToolOptions,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
@@ -163,6 +176,10 @@ export async function executeTool(
   // 写权限检查
   if (tool.scope === 'write' && !designConfirmed) {
     return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
+  }
+
+  if (tool.scope === 'memory' && !options?.turnLoadedSkills?.has('auto-memory')) {
+    return '错误：writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。'
   }
 
   // 校验 rootDir（如果工具有此参数）

@@ -1,13 +1,37 @@
+import { spawn } from 'node:child_process'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
 import { isMemoryRecallMode, type MemoryRecallMode } from '../orchestrator/types.js'
-import { isMemoryLayerId } from '../memory/projectMemory.js'
+import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
 const activeRuns = new Set<string>()
+
+function revealPath(filePath: string): Promise<void> {
+  return new Promise((resolveReveal, reject) => {
+    let command: string
+    let args: string[]
+    if (process.platform === 'win32') {
+      command = 'explorer.exe'
+      args = [`/select,${filePath}`]
+    } else if (process.platform === 'darwin') {
+      command = 'open'
+      args = ['-R', filePath]
+    } else {
+      command = 'xdg-open'
+      args = [dirname(filePath)]
+    }
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolveReveal()
+    })
+  })
+}
 
 export async function getOrchestrator(sessionId: string): Promise<Orchestrator> {
   const existing = orchestrators.get(sessionId)
@@ -133,28 +157,45 @@ export async function updateMemorySettings(sessionId: string, recallMode: unknow
   return loadSession(sessionId)
 }
 
-export async function addPinnedMemory(sessionId: string, content: unknown, layer: unknown = 'project'): Promise<unknown> {
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('content 不能为空')
-  }
+export async function addMemoryItem(sessionId: string, body: Record<string, unknown>): Promise<unknown> {
+  const content = typeof body.body === 'string' ? body.body.trim() : ''
+  const description = typeof body.description === 'string' ? body.description.trim() : content
+  const name = typeof body.name === 'string' ? body.name.trim() : undefined
+  const type = isMemoryType(body.type) ? body.type : 'project'
+  const layer = body.layer ?? 'project'
   if (!isMemoryLayerId(layer)) {
     throw new Error('layer 必须是 session、project 或 global')
   }
+  if (!content) throw new Error('body 不能为空')
   const orchestrator = await getOrchestrator(sessionId)
-  const result = await orchestrator.rememberMemory(layer, content)
+  const result = await orchestrator.saveMemoryItem({ layer, name, description, type, body: content })
   return {
     ...result,
     memoryState: await orchestrator.getMemoryState(),
   }
 }
 
-export async function removePinnedMemory(sessionId: string, id: string): Promise<unknown> {
+export async function removeMemoryItem(sessionId: string, name: string): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
-  const { deleted } = await orchestrator.forgetMemory(id)
+  const { deleted } = await orchestrator.forgetMemory(name)
   return {
     deleted,
     memoryState: await orchestrator.getMemoryState(),
   }
+}
+
+export async function revealMemoryItem(sessionId: string, layer: unknown, name: string): Promise<unknown> {
+  if (!isMemoryLayerId(layer)) {
+    throw new Error('layer 必须是 session、project 或 global')
+  }
+  const orchestrator = await getOrchestrator(sessionId)
+  const memoryState = await orchestrator.getMemoryState()
+  const item = memoryState.layers
+    .find((memoryLayer) => memoryLayer.id === layer)
+    ?.items.find((memoryItem) => memoryItem.name === name)
+  if (!item) throw new Error(`记忆不存在: ${name}`)
+  await revealPath(item.filePath)
+  return { ok: true, filePath: item.filePath }
 }
 
 export async function abortSession(sessionId: string): Promise<void> {

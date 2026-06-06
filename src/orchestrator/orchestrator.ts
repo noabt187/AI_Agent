@@ -8,15 +8,15 @@ import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
 import {
-  appendPinnedMemory,
-  createAndStoreProjectMemory,
-  deletePinnedMemoryById,
+  deleteMemoryByName,
   isMemoryLayerId,
-  loadMemoryLayers,
+  listMemoryLayers,
   MEMORY_LAYER_LABELS,
+  saveMemory,
   type MemoryLayerId,
   type MemoryLayersState,
-  type PinnedMemory,
+  type MemoryType,
+  type MemoryItem,
 } from '../memory/projectMemory.js'
 import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
 
@@ -87,7 +87,7 @@ export class Orchestrator {
 
   async getMemoryState(): Promise<{ settings: MemorySettings } & MemoryLayersState> {
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
-    const memory = await loadMemoryLayers(this.getProjectDir(), this.state.sessionId)
+    const memory = await listMemoryLayers(this.getProjectDir(), this.state.sessionId)
     return {
       settings: this.state.memorySettings,
       ...memory,
@@ -99,18 +99,31 @@ export class Orchestrator {
     await this.persist()
   }
 
-  async rememberMemory(layer: MemoryLayerId, content: string): Promise<{ memory: PinnedMemory; created: boolean }> {
-    return appendPinnedMemory({
+  async rememberMemory(layer: MemoryLayerId, content: string): Promise<{ memory: MemoryItem; created: boolean }> {
+    return this.saveMemoryItem({
       layer,
-      content,
-      sourceSessionId: this.state.sessionId,
+      description: content,
+      body: content,
+      type: 'project',
+    })
+  }
+
+  async saveMemoryItem(input: {
+    layer: MemoryLayerId
+    name?: string
+    description: string
+    type?: MemoryType
+    body: string
+  }): Promise<{ memory: MemoryItem; created: boolean }> {
+    return saveMemory({
+      ...input,
       projectDir: this.getProjectDir(),
       sessionId: this.state.sessionId,
     })
   }
 
   async forgetMemory(id: string): Promise<{ deleted: boolean; layer?: MemoryLayerId }> {
-    return deletePinnedMemoryById(this.getProjectDir(), this.state.sessionId, id)
+    return deleteMemoryByName(this.getProjectDir(), this.state.sessionId, id)
   }
 
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
@@ -220,26 +233,8 @@ export class Orchestrator {
         break
       case 'done':
         await this.emitOutput(`\n${result.message}`, onEvent)
-        await this.storeProjectMemory(result.message, onEvent)
         this.clearCurrentTaskState()
         break
-    }
-  }
-
-  private async storeProjectMemory(doneMessage: string, onEvent?: AgentEventHandler) {
-    const projectDir = this.state.allowedPaths[0] ?? process.cwd()
-    try {
-      const memory = await createAndStoreProjectMemory({
-        projectDir,
-        sessionId: this.state.sessionId,
-        state: this.state,
-        doneMessage,
-      })
-      if (memory) {
-        await this.emitOutput('\n[项目记忆] 已保存本次完成任务的结构化记忆。', onEvent)
-      }
-    } catch (err) {
-      console.error('[项目记忆] 保存失败:', err)
     }
   }
 
@@ -292,7 +287,7 @@ export class Orchestrator {
     const memory = await this.getMemoryState()
     const total = memory.layers.reduce((sum, layer) => sum + layer.items.length, 0)
     await this.emitOutput(`\n[memory] 召回模式: ${memory.settings.recallMode}`, onEvent)
-    await this.emitOutput(`[memory] 固定记忆: ${total} 条（会话/项目/全局）`, onEvent)
+    await this.emitOutput(`[memory] Markdown 记忆: ${total} 条（会话/项目/全局）`, onEvent)
   }
 
   private async handleMemoryCommand(input: string, onEvent?: AgentEventHandler) {
@@ -313,13 +308,12 @@ export class Orchestrator {
 
     if (action === 'list') {
       const { layers } = await this.getMemoryState()
-      await this.emitOutput('\n[memory] 固定记忆:', onEvent)
+      await this.emitOutput('\n[memory] Markdown 记忆:', onEvent)
       for (const layer of layers) {
         await this.emitOutput(`  ${layer.label}: ${layer.items.length} 条`, onEvent)
-        await this.emitOutput(`    文件: ${layer.paths.pinned}`, onEvent)
-        if (layer.paths.tasks) await this.emitOutput(`    历史任务: ${layer.paths.tasks}`, onEvent)
+        await this.emitOutput(`    索引: ${layer.paths.index}`, onEvent)
         for (const item of layer.items) {
-          await this.emitOutput(`    ${item.id} - ${item.content}`, onEvent)
+          await this.emitOutput(`    ${item.name} [${item.type}] - ${item.description}`, onEvent)
         }
       }
       return
@@ -335,7 +329,7 @@ export class Orchestrator {
       await this.emitOutput(
         result.deleted
           ? `\n[memory] 已删除${result.layer ? MEMORY_LAYER_LABELS[result.layer] : ''}: ${id}`
-          : `\n[memory] 未找到固定记忆: ${id}`,
+          : `\n[memory] 未找到记忆: ${id}`,
         onEvent,
       )
       return
