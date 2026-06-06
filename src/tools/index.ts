@@ -66,7 +66,7 @@ const toolRegistry: Record<string, ToolDef> = {
     scope: 'write',
   },
   execCommand: {
-    fn: execCommandTool,
+    fn: (rootDir: string, command: string) => execCommandTool(rootDir, command),
     description: '在项目目录下执行 shell 命令，用于运行 lint、test、build 等',
     argNames: ['rootDir', 'command'],
     scope: 'read',
@@ -122,7 +122,7 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
             : (name === 'createPullRequest' && arg !== 'repoUrl' ? `${arg}，可传 auto 使用默认值` : arg),
         }
       }
-      const required = def.requiredArgNames ?? (name === 'createPullRequest' ? ['rootDir'] : def.argNames)
+      const required = def.requiredArgNames ?? def.argNames
       return {
         type: 'function' as const,
         function: {
@@ -145,6 +145,7 @@ export async function executeTool(
   args: Record<string, string>,
   allowedPaths: string[],
   designConfirmed?: boolean,
+  signal?: AbortSignal,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
@@ -188,8 +189,16 @@ export async function executeTool(
 
   try {
     const effectiveRootDir = rootDir || allowedPaths[0]
-    const argValues = [effectiveRootDir, ...tool.argNames.map((n) => args[n] ?? '')]
-    return await tool.fn(effectiveRootDir, ...argValues.slice(1))
+    const argValues = tool.argNames
+      .filter((n) => n !== 'rootDir') // rootDir injected separately above
+      .map((n) => args[n] ?? '')
+
+    // execCommand supports AbortSignal to force-kill child processes
+    if (name === 'execCommand' && signal) {
+      return await execCommandTool(effectiveRootDir, argValues[0] ?? '', signal)
+    }
+
+    return await tool.fn(effectiveRootDir, ...argValues)
   } catch (e: unknown) {
     return `工具执行错误：${e instanceof Error ? e.message : String(e)}`
   }

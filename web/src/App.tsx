@@ -178,14 +178,14 @@ function summarizeLines(text: string, maxLines = 3): string {
 
 function formatToolCall(name: string, rawArguments: string): string {
   const args = parseToolArguments(rawArguments)
-  const file = args.relativePath || args.dirPath || args.pattern || args.keyword || args.changedFiles
+  const file = args.filePath || args.dirPath || args.pattern || args.keyword || args.changedFiles
 
-  if (name === 'readTextFile') return `读取文件：${args.relativePath || '未指定文件'}`
+  if (name === 'readTextFile') return `读取文件：${args.filePath || '未指定文件'}`
   if (name === 'listDirectory') return `查看目录：${args.dirPath || '.'}`
   if (name === 'searchFiles') return `搜索文件：${args.pattern || '未指定模式'}`
   if (name === 'searchContent') return `搜索内容：${args.keyword || '未指定关键词'}`
-  if (name === 'writeFile') return `修改文件：${args.relativePath || '未指定文件'}`
-  if (name === 'deleteFile') return `删除文件：${args.relativePath || '未指定文件'}`
+  if (name === 'writeFile') return `修改文件：${args.filePath || '未指定文件'}`
+  if (name === 'deleteFile') return `删除文件：${args.filePath || '未指定文件'}`
   if (name === 'execCommand') return `运行命令：${args.command || '未指定命令'}`
   if (name === 'verifyCode') return `验证代码：${file || '本次修改'}`
   return `调用工具：${name}`
