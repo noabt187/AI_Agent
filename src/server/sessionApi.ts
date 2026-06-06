@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
 import { isMemoryRecallMode, type MemoryRecallMode } from '../orchestrator/types.js'
+import { isMemoryLayerId } from '../memory/projectMemory.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
@@ -132,12 +133,15 @@ export async function updateMemorySettings(sessionId: string, recallMode: unknow
   return loadSession(sessionId)
 }
 
-export async function addPinnedMemory(sessionId: string, content: unknown): Promise<unknown> {
+export async function addPinnedMemory(sessionId: string, content: unknown, layer: unknown = 'project'): Promise<unknown> {
   if (typeof content !== 'string' || !content.trim()) {
     throw new Error('content 不能为空')
   }
+  if (!isMemoryLayerId(layer)) {
+    throw new Error('layer 必须是 session、project 或 global')
+  }
   const orchestrator = await getOrchestrator(sessionId)
-  const result = await orchestrator.rememberProjectMemory(content)
+  const result = await orchestrator.rememberMemory(layer, content)
   return {
     ...result,
     memoryState: await orchestrator.getMemoryState(),
@@ -146,7 +150,7 @@ export async function addPinnedMemory(sessionId: string, content: unknown): Prom
 
 export async function removePinnedMemory(sessionId: string, id: string): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
-  const deleted = await orchestrator.forgetProjectMemory(id)
+  const { deleted } = await orchestrator.forgetMemory(id)
   return {
     deleted,
     memoryState: await orchestrator.getMemoryState(),
