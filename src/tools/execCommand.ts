@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process'
+import { spawn } from 'node:child_process'
 
 // 命令白名单：只允许验证类命令，禁止任意 shell 执行
 const ALLOWED_COMMANDS = new Set([
@@ -17,17 +17,78 @@ function isCommandAllowed(command: string): boolean {
   return false
 }
 
-export async function execCommandTool(rootDir: string, command: string): Promise<string> {
-  if (!isCommandAllowed(command)) {
-    return `错误：命令 "${command}" 不在白名单中。允许的命令：npm test, npm run build, npm run lint, npm run format 等验证类命令。`
+function splitCommand(full: string): { cmd: string; args: string[] } {
+  const trimmed = full.trim()
+  // Handle "cd path && cmd args"
+  const cdMatch = trimmed.match(/^cd\s+([\w./\\-]+)\s*&&\s*(.+)$/)
+  if (cdMatch) {
+    const targetDir = cdMatch[1]
+    const rest = cdMatch[2]
+    // Use shell to handle cd chaining
+    if (process.platform === 'win32') {
+      return { cmd: 'cmd', args: ['/c', `cd /d ${targetDir} && ${rest}`] }
+    }
+    return { cmd: '/bin/sh', args: ['-c', `cd "${targetDir}" && ${rest}`] }
   }
+
+  const parts = trimmed.split(/\s+/)
+  // On Windows, npm scripts run via cmd /c
+  if (process.platform === 'win32') {
+    return { cmd: 'cmd', args: ['/c', trimmed] }
+  }
+  return { cmd: parts[0], args: parts.slice(1) }
+}
+
+export function execCommandTool(
+  rootDir: string,
+  command: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!isCommandAllowed(command)) {
+    return Promise.resolve(
+      `错误：命令 "${command}" 不在白名单中。允许的命令：npm test, npm run build, npm run lint, npm run format 等验证类命令。`,
+    )
+  }
+
   return new Promise((resolve) => {
-    exec(command, { cwd: rootDir, timeout: 60000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    const { cmd, args } = splitCommand(command)
+    const timeoutMs = 60000
+
+    const child = spawn(cmd, args, {
+      cwd: rootDir,
+      timeout: timeoutMs,
+      signal,      // ← 关键：abort 时 Node 自动 SIGTERM → SIGKILL
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    child.on('close', (code, sig) => {
+      if (sig) {
+        resolve(`[已终止] 命令被信号 ${sig} 中断`)
+        return
+      }
       const output = [stdout, stderr].filter(Boolean).join('\n')
-      if (err) {
-        resolve(`[exit code: ${err.code}]\n${output || err.message}`)
+      if (code !== 0) {
+        resolve(`[exit code: ${code}]\n${output || '命令执行失败'}`)
       } else {
         resolve(output || 'OK')
+      }
+    })
+
+    child.on('error', (err) => {
+      if (signal?.aborted) {
+        resolve('[已终止] 命令被用户中断')
+      } else {
+        resolve(`工具执行错误：${err.message}`)
       }
     })
   })

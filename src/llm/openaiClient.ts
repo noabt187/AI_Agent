@@ -63,7 +63,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
       const toolCallsAcc = new Map<number, { id: string; name: string; arguments: string }>()
       let usage: { promptTokens: number; completionTokens: number } | undefined
 
-      for await (const line of parseSseLines(res.body)) {
+      for await (const line of parseSseLines(res.body, signal)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (data === '[DONE]') {

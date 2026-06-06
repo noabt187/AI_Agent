@@ -324,6 +324,7 @@ export class Agent {
 
     try {
       for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
+        if (signal?.aborted) break
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })
@@ -334,6 +335,10 @@ export class Agent {
             await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
           }
         }
+      }
+
+      if (signal?.aborted) {
+        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
       }
 
       const toolFailureCounts = new Map<string, number>()
@@ -375,7 +380,8 @@ export class Agent {
             continue
           }
 
-          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed)
+          if (signal?.aborted) break
+          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed, signal)
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 
@@ -390,6 +396,7 @@ export class Agent {
         fullText = ''
         toolCalls = []
         for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
+          if (signal?.aborted) break
           if (evt.kind === 'delta') {
             fullText += evt.delta
             await onEvent?.({ type: 'delta', text: evt.delta })

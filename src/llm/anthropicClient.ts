@@ -50,7 +50,7 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
       let inputTokens = 0
       let outputTokens = 0
 
-      for await (const line of parseSseLines(res.body)) {
+      for await (const line of parseSseLines(res.body, signal)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (!data) continue
