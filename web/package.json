@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node ../scripts/cleanup-dev-ports.mjs --ports 5173,5174,5175",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview"
