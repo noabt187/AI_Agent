@@ -282,6 +282,63 @@ small {
   overflow: auto;
 }
 
+.sessionList,
+.memoryList,
+.commentList,
+.timeline,
+.metricsView,
+.previewStage,
+.directoryList {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.7) rgba(8, 28, 52, 0.92);
+}
+
+.sessionList::-webkit-scrollbar,
+.memoryList::-webkit-scrollbar,
+.commentList::-webkit-scrollbar,
+.timeline::-webkit-scrollbar,
+.metricsView::-webkit-scrollbar,
+.previewStage::-webkit-scrollbar,
+.directoryList::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.sessionList::-webkit-scrollbar-track,
+.memoryList::-webkit-scrollbar-track,
+.commentList::-webkit-scrollbar-track,
+.timeline::-webkit-scrollbar-track,
+.metricsView::-webkit-scrollbar-track,
+.previewStage::-webkit-scrollbar-track,
+.directoryList::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(7, 19, 37, 0.98), rgba(10, 36, 64, 0.94));
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.12);
+}
+
+.sessionList::-webkit-scrollbar-thumb,
+.memoryList::-webkit-scrollbar-thumb,
+.commentList::-webkit-scrollbar-thumb,
+.timeline::-webkit-scrollbar-thumb,
+.metricsView::-webkit-scrollbar-thumb,
+.previewStage::-webkit-scrollbar-thumb,
+.directoryList::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(8, 28, 52, 0.92);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(103, 232, 249, 0.95), rgba(37, 99, 235, 0.92));
+  box-shadow: 0 0 14px rgba(34, 211, 238, 0.2);
+}
+
+.sessionList::-webkit-scrollbar-thumb:hover,
+.memoryList::-webkit-scrollbar-thumb:hover,
+.commentList::-webkit-scrollbar-thumb:hover,
+.timeline::-webkit-scrollbar-thumb:hover,
+.metricsView::-webkit-scrollbar-thumb:hover,
+.previewStage::-webkit-scrollbar-thumb:hover,
+.directoryList::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(165, 243, 252, 0.98), rgba(59, 130, 246, 0.96));
+}
+
 .sessionItem {
   display: flex;
   width: 100%;

@@ -9,7 +9,6 @@ import {
   FolderOpen,
   Gauge,
   MessageSquare,
-  MousePointer2,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -336,9 +335,15 @@ export function App() {
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
-      if (!event.data || event.data.type !== 'agent-element-selected') return
-      setSelectedElement(event.data.payload as AnnotatedElement)
-      setElementComment('')
+      if (!event.data) return
+      if (event.data.type === 'agent-element-selected') {
+        setSelectedElement(event.data.payload as AnnotatedElement)
+        setElementComment('')
+        return
+      }
+      if (event.data.type === 'agent-annotator-active-changed') {
+        setAnnotateActive(Boolean(event.data.active))
+      }
     }
 
     window.addEventListener('message', handleMessage)
@@ -1103,18 +1108,6 @@ export function App() {
             </div>
           </section>
 
-          <div className="headerActions">
-            {viewMode === 'preview' && previewUrl ? (
-              <button
-                className={annotateActive ? 'annotateButton active' : 'annotateButton'}
-                title="评论模式"
-                onClick={() => setAnnotateActive((active) => !active)}
-              >
-                <MousePointer2 size={18} />
-              评论
-              </button>
-            ) : null}
-          </div>
         </header>
 
         {viewMode === 'metrics' ? (
