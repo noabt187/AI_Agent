@@ -768,6 +768,170 @@ small {
   opacity: 0.5;
 }
 
+.skillPanelSummary,
+.skillPanelActions {
+  display: grid;
+  gap: 8px;
+}
+
+.skillPanelSummary {
+  grid-template-columns: auto 1fr auto 1fr;
+  align-items: center;
+  color: #9fb4ca;
+  font-size: 12px;
+}
+
+.skillPanelActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.skillPanelActions button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 8px;
+  background: rgba(10, 24, 43, 0.78);
+  color: #d9e9ff;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.skillStatusDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #ef4444;
+}
+
+.skillStatusDot.enabled {
+  background: #22c55e;
+}
+
+.hiddenFileInput {
+  display: none;
+}
+
+.skillError,
+.skillManagerError {
+  border: 1px solid rgba(248, 113, 113, 0.36);
+  border-radius: 8px;
+  background: rgba(69, 20, 20, 0.78);
+  color: #fecaca;
+  font-size: 13px;
+  padding: 9px 10px;
+}
+
+.skillManagerModal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 8px;
+  background: rgba(10, 24, 43, 0.98);
+  color: #d9e9ff;
+}
+
+.skillManagerModal header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.18);
+  padding: 16px 18px;
+}
+
+.skillManagerModal h3 {
+  margin: 0;
+  color: #f3f8ff;
+  font-size: 18px;
+}
+
+.skillManagerModal p {
+  margin-top: 4px;
+  color: #91a6bd;
+  font-size: 13px;
+}
+
+.skillManagerList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 14px 18px 18px;
+}
+
+.skillManagerItem {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) minmax(112px, 0.32fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  padding: 10px;
+}
+
+.skillLampButton {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 8px;
+  background: rgba(10, 24, 43, 0.76);
+}
+
+.skillManagerMain,
+.skillManagerMeta {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.skillManagerMain strong,
+.skillManagerMain span,
+.skillManagerMeta code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillManagerMain strong {
+  color: #f3f8ff;
+  font-size: 14px;
+}
+
+.skillManagerMain span,
+.skillManagerMeta code {
+  color: #9fb4ca;
+  font-size: 13px;
+}
+
+.skillManagerMeta {
+  justify-items: end;
+}
+
+.skillManagerMeta small {
+  color: #67e8f9;
+  font-size: 12px;
+}
+
+.skillManagerEmpty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  color: #91a6bd;
+}
+
+.contextMenu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto auto;
