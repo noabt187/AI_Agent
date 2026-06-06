@@ -145,7 +145,8 @@ export class Orchestrator {
   async handleUserInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     await this.ensureAllowedPaths(onEvent)
 
-    if (userInput === '取消' || userInput === 'cancel' || userInput === '不做了') {
+    const normalizedInput = userInput.trim().toLowerCase()
+    if (normalizedInput === '取消' || normalizedInput === 'cancel' || normalizedInput === '不做了') {
       await this.handleCancel(onEvent)
       return
     }

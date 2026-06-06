@@ -38,8 +38,8 @@ const ANNOTATOR_SCRIPT = `
     'position:fixed',
     'z-index:2147483647',
     'pointer-events:none',
-    'border:2px solid #155eef',
-    'background:rgba(21,94,239,0.12)',
+    'border:2px solid #8aa982',
+    'background:rgba(194,222,203,0.18)',
     'border-radius:4px',
     'display:none'
   ].join(';');
@@ -60,11 +60,11 @@ const ANNOTATOR_SCRIPT = `
     'align-items:center',
     'justify-content:center',
     'padding:0',
-    'border:1px solid rgba(125,211,252,0.34)',
+    'border:1px solid rgba(164,196,157,0.42)',
     'border-radius:999px',
-    'background:linear-gradient(180deg, rgba(8,145,178,0.32), rgba(15,23,42,0.92))',
+    'background:linear-gradient(180deg, rgba(221,239,224,0.78), rgba(109,137,112,0.62))',
     'backdrop-filter:blur(18px)',
-    'box-shadow:0 18px 44px rgba(15,23,42,0.42), inset 0 0 0 1px rgba(255,255,255,0.06)',
+    'box-shadow:0 18px 42px rgba(71,93,75,0.24), inset 0 0 0 1px rgba(255,255,255,0.24)',
     'overflow:visible',
     'cursor:grab',
     'user-select:none',
@@ -77,8 +77,8 @@ const ANNOTATOR_SCRIPT = `
     'position:absolute',
     'inset:-7px',
     'border-radius:999px',
-    'border:1px solid rgba(103,232,249,0.28)',
-    'box-shadow:0 0 28px rgba(34,211,238,0.24), inset 0 0 14px rgba(34,211,238,0.12)',
+    'border:1px solid rgba(191,223,197,0.48)',
+    'box-shadow:0 0 28px rgba(154,194,166,0.22), inset 0 0 14px rgba(221,239,224,0.18)',
     'pointer-events:none',
     'animation:agentAnnotatorPulse 2.8s ease-in-out infinite'
   ].join(';');
@@ -88,8 +88,8 @@ const ANNOTATOR_SCRIPT = `
     'position:absolute',
     'inset:7px',
     'border-radius:999px',
-    'background:radial-gradient(circle at 28% 24%, rgba(255,255,255,0.44), rgba(255,255,255,0.08) 22%, rgba(8,145,178,0.14) 40%, rgba(15,23,42,0.9) 100%)',
-    'box-shadow:inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -16px 24px rgba(15,23,42,0.5)',
+    'background:radial-gradient(circle at 28% 24%, rgba(255,255,255,0.72), rgba(241,248,239,0.34) 24%, rgba(188,220,197,0.34) 48%, rgba(92,121,96,0.68) 100%)',
+    'box-shadow:inset 0 1px 0 rgba(255,255,255,0.42), inset 0 -16px 24px rgba(76,101,80,0.22)',
     'pointer-events:none'
   ].join(';');
 
@@ -98,7 +98,7 @@ const ANNOTATOR_SCRIPT = `
     'position:absolute',
     'inset:16px',
     'border-radius:999px',
-    'background:radial-gradient(circle, rgba(103,232,249,0.82), rgba(37,99,235,0.14) 65%, rgba(37,99,235,0) 100%)',
+    'background:radial-gradient(circle, rgba(221,239,224,0.9), rgba(142,179,148,0.2) 65%, rgba(142,179,148,0) 100%)',
     'filter:blur(7px)',
     'opacity:0.72',
     'pointer-events:none'
@@ -121,18 +121,18 @@ const ANNOTATOR_SCRIPT = `
 
   const bubbleIcon = document.createElement('span');
   bubbleIcon.style.cssText = [
-    'color:#f0f9ff',
+    'color:#f7fff6',
     'font:700 16px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'text-shadow:0 0 14px rgba(103,232,249,0.55)'
+    'text-shadow:0 0 14px rgba(180,216,188,0.58)'
   ].join(';');
 
   const bubbleLabel = document.createElement('span');
   bubbleLabel.style.cssText = [
-    'color:#d9f7ff',
+    'color:#f3fbef',
     'font:700 11px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
     'letter-spacing:0.08em',
     'text-transform:uppercase',
-    'text-shadow:0 0 12px rgba(34,211,238,0.32)'
+    'text-shadow:0 0 12px rgba(128,164,134,0.34)'
   ].join(';');
 
   const bubbleStatusOrbit = document.createElement('span');
@@ -152,8 +152,8 @@ const ANNOTATOR_SCRIPT = `
     'width:8px',
     'height:8px',
     'border-radius:999px',
-    'background:#67e8f9',
-    'box-shadow:0 0 0 3px rgba(103,232,249,0.14), 0 0 14px rgba(103,232,249,0.48)',
+    'background:#c8e6c9',
+    'box-shadow:0 0 0 3px rgba(200,230,201,0.18), 0 0 14px rgba(136,171,142,0.44)',
     'pointer-events:none'
   ].join(';');
 
@@ -188,23 +188,23 @@ const ANNOTATOR_SCRIPT = `
     bubbleLabel.textContent = active ? '停止' : '评注';
     bubble.setAttribute('aria-label', active ? '结束评论模式' : '开启评论模式');
     bubble.style.background = active
-      ? 'linear-gradient(180deg, rgba(13,148,136,0.36), rgba(15,23,42,0.94))'
-      : 'linear-gradient(180deg, rgba(8,145,178,0.32), rgba(15,23,42,0.92))';
+      ? 'linear-gradient(180deg, rgba(203,232,210,0.86), rgba(82,124,91,0.72))'
+      : 'linear-gradient(180deg, rgba(221,239,224,0.78), rgba(109,137,112,0.62))';
     bubble.style.boxShadow = active
-      ? '0 20px 48px rgba(13,148,136,0.34), inset 0 0 0 1px rgba(255,255,255,0.08)'
-      : '0 18px 44px rgba(15,23,42,0.42), inset 0 0 0 1px rgba(255,255,255,0.06)';
-    bubble.style.borderColor = active ? 'rgba(45,212,191,0.42)' : 'rgba(125,211,252,0.34)';
-    bubbleRing.style.borderColor = active ? 'rgba(45,212,191,0.42)' : 'rgba(103,232,249,0.28)';
+      ? '0 20px 46px rgba(76,121,83,0.28), inset 0 0 0 1px rgba(255,255,255,0.28)'
+      : '0 18px 42px rgba(71,93,75,0.24), inset 0 0 0 1px rgba(255,255,255,0.24)';
+    bubble.style.borderColor = active ? 'rgba(143,184,150,0.52)' : 'rgba(164,196,157,0.42)';
+    bubbleRing.style.borderColor = active ? 'rgba(176,215,184,0.58)' : 'rgba(191,223,197,0.48)';
     bubbleRing.style.boxShadow = active
-      ? '0 0 32px rgba(45,212,191,0.28), inset 0 0 18px rgba(45,212,191,0.16)'
-      : '0 0 28px rgba(34,211,238,0.24), inset 0 0 14px rgba(34,211,238,0.12)';
+      ? '0 0 32px rgba(154,194,166,0.3), inset 0 0 18px rgba(221,239,224,0.22)'
+      : '0 0 28px rgba(154,194,166,0.22), inset 0 0 14px rgba(221,239,224,0.18)';
     bubbleGlow.style.background = active
-      ? 'radial-gradient(circle, rgba(45,212,191,0.88), rgba(15,118,110,0.18) 65%, rgba(15,118,110,0) 100%)'
-      : 'radial-gradient(circle, rgba(103,232,249,0.82), rgba(37,99,235,0.14) 65%, rgba(37,99,235,0) 100%)';
-    bubbleStatus.style.background = active ? '#2dd4bf' : '#67e8f9';
+      ? 'radial-gradient(circle, rgba(211,238,216,0.94), rgba(118,161,127,0.24) 65%, rgba(118,161,127,0) 100%)'
+      : 'radial-gradient(circle, rgba(221,239,224,0.9), rgba(142,179,148,0.2) 65%, rgba(142,179,148,0) 100%)';
+    bubbleStatus.style.background = active ? '#a8d5ad' : '#c8e6c9';
     bubbleStatus.style.boxShadow = active
-      ? '0 0 0 3px rgba(45,212,191,0.16), 0 0 16px rgba(45,212,191,0.52)'
-      : '0 0 0 3px rgba(103,232,249,0.14), 0 0 14px rgba(103,232,249,0.48)';
+      ? '0 0 0 3px rgba(168,213,173,0.2), 0 0 16px rgba(113,158,122,0.5)'
+      : '0 0 0 3px rgba(200,230,201,0.18), 0 0 14px rgba(136,171,142,0.44)';
     bubbleStatusOrbit.style.animation = active ? 'agentAnnotatorOrbit 2.8s linear infinite' : 'none';
     bubbleStatusOrbit.style.opacity = active ? '1' : '0';
   }
