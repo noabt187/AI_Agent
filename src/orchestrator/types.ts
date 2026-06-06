@@ -48,9 +48,6 @@ export type WorldState = {
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
-
-  // Skill system: names of skills loaded via use_skill tool
-  activeSkills: string[]
 }
 
 export type AgentResult =

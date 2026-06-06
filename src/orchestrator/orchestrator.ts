@@ -41,7 +41,6 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
-      activeSkills: [],
     }
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
@@ -54,7 +53,6 @@ export class Orchestrator {
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
       persisted.errors = persisted.errors || {}
-      persisted.activeSkills = persisted.activeSkills || []
       persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
     }
     return new Orchestrator(sessionId, persisted ?? {
@@ -64,7 +62,6 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
-      activeSkills: [],
     })
   }
 

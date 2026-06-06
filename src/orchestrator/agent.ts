@@ -144,14 +144,6 @@ export function buildRuntimeContext(
     parts.push(`## 可用技能 (Skills)\n${catalog}\n\n根据任务需要调用 use_skill(skillName) 加载完整技能指引。`)
   }
 
-  // Loaded skill content — only inject skills the model explicitly loaded
-  if (state.activeSkills.length > 0) {
-    const loadedSkills = allSkills.filter((s) => state.activeSkills.includes(s.name))
-    if (loadedSkills.length > 0) {
-      parts.push(`## 当前加载的技能指引\n${loadedSkills.map((s) => s.content).join('\n\n')}`)
-    }
-  }
-
   return parts.join('\n\n')
 }
 
@@ -282,8 +274,6 @@ export class Agent {
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
     const allSkills = await loadSkills(SKILLS_DIR)
-    // Backward compat: initialize activeSkills for existing persisted states
-    if (!state.activeSkills) state.activeSkills = []
     const shouldRecallPinned = getMemorySettings(state).recallMode !== 'off'
     const [globalPinnedMemories, projectPinnedMemories, sessionPinnedMemories] = shouldRecallPinned
       ? await Promise.all([
@@ -361,9 +351,6 @@ export class Agent {
             }
             const skillContent = useSkill(allSkills, skillName)
             if (skillContent) {
-              if (!state.activeSkills.includes(skillName)) {
-                state.activeSkills.push(skillName)
-              }
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
               await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
             } else {
