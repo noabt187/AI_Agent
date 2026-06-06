@@ -1,6 +1,6 @@
 ---
 name: auto-memory
-description: Automatic memory writing guide for saving durable project or global Markdown memories before context compression or after reusable lessons emerge.
+description: 自动记忆写入指引 — 保存长期可复用的项目/全局 Markdown 记忆
 ---
 
 Use this skill only when there is a durable, non-obvious fact worth preserving for future work.
