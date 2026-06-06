@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent as ReactChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent as ReactChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   CheckCircle2,
   CircleStop,
@@ -10,7 +10,7 @@ import {
   FolderOpen,
   Gauge,
   MessageSquare,
-  MousePointer2,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -20,6 +20,7 @@ import {
   RefreshCcw,
   Send,
   Settings2,
+  Sun,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -57,6 +58,7 @@ import {
   type StreamEvent,
 } from './api'
 import { buildAnnotationPrompt, type ElementComment } from './annotationPrompt'
+import { messageContent } from './messageContent'
 
 type TimelineItem = {
   id: string
@@ -76,6 +78,7 @@ type PendingConfirm = {
 
 type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
 type ViewMode = 'chat' | 'preview' | 'metrics'
+type ThemeMode = 'dark' | 'light'
 type NegativeFeedbackDraft = {
   itemId: string
   content: string
@@ -103,23 +106,14 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 }
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
+const modelThinkingStatus = '模型思考中'
+const composerMaxRows = 10
+const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
+const themeStorageKey = 'agent-console-theme'
 
-function messageContent(message: Message): string {
-  if (message.role !== 'assistant') return message.content
-  const raw = message.content.trim()
-  if (!raw.startsWith('{')) return message.content
-  try {
-    const parsed = JSON.parse(raw) as { message?: string; prompt?: string; questions?: string[] }
-    const parts: string[] = []
-    if (parsed.message) parts.push(parsed.message)
-    if (parsed.questions?.length) {
-      parts.push(parsed.questions.map((q, i) => `${i + 1}. ${q}`).join('\n'))
-    }
-    if (parsed.prompt) parts.push(parsed.prompt)
-    return parts.join('\n\n') || message.content
-  } catch {
-    return message.content
-  }
+function getInitialThemeMode(): ThemeMode {
+  if (typeof window === 'undefined') return 'dark'
+  return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
 }
 
 function toTimeline(messages: Message[]): TimelineItem[] {
@@ -197,7 +191,7 @@ function formatToolCall(name: string, rawArguments: string): string {
 }
 
 function formatToolResult(name: string, result: string): string {
-  if (name === 'readTextFile') return '读取完成'
+  if (name === 'readTextFile') return ''
   if (name === 'listDirectory') return `目录读取完成：${result.split('\n').filter(Boolean).length} 项`
   if (name === 'searchFiles' || name === 'searchContent') {
     if (result.includes('没有找到')) return '搜索完成：没有匹配结果'
@@ -223,19 +217,27 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
   const content = latestAssistant.content.trim()
   if (!content || /任务完成|已完成|验证通过/.test(content)) return undefined
 
-  const waitingForConfirm = /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
+  const hasAllowWriteWarning = content.includes(allowWriteConfirmWarning)
+    || /获得文件写入权限|增\/删\/改/.test(content)
+  const waitingForConfirm = hasAllowWriteWarning
+    || /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
     || (/确认/.test(content) && /是否|吗|？|\?/.test(content))
   if (!waitingForConfirm) return undefined
 
   return {
-    allowWrite: /方案|设计|任务顺序|待执行/.test(content),
+    allowWrite: hasAllowWriteWarning || /方案|设计|任务顺序|待执行/.test(content),
     message: content,
   }
+}
+
+function pendingConfirmKey(sessionId: string, confirm: PendingConfirm): string {
+  return [sessionId, confirm.allowWrite ? 'write' : 'read', confirm.message].join('\n')
 }
 
 export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
@@ -281,13 +283,22 @@ export function App() {
   const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
+  const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
 
   const selectedSessionSummary = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
   )
 
-  const pendingConfirm = session?.state.pendingConfirm || inferPendingConfirm(timeline, running)
+  const inferredPendingConfirm = useMemo(() => inferPendingConfirm(timeline, running), [timeline, running])
+  const rawPendingConfirm = session?.state.pendingConfirm || inferredPendingConfirm
+  const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
+    ? pendingConfirmKey(selectedSessionId, rawPendingConfirm)
+    : ''
+  const pendingConfirm = activePendingConfirmKey && activePendingConfirmKey === dismissedPendingConfirmKey
+    ? undefined
+    : rawPendingConfirm
   const operationRoot = session?.state.allowedPaths[0] || ''
   const enabledSkillCount = skills.filter((skill) => skill.enabled).length
   const sortedSkills = useMemo(
@@ -298,7 +309,10 @@ export function App() {
     ? skills.find((skill) => skill.id === skillContextMenu.skillId) || null
     : null
 
-  function clearPendingConfirmLocal() {
+  function clearPendingConfirmLocal(options: { dismiss?: boolean } = {}) {
+    if (options.dismiss && selectedSessionId && pendingConfirm) {
+      setDismissedPendingConfirmKey(pendingConfirmKey(selectedSessionId, pendingConfirm))
+    }
     setSession((current) => current
       ? {
           ...current,
@@ -328,7 +342,7 @@ export function App() {
     setSession(detail)
     if (updateTimeline) setTimeline(toTimeline(detail.messages))
     setRunning(detail.running)
-    setStatus(detail.running ? '运行中' : '就绪')
+    setStatus(detail.running ? modelThinkingStatus : '就绪')
   }
 
   useEffect(() => {
@@ -337,7 +351,12 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    window.localStorage.setItem(themeStorageKey, themeMode)
+  }, [themeMode])
+
+  useEffect(() => {
     if (selectedSessionId) void refreshSession(selectedSessionId)
+    setDismissedPendingConfirmKey('')
   }, [selectedSessionId])
 
   useEffect(() => {
@@ -364,6 +383,25 @@ export function App() {
     })
   }, [selectedSessionId, viewMode, timeline.length, activityItems.length])
 
+  useLayoutEffect(() => {
+    const textarea = promptTextareaRef.current
+    if (!textarea) return
+
+    textarea.style.height = 'auto'
+    const styles = window.getComputedStyle(textarea)
+    const lineHeight = Number.parseFloat(styles.lineHeight)
+    const fontSize = Number.parseFloat(styles.fontSize) || 16
+    const resolvedLineHeight = Number.isFinite(lineHeight) ? lineHeight : fontSize * 1.45
+    const padding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom)
+    const border = Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth)
+    const maxHeight = Math.ceil(resolvedLineHeight * composerMaxRows + padding + border)
+    const scrollHeight = textarea.scrollHeight + border
+    const nextHeight = Math.min(scrollHeight, maxHeight)
+
+    textarea.style.height = `${nextHeight}px`
+    textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }, [prompt])
+
   useEffect(() => {
     if (selectedSessionId) void refreshMemory(selectedSessionId)
   }, [selectedSessionId])
@@ -376,9 +414,15 @@ export function App() {
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
-      if (!event.data || event.data.type !== 'agent-element-selected') return
-      setSelectedElement(event.data.payload as AnnotatedElement)
-      setElementComment('')
+      if (!event.data) return
+      if (event.data.type === 'agent-element-selected') {
+        setSelectedElement(event.data.payload as AnnotatedElement)
+        setElementComment('')
+        return
+      }
+      if (event.data.type === 'agent-annotator-active-changed') {
+        setAnnotateActive(Boolean(event.data.active))
+      }
     }
 
     window.addEventListener('message', handleMessage)
@@ -873,7 +917,7 @@ export function App() {
 
   function handleStreamEvent(event: StreamEvent) {
     if (event.type === 'start') {
-      setStatus('Agent 已开始')
+      setStatus(modelThinkingStatus)
       return
     }
     if (event.type === 'delta') {
@@ -886,11 +930,14 @@ export function App() {
       return
     }
     if (event.type === 'tool_call') {
+      setStatus('正在执行')
       appendActivity(formatToolCall(event.name, event.arguments))
       return
     }
     if (event.type === 'tool_result') {
-      appendActivity(formatToolResult(event.name, event.result))
+      setStatus('正在执行')
+      const summary = formatToolResult(event.name, event.result)
+      if (summary) appendActivity(summary)
       return
     }
     if (event.type === 'error') {
@@ -910,6 +957,7 @@ export function App() {
     if (!text || !selectedSessionId || running) return
     setPrompt('')
     setDeltaCount(0)
+    setStatus(modelThinkingStatus)
     setRunning(true)
     setActivityItems([])
     setActivityExpanded(false)
@@ -945,7 +993,7 @@ export function App() {
   }
 
   function handleCancelConfirm() {
-    clearPendingConfirmLocal()
+    clearPendingConfirmLocal({ dismiss: true })
     void sendPrompt('取消')
   }
 
@@ -983,7 +1031,7 @@ export function App() {
   }
 
   const statusLabel = useMemo(() => {
-    if (running) return deltaCount > 0 ? `生成中 · ${deltaCount}` : '运行中'
+    if (running) return deltaCount > 0 ? `生成中 · ${deltaCount}` : status || modelThinkingStatus
     return status
   }, [deltaCount, running, status])
 
@@ -995,17 +1043,30 @@ export function App() {
   }, [pendingConfirm, previewUrl, viewMode])
 
   const activitySummary = useMemo(() => {
-    const latest = activityItems.at(-1)?.content || (running ? '正在准备' : '暂无执行过程')
+    const latest = activityItems.at(-1)?.content || (running ? '等待模型生成或选择下一步行动' : '暂无执行过程')
     return {
       latest,
       count: activityItems.length,
     }
   }, [activityItems, running])
 
+  const showActivityPanel = running || activityItems.length > 0
+  const activityPanelTitle = running && activityItems.length === 0
+    ? modelThinkingStatus
+    : running
+      ? '正在执行'
+      : '执行过程'
+
   const memoryMode = sessionMemory?.settings.recallMode || session?.state.memorySettings?.recallMode || 'auto'
+  const themeButtonTitle = themeMode === 'dark' ? '切换浅色模式' : '切换暗色模式'
+  const appShellClassName = [
+    'appShell',
+    sidebarCollapsed ? 'sidebarCollapsed' : '',
+    themeMode === 'light' ? 'themeLight' : 'themeDark',
+  ].filter(Boolean).join(' ')
 
   return (
-    <main className={sidebarCollapsed ? 'appShell sidebarCollapsed' : 'appShell'}>
+    <main className={appShellClassName}>
       <aside className="sidebar">
         <section className="brandBlock">
           <div>
@@ -1013,6 +1074,14 @@ export function App() {
             <p>{statusLabel}</p>
           </div>
           <div className="brandActions">
+            <button
+              className="iconButton"
+              title={themeButtonTitle}
+              aria-label={themeButtonTitle}
+              onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
+            >
+              {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             <button className="iconButton" title="刷新" onClick={() => void refreshSession()}>
               <RefreshCcw size={18} />
             </button>
@@ -1212,9 +1281,19 @@ export function App() {
       </aside>
 
       <aside className="collapsedRail" aria-label="已收起的侧边栏">
-        <button className="iconButton" title="展开侧边栏" onClick={() => setSidebarCollapsed(false)}>
-          <PanelLeftOpen size={18} />
-        </button>
+        <div className="railActions">
+          <button
+            className="iconButton"
+            title={themeButtonTitle}
+            aria-label={themeButtonTitle}
+            onClick={() => setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'))}
+          >
+            {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <button className="iconButton" title="展开侧边栏" onClick={() => setSidebarCollapsed(false)}>
+            <PanelLeftOpen size={18} />
+          </button>
+        </div>
       </aside>
 
       <section className="workspace">
@@ -1260,18 +1339,6 @@ export function App() {
             </div>
           </section>
 
-          <div className="headerActions">
-            {viewMode === 'preview' && previewUrl ? (
-              <button
-                className={annotateActive ? 'annotateButton active' : 'annotateButton'}
-                title="评论模式"
-                onClick={() => setAnnotateActive((active) => !active)}
-              >
-                <MousePointer2 size={18} />
-              评论
-              </button>
-            ) : null}
-          </div>
         </header>
 
         {viewMode === 'metrics' ? (
@@ -1356,7 +1423,7 @@ export function App() {
           </div>
         ) : (
           <div className="timeline" ref={timelineRef}>
-            {timeline.length === 0 && activityItems.length === 0 ? (
+            {timeline.length === 0 && activityItems.length === 0 && !running ? (
               <div className="emptyState">新会话已准备好</div>
             ) : (
               <>
@@ -1395,17 +1462,25 @@ export function App() {
                     ) : null}
                   </article>
                 ))}
-                {activityItems.length > 0 ? (
+                {showActivityPanel ? (
                   <section className="activityPanel" aria-label="执行过程">
-                    <button className="activitySummary" onClick={() => setActivityExpanded((expanded) => !expanded)}>
+                    <button
+                      className={activityItems.length === 0 ? 'activitySummary thinking' : 'activitySummary'}
+                      disabled={activityItems.length === 0}
+                      onClick={() => setActivityExpanded((expanded) => !expanded)}
+                    >
                       <span className="activityPulse" />
                       <span>
-                        <strong>{running ? '正在执行' : '执行过程'}</strong>
-                        <small>{activitySummary.count} 条记录 · {activitySummary.latest}</small>
+                        <strong>{activityPanelTitle}</strong>
+                        <small>
+                          {activityItems.length > 0
+                            ? `${activitySummary.count} 条记录 · ${activitySummary.latest}`
+                            : activitySummary.latest}
+                        </small>
                       </span>
-                      <em>{activityExpanded ? '收起' : '详情'}</em>
+                      <em>{activityItems.length > 0 ? (activityExpanded ? '收起' : '详情') : '等待'}</em>
                     </button>
-                    {activityExpanded ? (
+                    {activityExpanded && activityItems.length > 0 ? (
                       <ol className="activityList">
                         {activityItems.map((item) => (
                           <li key={item.id}>{item.content}</li>
@@ -1445,8 +1520,13 @@ export function App() {
 
         {pendingConfirm ? (
           <div className="confirmBar">
+            {pendingConfirm.allowWrite ? (
+              <div className="confirmWarning" role="alert">
+                {allowWriteConfirmWarning}
+              </div>
+            ) : null}
             {confirmEditorOpen ? (
-              <>
+              <div className="confirmEditRow">
                 <textarea
                   value={confirmDraft}
                   onChange={(event) => setConfirmDraft(event.target.value)}
@@ -1464,7 +1544,7 @@ export function App() {
                     返回
                   </button>
                 </div>
-              </>
+              </div>
             ) : (
               <div className="confirmActions">
                 <button className="primary" onClick={handleConfirmAction}>
@@ -1486,6 +1566,7 @@ export function App() {
           }}
         >
           <textarea
+            ref={promptTextareaRef}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="输入需求或问题"
