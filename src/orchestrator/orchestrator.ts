@@ -8,11 +8,15 @@ import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
 import {
-  appendPinnedProjectMemory,
+  appendPinnedMemory,
   createAndStoreProjectMemory,
-  deletePinnedProjectMemory,
-  loadPinnedProjectMemories,
-  type PinnedProjectMemory,
+  deletePinnedMemoryById,
+  isMemoryLayerId,
+  loadMemoryLayers,
+  MEMORY_LAYER_LABELS,
+  type MemoryLayerId,
+  type MemoryLayersState,
+  type PinnedMemory,
 } from '../memory/projectMemory.js'
 import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
 
@@ -87,11 +91,12 @@ export class Orchestrator {
     return this.state.allowedPaths[0] ?? process.cwd()
   }
 
-  async getMemoryState(): Promise<{ settings: MemorySettings; pinned: PinnedProjectMemory[] }> {
+  async getMemoryState(): Promise<{ settings: MemorySettings } & MemoryLayersState> {
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
+    const memory = await loadMemoryLayers(this.getProjectDir(), this.state.sessionId)
     return {
       settings: this.state.memorySettings,
-      pinned: await loadPinnedProjectMemories(this.getProjectDir()),
+      ...memory,
     }
   }
 
@@ -100,12 +105,18 @@ export class Orchestrator {
     await this.persist()
   }
 
-  async rememberProjectMemory(content: string): Promise<{ memory: PinnedProjectMemory; created: boolean }> {
-    return appendPinnedProjectMemory(this.getProjectDir(), content, this.state.sessionId)
+  async rememberMemory(layer: MemoryLayerId, content: string): Promise<{ memory: PinnedMemory; created: boolean }> {
+    return appendPinnedMemory({
+      layer,
+      content,
+      sourceSessionId: this.state.sessionId,
+      projectDir: this.getProjectDir(),
+      sessionId: this.state.sessionId,
+    })
   }
 
-  async forgetProjectMemory(id: string): Promise<boolean> {
-    return deletePinnedProjectMemory(this.getProjectDir(), id)
+  async forgetMemory(id: string): Promise<{ deleted: boolean; layer?: MemoryLayerId }> {
+    return deletePinnedMemoryById(this.getProjectDir(), this.state.sessionId, id)
   }
 
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
@@ -133,7 +144,8 @@ export class Orchestrator {
   async handleUserInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     await this.ensureAllowedPaths(onEvent)
 
-    if (userInput === '取消' || userInput === 'cancel' || userInput === '不做了') {
+    const normalizedInput = userInput.trim().toLowerCase()
+    if (normalizedInput === '取消' || normalizedInput === 'cancel' || normalizedInput === '不做了') {
       await this.handleCancel(onEvent)
       return
     }
@@ -292,8 +304,9 @@ export class Orchestrator {
 
   private async emitMemoryStatus(onEvent?: AgentEventHandler) {
     const memory = await this.getMemoryState()
+    const total = memory.layers.reduce((sum, layer) => sum + layer.items.length, 0)
     await this.emitOutput(`\n[memory] 召回模式: ${memory.settings.recallMode}`, onEvent)
-    await this.emitOutput(`[memory] 项目固定记忆: ${memory.pinned.length} 条`, onEvent)
+    await this.emitOutput(`[memory] 固定记忆: ${total} 条（会话/项目/全局）`, onEvent)
   }
 
   private async handleMemoryCommand(input: string, onEvent?: AgentEventHandler) {
@@ -313,14 +326,15 @@ export class Orchestrator {
     }
 
     if (action === 'list') {
-      const { pinned } = await this.getMemoryState()
-      await this.emitOutput('\n[memory] 项目固定记忆:', onEvent)
-      if (pinned.length === 0) {
-        await this.emitOutput('  （无）', onEvent)
-        return
-      }
-      for (const item of pinned) {
-        await this.emitOutput(`  ${item.id} - ${item.content}`, onEvent)
+      const { layers } = await this.getMemoryState()
+      await this.emitOutput('\n[memory] 固定记忆:', onEvent)
+      for (const layer of layers) {
+        await this.emitOutput(`  ${layer.label}: ${layer.items.length} 条`, onEvent)
+        await this.emitOutput(`    文件: ${layer.paths.pinned}`, onEvent)
+        if (layer.paths.tasks) await this.emitOutput(`    历史任务: ${layer.paths.tasks}`, onEvent)
+        for (const item of layer.items) {
+          await this.emitOutput(`    ${item.id} - ${item.content}`, onEvent)
+        }
       }
       return
     }
@@ -331,8 +345,13 @@ export class Orchestrator {
         await this.emitOutput('\n[memory] 用法: /memory forget <id>', onEvent)
         return
       }
-      const deleted = await this.forgetProjectMemory(id)
-      await this.emitOutput(deleted ? `\n[memory] 已删除固定记忆: ${id}` : `\n[memory] 未找到固定记忆: ${id}`, onEvent)
+      const result = await this.forgetMemory(id)
+      await this.emitOutput(
+        result.deleted
+          ? `\n[memory] 已删除${result.layer ? MEMORY_LAYER_LABELS[result.layer] : ''}: ${id}`
+          : `\n[memory] 未找到固定记忆: ${id}`,
+        onEvent,
+      )
       return
     }
 
@@ -340,18 +359,21 @@ export class Orchestrator {
   }
 
   private async handleRememberCommand(input: string, onEvent?: AgentEventHandler) {
-    const content = input.replace(/^\/remember\b/, '').trim()
+    const raw = input.replace(/^\/remember\b/, '').trim()
+    const [first, ...rest] = raw.split(/\s+/)
+    const layer = isMemoryLayerId(first) ? first : 'project'
+    const content = isMemoryLayerId(first) ? rest.join(' ').trim() : raw
     if (!content) {
-      await this.emitOutput('\n[remember] 用法: /remember <需要项目内长期记住的内容>', onEvent)
+      await this.emitOutput('\n[remember] 用法: /remember [session|project|global] <需要长期记住的内容>', onEvent)
       return
     }
 
     try {
-      const { memory, created } = await this.rememberProjectMemory(content)
+      const { memory, created } = await this.rememberMemory(layer, content)
       await this.emitOutput(
         created
-          ? `\n[remember] 已保存项目固定记忆: ${memory.id}`
-          : `\n[remember] 已存在相同固定记忆: ${memory.id}`,
+          ? `\n[remember] 已保存${MEMORY_LAYER_LABELS[layer]}: ${memory.id}`
+          : `\n[remember] 已存在相同${MEMORY_LAYER_LABELS[layer]}: ${memory.id}`,
         onEvent,
       )
     } catch (err) {

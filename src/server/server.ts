@@ -271,7 +271,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
     if (sessionId && method === 'POST' && pathname.endsWith('/memory/pinned')) {
       const body = await readJson(req)
-      sendJson(res, 200, await addPinnedMemory(sessionId, body.content))
+      sendJson(res, 200, await addPinnedMemory(sessionId, body.content, body.layer))
       return
     }
 

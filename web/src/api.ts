@@ -19,8 +19,11 @@ export type MemorySettings = {
   recallMode: MemoryRecallMode
 }
 
-export type PinnedProjectMemory = {
+export type MemoryLayerId = 'session' | 'project' | 'global'
+
+export type PinnedMemory = {
   id: string
+  layer: MemoryLayerId
   createdAt: number
   content: string
   keywords: string[]
@@ -92,7 +95,24 @@ export type SessionMetrics = {
 
 export type SessionMemory = {
   settings: MemorySettings
-  pinned: PinnedProjectMemory[]
+  projectInfo: {
+    key: string
+    displayName: string
+    rootDir: string
+    remoteUrl?: string
+  }
+  layers: Array<{
+    id: MemoryLayerId
+    label: string
+    scope: string
+    paths: {
+      directory: string
+      pinned: string
+      tasks?: string
+      legacyDirectory?: string
+    }
+    items: PinnedMemory[]
+  }>
 }
 
 export type ManagedSkill = {
@@ -166,10 +186,10 @@ export async function updateMemorySettings(sessionId: string, recallMode: Memory
   })
 }
 
-export async function rememberPinnedMemory(sessionId: string, content: string): Promise<{ memoryState: SessionMemory }> {
+export async function rememberPinnedMemory(sessionId: string, layer: MemoryLayerId, content: string): Promise<{ memoryState: SessionMemory }> {
   return jsonRequest<{ memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ layer, content }),
   })
 }
 
