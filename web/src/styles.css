@@ -943,14 +943,16 @@ small {
 }
 
 .skillStatusDot {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
-  background: #b75d52;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14), 0 0 12px rgba(239, 68, 68, 0.3);
 }
 
 .skillStatusDot.enabled {
-  background: #9c8d70;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16), 0 0 14px rgba(34, 197, 94, 0.42);
 }
 
 .hiddenFileInput {
@@ -1034,6 +1036,14 @@ small {
   border: 1px solid rgba(212, 197, 171, 0.2);
   border-radius: 8px;
   background: rgba(43, 39, 32, 0.76);
+}
+
+.skillLampButton.enabled {
+  border-color: rgba(34, 197, 94, 0.32);
+}
+
+.skillLampButton.disabled {
+  border-color: rgba(239, 68, 68, 0.32);
 }
 
 .skillManagerMain,
@@ -2268,7 +2278,8 @@ small {
 }
 
 .themeLight .skillStatusDot.enabled {
-  background: #8da8a1;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14), 0 0 12px rgba(22, 163, 74, 0.28);
 }
 
 .themeLight .composer textarea:focus,

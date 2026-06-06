@@ -1265,9 +1265,9 @@ export function App() {
           </div>
           <div className="skillPanelSummary">
             <span className="skillStatusDot enabled" />
-            <span>{enabledSkillCount} enabled</span>
+            <span>{enabledSkillCount} 启用</span>
             <span className="skillStatusDot" />
-            <span>{skills.length - enabledSkillCount} unloaded</span>
+            <span>{skills.length - enabledSkillCount} 卸载</span>
           </div>
           <div className="skillPanelActions">
             <button type="button" disabled={skillsBusy} onClick={handleUploadSkillClick}>
@@ -1796,7 +1796,7 @@ export function App() {
                 >
                   <button
                     type="button"
-                    className="skillLampButton"
+                    className={skill.enabled ? 'skillLampButton enabled' : 'skillLampButton disabled'}
                     title={skill.enabled ? '卸载 Skill' : '启用 Skill'}
                     disabled={skillsBusy}
                     onClick={() => void handleSkillEnabled(skill, !skill.enabled)}
@@ -1808,8 +1808,8 @@ export function App() {
                     <span>{skill.summary || skill.description}</span>
                   </div>
                   <div className="skillManagerMeta">
-                    <small>{skill.source === 'builtin' ? '内置' : '上传'}</small>
-                    <code>{skill.node || skill.entry || skill.description}</code>
+                    <small>{skill.enabled ? '启用' : '卸载'} / {skill.source === 'builtin' ? '内置' : '上传'}</small>
+                    {skill.node || skill.entry ? <code>{skill.node || skill.entry}</code> : null}
                   </div>
                 </article>
               ))}
