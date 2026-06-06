@@ -3,6 +3,7 @@ import type { Message } from './api'
 type AgentDisplayPayload = {
   message?: unknown
   prompt?: unknown
+  questions?: unknown
 }
 
 const agentPayloadKeys = ['thinking', 'action', 'message', 'prompt', 'questions', 'confirmType']
@@ -64,8 +65,20 @@ function extractLooseJsonStringField(raw: string, fieldName: string): string | u
 }
 
 function normalizeAgentDisplayPayload(payload: AgentDisplayPayload, fallbackRaw: string): string {
-  const parts = [payload.message, payload.prompt]
-    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+  const parts: string[] = []
+  if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
+    parts.push(payload.message)
+  }
+  if (Array.isArray(payload.questions) && payload.questions.length > 0) {
+    const questions = payload.questions
+      .filter((question): question is string => typeof question === 'string' && question.trim().length > 0)
+      .map((question, index) => `${index + 1}. ${question}`)
+      .join('\n')
+    if (questions) parts.push(questions)
+  }
+  if (typeof payload.prompt === 'string' && payload.prompt.trim().length > 0) {
+    parts.push(payload.prompt)
+  }
 
   if (parts.length > 0) return parts.join('\n\n')
   return isLikelyAgentPayload(fallbackRaw) ? '' : fallbackRaw

@@ -1,12 +1,6 @@
 ---
 name: repository-tools
-description: 仓库 fork 和 clone 工具指引
-summary: fork/clone 仓库参数确认和执行
-trigger: repository_request
-node: repository-tools
-entry: repository_request
-onAllowWriteNext: repository-tools
-priority: 200
+description: 仓库 Fork/Clone 工具指引 — Fork 或 Clone GitHub 仓库的操作规范，适用于需要操作远程仓库时
 ---
 
 ## Skill: 仓库工具

@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAgentResult } from '../src/orchestrator/agent.js'
-import { getActiveSkills, type Skill } from '../src/skills/index.js'
+import { useSkill, getSkillCatalog, type Skill } from '../src/skills/index.js'
 import { parseGitHubRepository } from '../src/tools/createPullRequest.js'
 import { executeTool, toolDefsToOpenAI } from '../src/tools/index.js'
 
@@ -105,28 +105,33 @@ test('markdown repository operation confirmation is parsed as allow_write', () =
   assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
 })
 
-test('PR requests use PR skill instead of requirement analysis and stay active after confirm input', () => {
+test('useSkill returns content for known skill, null for unknown', () => {
   const skills: Skill[] = [
-    { name: 'requirement-analysis', trigger: 'has_goal_no_requirement', content: 'requirement skill' },
-    { name: 'pull-request', trigger: 'pull_request_request', content: 'pr skill' },
-    { name: 'code-generation', trigger: 'has_tasks', content: 'code skill' },
+    { name: 'requirement-analysis', description: '需求分析指引', content: 'requirement skill body' },
+    { name: 'pull-request', description: 'PR 指引', content: 'pr skill body' },
   ]
-  const state = {
-    sessionId: 'pr-session',
-    goal: 'https://github.com/guwan-real/conduit-realworld-example-app 将修改给这个仓库提个pr',
-    allowedPaths: ['/tmp/project'],
-    completedTaskIds: [],
-    failedTaskIds: [],
-    errors: {},
-  }
 
-  assert.deepEqual(getActiveSkills(skills, state, state.goal).map((skill) => skill.name), ['pull-request'])
-  assert.deepEqual(getActiveSkills(skills, state, '确认').map((skill) => skill.name), ['pull-request'])
+  assert.equal(useSkill(skills, 'pull-request'), 'pr skill body')
+  assert.equal(useSkill(skills, 'requirement-analysis'), 'requirement skill body')
+  assert.equal(useSkill(skills, 'nonexistent'), null)
+})
+
+test('getSkillCatalog returns compact listing', () => {
+  const skills: Skill[] = [
+    { name: 'requirement-analysis', description: '需求分析指引', content: 'body1' },
+    { name: 'pull-request', description: 'PR 指引', content: 'body2' },
+  ]
+
+  const catalog = getSkillCatalog(skills)
+  assert.match(catalog, /requirement-analysis/)
+  assert.match(catalog, /需求分析指引/)
+  assert.match(catalog, /pull-request/)
+  assert.match(catalog, /PR 指引/)
 })
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-fork-tool-'))
-  const result = await executeTool('forkRepository', { rootDir }, [rootDir], 'write', true)
+  const result = await executeTool('forkRepository', { rootDir }, [rootDir], true)
 
   assert.match(result, /缺少必需参数 "repoUrl"/)
 })
@@ -141,9 +146,8 @@ test('cloneRepository rejects cloneParentDir outside allowed workspace', async (
       cloneParentDir: '..',
     },
     [rootDir],
-    'write',
     true,
   )
 
-  assert.match(result, /路径越界/)
+  assert.match(result, /绝对路径|路径越界/)
 })

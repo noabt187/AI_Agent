@@ -1,12 +1,6 @@
 ---
 name: pull-request
-description: PR 提交指引
-summary: PR 参数确认、提交和创建
-trigger: pull_request_request
-node: pull-request
-entry: pull_request_request
-onAllowWriteNext: pull-request
-priority: 200
+description: PR 提交指引 — 创建 GitHub Pull Request 的完整流程，适用于需要提交代码时
 ---
 
 ## Skill: PR 提交

@@ -1668,11 +1668,11 @@ export function App() {
                   </button>
                   <div className="skillManagerMain">
                     <strong>{skill.name}</strong>
-                    <span>{skill.summary || skill.trigger}</span>
+                    <span>{skill.summary || skill.description}</span>
                   </div>
                   <div className="skillManagerMeta">
                     <small>{skill.source === 'builtin' ? '内置' : '上传'}</small>
-                    <code>{skill.node || skill.entry || skill.trigger}</code>
+                    <code>{skill.node || skill.entry || skill.description}</code>
                   </div>
                 </article>
               ))}
