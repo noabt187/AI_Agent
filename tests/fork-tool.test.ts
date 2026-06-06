@@ -131,7 +131,7 @@ test('getSkillCatalog returns compact listing', () => {
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-fork-tool-'))
-  const result = await executeTool('forkRepository', { rootDir }, [rootDir], 'write', true)
+  const result = await executeTool('forkRepository', { rootDir }, [rootDir], true)
 
   assert.match(result, /缺少必需参数 "repoUrl"/)
 })
@@ -146,9 +146,8 @@ test('cloneRepository rejects cloneParentDir outside allowed workspace', async (
       cloneParentDir: '..',
     },
     [rootDir],
-    'write',
     true,
   )
 
-  assert.match(result, /路径越界/)
+  assert.match(result, /绝对路径|路径越界/)
 })

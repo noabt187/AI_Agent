@@ -48,7 +48,7 @@ export function buildStableSystemPrompt(): string {
 3. 行动：调用工具读取/写入代码，或回复用户
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
-工具调用的 rootDir 必须使用本轮临时上下文中的可操作目录之一。
+工具调用中的文件路径参数（如 filePath、dirPath）必须使用绝对路径，且必须位于当前可操作目录之下。
 当你准备好回复用户时，输出以下 JSON 格式。
 
 根据任务需要选择合适的流程，不要总是固定步骤：
@@ -358,7 +358,7 @@ export class Agent {
             continue
           }
 
-          const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
+          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed)
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 

@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { readTextFile, listDirectory, searchFiles, searchContent } from './fileRead.js'
 import { writeFileTool, deleteFileTool } from './fileWrite.js'
 import { execCommandTool } from './execCommand.js'
@@ -6,7 +6,7 @@ import { verifyCodeTool } from './verifyCode.js'
 import { createPullRequestTool } from './createPullRequest.js'
 import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
-import { assertInsideRoot, assertInsideAllowedPaths } from '../utils/pathUtils.js'
+import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 
 type ToolScope = 'read' | 'write'
@@ -27,14 +27,16 @@ type ToolDef = {
 const toolRegistry: Record<string, ToolDef> = {
   readTextFile: {
     fn: readTextFile,
-    description: '读取指定路径的文本文件内容',
-    argNames: ['rootDir', 'relativePath'],
+    description: '读取指定绝对路径的文本文件内容',
+    argNames: ['filePath'],
+    pathArgNames: ['filePath'],
     scope: 'read',
   },
   listDirectory: {
     fn: listDirectory,
-    description: '列出指定目录下的文件和文件夹',
-    argNames: ['rootDir', 'dirPath'],
+    description: '列出指定绝对路径目录下的文件和文件夹',
+    argNames: ['dirPath'],
+    pathArgNames: ['dirPath'],
     scope: 'read',
   },
   searchFiles: {
@@ -51,14 +53,16 @@ const toolRegistry: Record<string, ToolDef> = {
   },
   writeFile: {
     fn: writeFileTool,
-    description: '创建或覆盖写入文件（自动创建父目录）',
-    argNames: ['rootDir', 'relativePath', 'content'],
+    description: '创建或覆盖写入文件（自动创建父目录），filePath 为绝对路径',
+    argNames: ['filePath', 'content'],
+    pathArgNames: ['filePath'],
     scope: 'write',
   },
   deleteFile: {
     fn: deleteFileTool,
-    description: '删除指定文件（需要人工确认）',
-    argNames: ['rootDir', 'relativePath'],
+    description: '删除指定绝对路径的文件（需要人工确认）',
+    argNames: ['filePath'],
+    pathArgNames: ['filePath'],
     scope: 'write',
   },
   execCommand: {
@@ -134,87 +138,58 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
     })
 }
 
-// ── Non-path argument detection ─────────────────────────────────────
-
-function isNonPathToolArg(toolName: string, argName: string): boolean {
-  if (toolName === 'execCommand' && argName === 'command') return true
-  if (toolName === 'verifyCode' && argName === 'changedFiles') return true
-  if (toolName === 'createPullRequest') return true
-  if (toolName === 'forkRepository') return true
-  if (toolName === 'cloneRepository' && argName !== 'cloneParentDir') return true
-  if (toolName === 'compressContext' && argName === 'sessionId') return true
-  return false
-}
-
 // ── Execute Tool ────────────────────────────────────────────────────
 
 export async function executeTool(
   name: string,
   args: Record<string, string>,
-  allowedPaths?: string[],
-  scope: ToolScope = 'read',
+  allowedPaths: string[],
   designConfirmed?: boolean,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
-  if (scope === 'read' && tool.scope !== 'read') {
-    return `错误：工具 "${name}" 不在当前节点的可用范围内（只读模式）`
-  }
 
-  // 写操作确认检查
+  // 写权限检查
   if (tool.scope === 'write' && !designConfirmed) {
     return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
   }
+
+  // 校验 rootDir（如果工具有此参数）
+  const rootDir = args.rootDir
+  if (rootDir) {
+    if (!isAbsolute(rootDir)) {
+      return `错误：rootDir 必须是绝对路径，当前值为 "${rootDir}"。当前可操作目录：${allowedPaths.join(', ')}`
+    }
+    if (!isInsideAllowedPaths(rootDir, allowedPaths)) {
+      return `错误：rootDir "${rootDir}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
+    }
+  }
+
+  // 校验路径参数：必须是绝对路径且在可操作目录内
+  const pathArgNames = tool.pathArgNames ?? []
+  for (const argName of pathArgNames) {
+    const val = args[argName]
+    if (!val) continue
+    if (!isAbsolute(val)) {
+      return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
+    }
+    if (!isInsideAllowedPaths(val, allowedPaths)) {
+      return `错误：路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
+    }
+  }
+
+  // 必填参数校验
+  const requiredArgNames = tool.requiredArgNames ?? tool.argNames
+  for (const argName of requiredArgNames) {
+    if (!args[argName] || args[argName].trim() === '') {
+      return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
+    }
+  }
+
   try {
-    const rootDir = args.rootDir ?? '.'
-    if (tool.scope === 'write' && allowedPaths) {
-      assertInsideAllowedPaths(rootDir, allowedPaths)
-    }
-    const requiredArgNames = new Set(tool.requiredArgNames ?? tool.argNames)
-    const pathArgNames = new Set(tool.pathArgNames ?? tool.argNames.filter((argName) => !isNonPathToolArg(name, argName)))
-
-    for (const argName of tool.argNames) {
-      if (argName === 'rootDir') continue
-      const val = args[argName]
-
-      // listDirectory with empty dirPath = list root directory
-      if (name === 'listDirectory' && argName === 'dirPath' && (!val || val.trim() === '')) {
-        args[argName] = '.' // default to root
-        continue
-      }
-
-      // searchFiles with empty pattern = match all (use *)
-      if (name === 'searchFiles' && argName === 'pattern' && (!val || val.trim() === '')) {
-        return `错误：工具 "${name}" 缺少搜索模式（pattern 不能为空）`
-      }
-
-      // Some arguments are commands or metadata, not filesystem paths.
-      if (isNonPathToolArg(name, argName)) {
-        if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
-          return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
-        }
-        continue
-      }
-
-      // All other params are required
-      if (requiredArgNames.has(argName) && (!val || val.trim() === '')) {
-        return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
-      }
-      if (val && pathArgNames.has(argName)) assertInsideRoot(rootDir, val)
-    }
-
-    // For write-scope tools, validate against allowedPaths
-    if (tool.scope === 'write' && allowedPaths) {
-      for (const argName of tool.argNames) {
-        if (argName !== 'rootDir' && argName !== 'content' && args[argName] && pathArgNames.has(argName)) {
-          const fullPath = resolve(rootDir, args[argName])
-          assertInsideAllowedPaths(fullPath, allowedPaths)
-        }
-      }
-    }
-
-    const argValues = tool.argNames.map((n) => args[n] ?? '')
-    return await tool.fn(rootDir, ...argValues.slice(1))
+    const effectiveRootDir = rootDir || allowedPaths[0]
+    const argValues = [effectiveRootDir, ...tool.argNames.map((n) => args[n] ?? '')]
+    return await tool.fn(effectiveRootDir, ...argValues.slice(1))
   } catch (e: unknown) {
     return `工具执行错误：${e instanceof Error ? e.message : String(e)}`
   }

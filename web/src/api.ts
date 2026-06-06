@@ -95,6 +95,18 @@ export type SessionMemory = {
   pinned: PinnedProjectMemory[]
 }
 
+export type ManagedSkill = {
+  id: string
+  name: string
+  description: string
+  trigger?: string
+  summary?: string
+  node?: string
+  entry?: string
+  enabled: boolean
+  source: 'builtin' | 'custom'
+}
+
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -163,6 +175,31 @@ export async function rememberPinnedMemory(sessionId: string, content: string): 
 
 export async function forgetPinnedMemory(sessionId: string, id: string): Promise<{ deleted: boolean; memoryState: SessionMemory }> {
   return jsonRequest<{ deleted: boolean; memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function listSkills(): Promise<ManagedSkill[]> {
+  const payload = await jsonRequest<{ skills: ManagedSkill[] }>('/api/skills')
+  return payload.skills
+}
+
+export async function uploadSkill(fileName: string, content: string): Promise<{ skill: ManagedSkill }> {
+  return jsonRequest<{ skill: ManagedSkill }>('/api/skills/upload', {
+    method: 'POST',
+    body: JSON.stringify({ fileName, content }),
+  })
+}
+
+export async function updateSkillEnabled(id: string, enabled: boolean): Promise<{ skill: ManagedSkill }> {
+  return jsonRequest<{ skill: ManagedSkill }>(`/api/skills/${encodeURIComponent(id)}/enabled`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+export async function deleteSkill(id: string): Promise<{ deleted: boolean }> {
+  return jsonRequest<{ deleted: boolean }>(`/api/skills/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }
