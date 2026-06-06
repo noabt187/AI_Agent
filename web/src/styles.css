@@ -593,7 +593,6 @@ small {
 
 .memoryPanel {
   flex: 0 0 auto;
-  min-height: 180px;
 }
 
 .memoryModeStack {
@@ -622,6 +621,27 @@ small {
 .miniActionButton:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.memorySummary {
+  display: grid;
+  gap: 6px;
+  color: #9fb4ca;
+  font-size: 13px;
+}
+
+.memoryManageButton {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 8px;
+  background: rgba(10, 24, 43, 0.78);
+  color: #d9e9ff;
+  font-size: 13px;
+  font-weight: 760;
 }
 
 .memoryComposer {
@@ -694,6 +714,88 @@ small {
   background: #fff1ef;
   color: #9f2d20;
   padding: 9px;
+}
+
+.memoryLayerTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  padding: 12px 18px;
+}
+
+.memoryLayerTabs button {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+}
+
+.memoryLayerTabs button.active {
+  border-color: rgba(34, 211, 238, 0.7);
+  background: rgba(34, 211, 238, 0.14);
+}
+
+.memoryManagerBody {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px 18px 18px;
+}
+
+.memoryLayerInfo {
+  display: grid;
+  gap: 8px;
+}
+
+.memoryLayerInfo div {
+  display: grid;
+  gap: 3px;
+}
+
+.memoryLayerInfo strong {
+  color: #f3f8ff;
+}
+
+.memoryLayerInfo span {
+  color: #91a6bd;
+  font-size: 13px;
+}
+
+.memoryLayerInfo button {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.memoryLayerInfo code {
+  overflow: hidden;
+  color: #9fb4ca;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memoryManagerList {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
 }
 
 .commentsPanel {
@@ -843,7 +945,8 @@ small {
   padding: 9px 10px;
 }
 
-.skillManagerModal {
+.skillManagerModal,
+.memoryManagerModal {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   width: min(760px, 100%);
@@ -855,7 +958,12 @@ small {
   color: #f3efe7;
 }
 
-.skillManagerModal header {
+.memoryManagerModal {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.skillManagerModal header,
+.memoryManagerModal header {
   display: flex;
   justify-content: space-between;
   gap: 16px;
@@ -863,13 +971,15 @@ small {
   padding: 16px 18px;
 }
 
-.skillManagerModal h3 {
+.skillManagerModal h3,
+.memoryManagerModal h3 {
   margin: 0;
   color: #fbf8f1;
   font-size: 18px;
 }
 
-.skillManagerModal p {
+.skillManagerModal p,
+.memoryManagerModal p {
   margin-top: 4px;
   color: #aaa194;
   font-size: 13px;

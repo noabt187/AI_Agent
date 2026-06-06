@@ -7,9 +7,9 @@ import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
 import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
-  formatPinnedProjectMemoryContext,
+  formatPinnedMemoryContext,
   formatProjectMemoryContext,
-  loadPinnedProjectMemories,
+  loadPinnedMemories,
   searchProjectMemories,
 } from '../memory/projectMemory.js'
 import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
@@ -122,11 +122,17 @@ export function buildRuntimeContext(
   state: WorldState,
   memoryContext: string,
   allSkills: Skill[],
-  pinnedMemoryContext = '',
+  pinnedMemoryContext: { global?: string; project?: string; session?: string } = {},
 ): string {
   const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
-  if (pinnedMemoryContext.trim()) {
-    parts.push(`## 项目固定记忆（用户明确要求）\n${pinnedMemoryContext.trim()}`)
+  if (pinnedMemoryContext.global?.trim()) {
+    parts.push(`## Global pinned memory\n${pinnedMemoryContext.global.trim()}`)
+  }
+  if (pinnedMemoryContext.project?.trim()) {
+    parts.push(`## Project pinned memory\n${pinnedMemoryContext.project.trim()}`)
+  }
+  if (pinnedMemoryContext.session?.trim()) {
+    parts.push(`## Session pinned memory\n${pinnedMemoryContext.session.trim()}`)
   }
   if (memoryContext.trim()) {
     parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
@@ -278,8 +284,19 @@ export class Agent {
     const allSkills = await loadSkills(SKILLS_DIR)
     // Backward compat: initialize activeSkills for existing persisted states
     if (!state.activeSkills) state.activeSkills = []
-    const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
-    const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
+    const shouldRecallPinned = getMemorySettings(state).recallMode !== 'off'
+    const [globalPinnedMemories, projectPinnedMemories, sessionPinnedMemories] = shouldRecallPinned
+      ? await Promise.all([
+        loadPinnedMemories({ layer: 'global' }),
+        loadPinnedMemories({ layer: 'project', projectDir: effectiveAllowedPaths[0] }),
+        loadPinnedMemories({ layer: 'session', projectDir: effectiveAllowedPaths[0], sessionId }),
+      ])
+      : [[], [], []]
+    const pinnedMemoryContext = {
+      global: formatPinnedMemoryContext('全局固定记忆', globalPinnedMemories),
+      project: formatPinnedMemoryContext('项目固定记忆', projectPinnedMemories),
+      session: formatPinnedMemoryContext('会话固定记忆', sessionPinnedMemories),
+    }
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
     const memories = shouldRecallTaskMemories(state, userInput)
       ? await searchProjectMemories(effectiveAllowedPaths[0], taskMemoryQuery, TASK_MEMORY_LIMIT)

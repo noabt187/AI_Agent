@@ -50,6 +50,7 @@ import {
   type Message,
   type DirectoryListing,
   type ManagedSkill,
+  type MemoryLayerId,
   type MemoryRecallMode,
   type SessionMemory,
   type SessionMetrics,
@@ -262,6 +263,9 @@ export function App() {
   const [memoryDraft, setMemoryDraft] = useState('')
   const [memoryError, setMemoryError] = useState('')
   const [memoryBusy, setMemoryBusy] = useState(false)
+  const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
+  const [activeMemoryLayer, setActiveMemoryLayer] = useState<MemoryLayerId>('project')
+  const [copiedMemoryPath, setCopiedMemoryPath] = useState('')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [annotateActive, setAnnotateActive] = useState(false)
@@ -604,7 +608,7 @@ export function App() {
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      const result = await rememberPinnedMemory(selectedSessionId, content)
+      const result = await rememberPinnedMemory(selectedSessionId, activeMemoryLayer, content)
       setSessionMemory(result.memoryState)
       setMemoryDraft('')
     } catch (err) {
@@ -625,6 +629,19 @@ export function App() {
       setMemoryError(err instanceof Error ? err.message : String(err))
     } finally {
       setMemoryBusy(false)
+    }
+  }
+
+  async function handleCopyMemoryPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path)
+      setCopiedMemoryPath(path)
+      setStatus('记忆文件路径已复制')
+      window.setTimeout(() => {
+        setCopiedMemoryPath((current) => (current === path ? '' : current))
+      }, 1600)
+    } catch {
+      setStatus('复制失败')
     }
   }
 
@@ -1064,6 +1081,9 @@ export function App() {
     sidebarCollapsed ? 'sidebarCollapsed' : '',
     themeMode === 'light' ? 'themeLight' : 'themeDark',
   ].filter(Boolean).join(' ')
+  const memoryLayers = sessionMemory?.layers || []
+  const memoryTotal = memoryLayers.reduce((sum, layer) => sum + layer.items.length, 0)
+  const selectedMemoryLayer = memoryLayers.find((layer) => layer.id === activeMemoryLayer) || memoryLayers[0] || null
 
   return (
     <main className={appShellClassName}>
@@ -1169,7 +1189,7 @@ export function App() {
         <section className="panel memoryPanel">
           <div className="panelHeader">
             <span>记忆</span>
-            <small>{memoryMode}</small>
+            <small>{memoryMode} · {memoryTotal}</small>
           </div>
           <div className="memoryModeStack" role="group" aria-label="记忆召回模式">
             {(['auto', 'off', 'on'] as MemoryRecallMode[]).map((mode) => (
@@ -1184,35 +1204,25 @@ export function App() {
               </button>
             ))}
           </div>
-          <div className="memoryComposer">
-            <textarea
-              value={memoryDraft}
-              onChange={(event) => setMemoryDraft(event.target.value)}
-              placeholder="写入项目约束或偏好"
-              disabled={!selectedSessionId || memoryBusy}
-            />
-            <button
-              type="button"
-              className="miniActionButton"
-              title="添加固定记忆"
-              disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
-              onClick={() => void handleRememberPinned()}
-            >
-              <Plus size={16} />
-            </button>
+          <div className="memorySummary">
+            {memoryLayers.map((layer) => (
+              <span key={layer.id}>{layer.label}: {layer.items.length}</span>
+            ))}
+            {memoryLayers.length === 0 ? <span>暂无记忆信息</span> : null}
           </div>
           {memoryError ? <div className="memoryError">{memoryError}</div> : null}
-          <div className="memoryList">
-            {(sessionMemory?.pinned || []).map((item) => (
-              <article className="memoryItem" key={item.id}>
-                <p>{item.content}</p>
-                <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
-                  <Trash2 size={15} />
-                </button>
-              </article>
-            ))}
-            {sessionMemory && sessionMemory.pinned.length === 0 ? <div className="memoryEmpty">无固定记忆</div> : null}
-          </div>
+          <button
+            type="button"
+            className="memoryManageButton"
+            disabled={!selectedSessionId}
+            onClick={() => {
+              setMemoryManagerOpen(true)
+              void refreshMemory()
+            }}
+          >
+            <Settings2 size={16} />
+            管理记忆
+          </button>
         </section>
 
         <section className="panel commentsPanel">
@@ -1628,6 +1638,89 @@ export function App() {
                 <div className="emptyDirectory">当前文件夹没有子文件夹</div>
               ) : null}
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {memoryManagerOpen ? (
+        <div className="modalBackdrop">
+          <section className="memoryManagerModal" aria-label="记忆管理">
+            <header>
+              <div>
+                <h3>记忆管理</h3>
+                <p>会话、项目和全局记忆分别存放，召回关闭时不会注入 Agent 上下文。</p>
+              </div>
+              <button className="miniIconButton static" title="关闭" onClick={() => setMemoryManagerOpen(false)}>
+                <X size={17} />
+              </button>
+            </header>
+
+            <div className="memoryLayerTabs">
+              {memoryLayers.map((layer) => (
+                <button
+                  key={layer.id}
+                  className={activeMemoryLayer === layer.id ? 'active' : ''}
+                  onClick={() => setActiveMemoryLayer(layer.id)}
+                >
+                  {layer.label}
+                  <small>{layer.items.length}</small>
+                </button>
+              ))}
+            </div>
+
+            {memoryError ? <div className="skillManagerError">{memoryError}</div> : null}
+
+            {selectedMemoryLayer ? (
+              <div className="memoryManagerBody">
+                <section className="memoryLayerInfo">
+                  <div>
+                    <strong>{selectedMemoryLayer.label}</strong>
+                    <span>{selectedMemoryLayer.scope}</span>
+                    {selectedMemoryLayer.id === 'project' && sessionMemory?.projectInfo ? (
+                      <span>Project: {sessionMemory.projectInfo.displayName}</span>
+                    ) : null}
+                  </div>
+                  {[selectedMemoryLayer.paths.pinned, selectedMemoryLayer.paths.tasks].filter((path): path is string => Boolean(path)).map((path) => (
+                    <button key={path} type="button" onClick={() => void handleCopyMemoryPath(path)}>
+                      {copiedMemoryPath === path ? <Check size={15} /> : <Copy size={15} />}
+                      <code>{path}</code>
+                    </button>
+                  ))}
+                </section>
+
+                <div className="memoryComposer">
+                  <textarea
+                    value={memoryDraft}
+                    onChange={(event) => setMemoryDraft(event.target.value)}
+                    placeholder={`写入${selectedMemoryLayer.label}`}
+                    disabled={!selectedSessionId || memoryBusy}
+                  />
+                  <button
+                    type="button"
+                    className="miniActionButton"
+                    title="添加固定记忆"
+                    disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
+                    onClick={() => void handleRememberPinned()}
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+
+                <div className="memoryManagerList">
+                  {selectedMemoryLayer.items.map((item) => (
+                    <article className="memoryItem" key={item.id}>
+                      <p>{item.content}</p>
+                      <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
+                        <Trash2 size={15} />
+                      </button>
+                    </article>
+                  ))}
+                  {selectedMemoryLayer.items.length === 0 ? <div className="memoryEmpty">暂无固定记忆</div> : null}
+                </div>
+              </div>
+            ) : (
+              <div className="memoryEmpty">暂无记忆信息</div>
+            )}
           </section>
         </div>
       ) : null}
