@@ -20,6 +20,7 @@ type ToolDef = {
   scope: ToolScope
   requiredArgNames?: string[]
   pathArgNames?: string[]
+  argDescriptions?: Record<string, string>
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -83,6 +84,17 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['rootDir', 'repoUrl', 'title', 'body', 'baseBranch', 'headBranch', 'commitMessage', 'draft', 'remote', 'prRepoUrl', 'headOwner'],
     scope: 'write',
     requiredArgNames: ['rootDir'],
+    argDescriptions: {
+      title: 'title，可传 auto 使用默认值',
+      body: 'body，可传 auto 使用默认值',
+      baseBranch: 'baseBranch，可传 auto 使用默认值',
+      headBranch: 'headBranch，可传 auto 使用默认值',
+      commitMessage: 'commitMessage，可传 auto 使用默认值',
+      draft: 'draft，可传 auto 使用默认值',
+      remote: 'remote，可传 auto 使用默认值',
+      prRepoUrl: 'prRepoUrl，可传 auto 使用默认值',
+      headOwner: 'headOwner，可传 auto 使用默认值',
+    },
   },
   forkRepository: {
     fn: forkRepositoryTool,
@@ -117,9 +129,7 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
       for (const arg of def.argNames) {
         properties[arg] = {
           type: 'string',
-          description: arg === 'rootDir'
-            ? '项目根目录'
-            : (name === 'createPullRequest' && arg !== 'repoUrl' ? `${arg}，可传 auto 使用默认值` : arg),
+          description: def.argDescriptions?.[arg] ?? (arg === 'rootDir' ? '项目根目录' : arg),
         }
       }
       const required = def.requiredArgNames ?? def.argNames

@@ -1,5 +1,3 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { resolve, extname } from 'node:path'
 import { loadEnabledSkills } from './registry.js'
 
 export type Skill = {
@@ -8,7 +6,7 @@ export type Skill = {
   content: string
 }
 
-function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
+export function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
   const trimmed = raw.trim()
   if (!trimmed.startsWith('---')) return { meta: {}, body: trimmed }
 
@@ -30,47 +28,8 @@ function parseFrontmatter(raw: string): { meta: Record<string, string>; body: st
   return { meta, body }
 }
 
-// Backward-compat: also scan raw .md files in the builtin dir so
-// skills that aren't yet registered (during dev) still appear.
-async function loadRawSkillsDir(dir: string): Promise<Skill[]> {
-  const skills: Skill[] = []
-  let entries: string[]
-  try {
-    entries = await readdir(dir)
-  } catch {
-    return skills
-  }
-
-  for (const entry of entries) {
-    if (extname(entry) !== '.md') continue
-    const filePath = resolve(dir, entry)
-    try {
-      const raw = await readFile(filePath, 'utf8')
-      const { meta, body } = parseFrontmatter(raw)
-      if (meta.name && meta.description && body) {
-        skills.push({
-          name: meta.name,
-          description: meta.description,
-          content: body,
-        })
-      }
-    } catch {
-      continue
-    }
-  }
-
-  return skills
-}
-
 export async function loadSkills(skillsDir: string): Promise<Skill[]> {
-  // Prefer the managed registry (supports enable/disable + custom skills)
-  try {
-    const managed = await loadEnabledSkills(skillsDir)
-    if (managed.length > 0) return managed
-  } catch {
-    // Fall back to raw directory scan
-  }
-  return loadRawSkillsDir(skillsDir)
+  return loadEnabledSkills(skillsDir)
 }
 
 export function useSkill(skills: Skill[], skillName: string): string | null {
