@@ -31,8 +31,8 @@ import {
   createSession,
   deleteSession,
   deleteSkill,
+  deleteMemoryItem,
   downloadSessionExport,
-  forgetPinnedMemory,
   listSessions,
   listSkills,
   listDirectories,
@@ -40,7 +40,8 @@ import {
   loadSessionMemory,
   loadSessionMetrics,
   pickDirectory,
-  rememberPinnedMemory,
+  revealMemoryItem,
+  saveMemoryItem,
   streamPrompt,
   updateMemorySettings,
   updateAllowedPaths,
@@ -52,6 +53,7 @@ import {
   type ManagedSkill,
   type MemoryLayerId,
   type MemoryRecallMode,
+  type MemoryType,
   type SessionMemory,
   type SessionMetrics,
   type SessionDetail,
@@ -265,7 +267,7 @@ export function App() {
   const [memoryBusy, setMemoryBusy] = useState(false)
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
   const [activeMemoryLayer, setActiveMemoryLayer] = useState<MemoryLayerId>('project')
-  const [copiedMemoryPath, setCopiedMemoryPath] = useState('')
+  const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [annotateActive, setAnnotateActive] = useState(false)
@@ -602,13 +604,18 @@ export function App() {
     }
   }
 
-  async function handleRememberPinned() {
+  async function handleSaveMemoryItem() {
     const content = memoryDraft.trim()
     if (!selectedSessionId || !content || memoryBusy) return
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      const result = await rememberPinnedMemory(selectedSessionId, activeMemoryLayer, content)
+      const result = await saveMemoryItem(selectedSessionId, {
+        layer: activeMemoryLayer,
+        type: activeMemoryType,
+        description: content,
+        body: content,
+      })
       setSessionMemory(result.memoryState)
       setMemoryDraft('')
     } catch (err) {
@@ -618,12 +625,12 @@ export function App() {
     }
   }
 
-  async function handleForgetPinned(id: string) {
+  async function handleDeleteMemoryItem(name: string) {
     if (!selectedSessionId || memoryBusy) return
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      const result = await forgetPinnedMemory(selectedSessionId, id)
+      const result = await deleteMemoryItem(selectedSessionId, name)
       setSessionMemory(result.memoryState)
     } catch (err) {
       setMemoryError(err instanceof Error ? err.message : String(err))
@@ -632,16 +639,17 @@ export function App() {
     }
   }
 
-  async function handleCopyMemoryPath(path: string) {
+  async function handleRevealMemoryItem(layer: MemoryLayerId, name: string) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
     try {
-      await navigator.clipboard.writeText(path)
-      setCopiedMemoryPath(path)
-      setStatus('记忆文件路径已复制')
-      window.setTimeout(() => {
-        setCopiedMemoryPath((current) => (current === path ? '' : current))
-      }, 1600)
-    } catch {
-      setStatus('复制失败')
+      await revealMemoryItem(selectedSessionId, layer, name)
+      setStatus('已打开记忆文件位置')
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
     }
   }
 
@@ -1676,17 +1684,28 @@ export function App() {
                   <div>
                     <strong>{selectedMemoryLayer.label}</strong>
                     <span>{selectedMemoryLayer.scope}</span>
+                    <span>手动记忆和自动记忆都会显示在这里。</span>
                     {selectedMemoryLayer.id === 'project' && sessionMemory?.projectInfo ? (
                       <span>Project: {sessionMemory.projectInfo.displayName}</span>
                     ) : null}
                   </div>
-                  {[selectedMemoryLayer.paths.pinned, selectedMemoryLayer.paths.tasks].filter((path): path is string => Boolean(path)).map((path) => (
-                    <button key={path} type="button" onClick={() => void handleCopyMemoryPath(path)}>
-                      {copiedMemoryPath === path ? <Check size={15} /> : <Copy size={15} />}
-                      <code>{path}</code>
-                    </button>
-                  ))}
+                  <div className="memoryPathPill">
+                    <span>索引</span>
+                    <code>{selectedMemoryLayer.paths.index}</code>
+                  </div>
                 </section>
+
+                <select
+                  className="memoryTypeSelect"
+                  value={activeMemoryType}
+                  onChange={(event) => setActiveMemoryType(event.target.value as MemoryType)}
+                  disabled={!selectedSessionId || memoryBusy}
+                >
+                  <option value="project">project</option>
+                  <option value="feedback">feedback</option>
+                  <option value="user">user</option>
+                  <option value="reference">reference</option>
+                </select>
 
                 <div className="memoryComposer">
                   <textarea
@@ -1698,9 +1717,9 @@ export function App() {
                   <button
                     type="button"
                     className="miniActionButton"
-                    title="添加固定记忆"
+                    title="添加记忆"
                     disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
-                    onClick={() => void handleRememberPinned()}
+                    onClick={() => void handleSaveMemoryItem()}
                   >
                     <Plus size={16} />
                   </button>
@@ -1708,14 +1727,39 @@ export function App() {
 
                 <div className="memoryManagerList">
                   {selectedMemoryLayer.items.map((item) => (
-                    <article className="memoryItem" key={item.id}>
-                      <p>{item.content}</p>
-                      <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
+                    <article
+                      className="memoryItem clickable"
+                      key={item.id}
+                      title="打开记忆文件位置"
+                      onClick={() => void handleRevealMemoryItem(item.layer, item.name)}
+                    >
+                      <p>
+                        <strong>{item.name}</strong> <span>[{item.type}]</span>
+                        <br />
+                        {item.description}
+                        <br />
+                        <small>{item.filePath}</small>
+                        {item.content ? (
+                          <>
+                            <br />
+                            <em>{item.content.slice(0, 140)}{item.content.length > 140 ? '...' : ''}</em>
+                          </>
+                        ) : null}
+                      </p>
+                      <button
+                        type="button"
+                        className="miniIconButton static"
+                        title="删除记忆"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleDeleteMemoryItem(item.name)
+                        }}
+                      >
                         <Trash2 size={15} />
                       </button>
                     </article>
                   ))}
-                  {selectedMemoryLayer.items.length === 0 ? <div className="memoryEmpty">暂无固定记忆</div> : null}
+                  {selectedMemoryLayer.items.length === 0 ? <div className="memoryEmpty">暂无记忆</div> : null}
                 </div>
               </div>
             ) : (

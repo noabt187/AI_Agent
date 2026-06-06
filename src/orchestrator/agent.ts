@@ -7,10 +7,7 @@ import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
 import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
-  formatPinnedMemoryContext,
-  formatProjectMemoryContext,
-  loadPinnedMemories,
-  searchProjectMemories,
+  formatMemoryContext,
 } from '../memory/projectMemory.js'
 import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
@@ -18,7 +15,6 @@ import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
-const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
@@ -61,7 +57,7 @@ export function buildStableSystemPrompt(): string {
 - 用户确认前不要调用写工具（writeFile/deleteFile）
 - confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
 - 仅在对齐理解、确认需求时，省略 confirmType
-- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
+- 当前状态、Markdown 记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
 ## 输出格式
@@ -76,6 +72,8 @@ action 说明：
   - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
   - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
+## Auto memory
+When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
 }
 
@@ -122,20 +120,10 @@ export function buildRuntimeContext(
   state: WorldState,
   memoryContext: string,
   allSkills: Skill[],
-  pinnedMemoryContext: { global?: string; project?: string; session?: string } = {},
 ): string {
   const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
-  if (pinnedMemoryContext.global?.trim()) {
-    parts.push(`## Global pinned memory\n${pinnedMemoryContext.global.trim()}`)
-  }
-  if (pinnedMemoryContext.project?.trim()) {
-    parts.push(`## Project pinned memory\n${pinnedMemoryContext.project.trim()}`)
-  }
-  if (pinnedMemoryContext.session?.trim()) {
-    parts.push(`## Session pinned memory\n${pinnedMemoryContext.session.trim()}`)
-  }
   if (memoryContext.trim()) {
-    parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
+    parts.push(`## Memory\n${memoryContext.trim()}`)
   }
 
   // Skill catalog — always show compact listing
@@ -263,27 +251,19 @@ export class Agent {
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
     const allSkills = await loadSkills(SKILLS_DIR)
-    const shouldRecallPinned = getMemorySettings(state).recallMode !== 'off'
-    const [globalPinnedMemories, projectPinnedMemories, sessionPinnedMemories] = shouldRecallPinned
-      ? await Promise.all([
-        loadPinnedMemories({ layer: 'global' }),
-        loadPinnedMemories({ layer: 'project', projectDir: effectiveAllowedPaths[0] }),
-        loadPinnedMemories({ layer: 'session', projectDir: effectiveAllowedPaths[0], sessionId }),
-      ])
-      : [[], [], []]
-    const pinnedMemoryContext = {
-      global: formatPinnedMemoryContext('全局固定记忆', globalPinnedMemories),
-      project: formatPinnedMemoryContext('项目固定记忆', projectPinnedMemories),
-      session: formatPinnedMemoryContext('会话固定记忆', sessionPinnedMemories),
-    }
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
-    const memories = shouldRecallTaskMemories(state, userInput)
-      ? await searchProjectMemories(effectiveAllowedPaths[0], taskMemoryQuery, TASK_MEMORY_LIMIT)
-      : []
-    const memoryContext = formatProjectMemoryContext(memories)
+    const memoryContext = shouldRecallTaskMemories(state, userInput)
+      ? await formatMemoryContext({
+        projectDir: effectiveAllowedPaths[0],
+        sessionId,
+        query: taskMemoryQuery,
+        includeAllIndexes: true,
+      })
+      : ''
 
     const systemPrompt = buildStableSystemPrompt()
-    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills, pinnedMemoryContext)
+    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills)
+    const turnLoadedSkills = new Set<string>()
 
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
     if (!hasCorrectPrompt) {
@@ -340,6 +320,7 @@ export class Agent {
             }
             const skillContent = useSkill(allSkills, skillName)
             if (skillContent) {
+              turnLoadedSkills.add(skillName)
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
               await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
             } else {
@@ -357,7 +338,14 @@ export class Agent {
           }
 
           if (signal?.aborted) break
-          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed, signal)
+          const result = await executeTool(
+            tc.name,
+            args,
+            effectiveAllowedPaths,
+            state.designConfirmed,
+            signal,
+            { turnLoadedSkills },
+          )
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 

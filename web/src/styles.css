@@ -651,6 +651,15 @@ small {
   align-items: stretch;
 }
 
+.memoryTypeSelect {
+  min-height: 34px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+  padding: 0 10px;
+}
+
 .memoryComposer textarea {
   min-height: 58px;
   max-height: 96px;
@@ -691,6 +700,15 @@ small {
   padding: 9px;
 }
 
+.memoryItem.clickable {
+  cursor: pointer;
+}
+
+.memoryItem.clickable:hover {
+  border-color: rgba(34, 211, 238, 0.42);
+  background: rgba(34, 211, 238, 0.08);
+}
+
 .memoryItem p,
 .memoryEmpty,
 .memoryError {
@@ -700,6 +718,11 @@ small {
 
 .memoryItem p {
   overflow-wrap: anywhere;
+}
+
+.memoryItem em {
+  color: #8397ad;
+  font-style: normal;
 }
 
 .memoryEmpty {
@@ -769,9 +792,9 @@ small {
   font-size: 13px;
 }
 
-.memoryLayerInfo button {
+.memoryPathPill {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   border: 1px solid rgba(125, 211, 252, 0.18);
@@ -779,10 +802,9 @@ small {
   background: rgba(9, 18, 34, 0.58);
   color: #d9e9ff;
   padding: 8px 10px;
-  text-align: left;
 }
 
-.memoryLayerInfo code {
+.memoryPathPill code {
   overflow: hidden;
   color: #9fb4ca;
   font-size: 12px;
@@ -2231,8 +2253,18 @@ small {
   background: rgba(255, 255, 255, 0.76);
 }
 
+.themeLight .memoryItem.clickable:hover {
+  border-color: rgba(159, 181, 188, 0.78);
+  background: rgba(243, 248, 248, 0.92);
+}
+
 .themeLight .memoryItem p {
   color: #536160;
+}
+
+.themeLight .memoryItem em,
+.themeLight .memoryPathPill code {
+  color: #748382;
 }
 
 .themeLight .skillStatusDot.enabled {

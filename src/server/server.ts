@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { URL } from 'node:url'
 import {
   abortSession,
-  addPinnedMemory,
+  addMemoryItem,
   createSession,
   deleteSession,
   getOrchestrator,
@@ -13,7 +13,8 @@ import {
   loadSession,
   markSessionIdle,
   markSessionRunning,
-  removePinnedMemory,
+  removeMemoryItem,
+  revealMemoryItem,
   updateAllowedPaths,
   updateSessionTitle,
   updateMemorySettings,
@@ -269,15 +270,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return
     }
 
-    if (sessionId && method === 'POST' && pathname.endsWith('/memory/pinned')) {
+    if (sessionId && method === 'POST' && pathname.endsWith('/memory/items')) {
       const body = await readJson(req)
-      sendJson(res, 200, await addPinnedMemory(sessionId, body.content, body.layer))
+      sendJson(res, 200, await addMemoryItem(sessionId, body))
       return
     }
 
-    const pinnedDeleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/memory\/pinned\/([^/]+)$/)
-    if (sessionId && pinnedDeleteMatch && method === 'DELETE') {
-      sendJson(res, 200, await removePinnedMemory(sessionId, decodeURIComponent(pinnedDeleteMatch[2])))
+    const memoryDeleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/memory\/items\/([^/]+)$/)
+    if (sessionId && memoryDeleteMatch && method === 'DELETE') {
+      sendJson(res, 200, await removeMemoryItem(sessionId, decodeURIComponent(memoryDeleteMatch[2])))
+      return
+    }
+
+    const memoryRevealMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/memory\/items\/([^/]+)\/reveal$/)
+    if (sessionId && memoryRevealMatch && method === 'POST') {
+      const body = await readJson(req)
+      sendJson(res, 200, await revealMemoryItem(sessionId, body.layer, decodeURIComponent(memoryRevealMatch[2])))
       return
     }
 
