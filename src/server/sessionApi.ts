@@ -10,7 +10,15 @@ const activeRuns = new Set<string>()
 
 export async function getOrchestrator(sessionId: string): Promise<Orchestrator> {
   const existing = orchestrators.get(sessionId)
-  if (existing) return existing
+  if (existing) {
+    // 验证 session 目录未被外部删除（缓存失效）
+    try {
+      await stat(resolve(stateDir, 'sessions', sessionId))
+    } catch {
+      orchestrators.delete(sessionId)
+    }
+    if (orchestrators.has(sessionId)) return existing
+  }
 
   const orchestrator = await Orchestrator.load(sessionId)
   orchestrators.set(sessionId, orchestrator)

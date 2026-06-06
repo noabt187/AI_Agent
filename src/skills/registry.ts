@@ -8,7 +8,8 @@ type SkillSource = 'builtin' | 'custom'
 export type ManagedSkill = {
   id: string
   name: string
-  trigger: string
+  description: string
+  trigger?: string
   summary?: string
   node?: string
   entry?: string
@@ -20,6 +21,15 @@ type LoadedSkill = Skill & {
   id: string
   filePath: string
   source: SkillSource
+  trigger?: string
+  summary?: string
+  node?: string
+  entry?: string
+  onConfirmNext?: string
+  onAllowWriteNext?: string
+  insertAfter?: string
+  insertBefore?: string
+  priority?: number
 }
 
 type StoredRegistry = {
@@ -67,13 +77,13 @@ function skillId(source: SkillSource, name: string): string {
 
 function asSkill(raw: string, filePath: string, source: SkillSource): LoadedSkill | null {
   const { meta, body } = parseFrontmatter(raw)
-  if (!meta.name || !meta.trigger || !body) return null
+  if (!meta.name || !meta.description || !body) return null
 
   return {
     id: skillId(source, meta.name),
     name: meta.name,
-    trigger: meta.trigger,
     description: meta.description,
+    trigger: meta.trigger,
     summary: meta.summary || meta.description,
     node: meta.node,
     entry: meta.entry,
@@ -92,6 +102,7 @@ function managedSkill(skill: LoadedSkill, enabled: boolean): ManagedSkill {
   return {
     id: skill.id,
     name: skill.name,
+    description: skill.description,
     trigger: skill.trigger,
     summary: skill.summary,
     node: skill.node,
@@ -198,7 +209,7 @@ function validateUploadedSkill(fileName: string, content: string): LoadedSkill {
 
   const skill = asSkill(content, '', 'custom')
   if (!skill) {
-    throw new SkillRegistryError('Skill frontmatter 必须包含 name 和 trigger，正文不能为空')
+    throw new SkillRegistryError('Skill frontmatter 必须包含 name 和 description，正文不能为空')
   }
 
   return skill

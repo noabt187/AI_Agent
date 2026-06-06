@@ -98,7 +98,8 @@ export type SessionMemory = {
 export type ManagedSkill = {
   id: string
   name: string
-  trigger: string
+  description: string
+  trigger?: string
   summary?: string
   node?: string
   entry?: string

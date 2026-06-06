@@ -3,8 +3,8 @@ import { QueryEngine } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
-import { executeTool, getToolDescriptionsForScope, toolDefsToOpenAI } from '../tools/index.js'
-import { buildWorkflowSnapshot, formatSkillContext, loadSkills, selectActiveSkills } from '../skills/index.js'
+import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
+import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
   formatPinnedProjectMemoryContext,
@@ -14,7 +14,7 @@ import {
 } from '../memory/projectMemory.js'
 import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
-import type { LlmToolCall } from '../llm/types.js'
+import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
@@ -22,6 +22,21 @@ const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
+
+const USE_SKILL_TOOL_DEF: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'use_skill',
+    description: '加载指定技能的完整指引内容。调用后返回该技能的详细操作步骤和规则。根据当前任务类型选择合适的技能加载。',
+    parameters: {
+      type: 'object',
+      properties: {
+        skillName: { type: 'string', description: '要加载的技能名称' },
+      },
+      required: ['skillName'],
+    },
+  },
+}
 
 export function buildStableSystemPrompt(): string {
   return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
@@ -33,11 +48,21 @@ export function buildStableSystemPrompt(): string {
 3. 行动：调用工具读取/写入代码，或回复用户
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
-工具调用的 rootDir 必须使用本轮临时上下文中的可操作目录之一。
+工具调用中的文件路径参数（如 filePath、dirPath）必须使用绝对路径，且必须位于当前可操作目录之下。
 当你准备好回复用户时，输出以下 JSON 格式。
 
-## 可用工具
-${getToolDescriptionsForScope('write')}
+根据任务需要选择合适的流程，不要总是固定步骤：
+- **简单修改**（改文案、修小bug）：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
+- **复杂功能**（新功能、跨文件重构）：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
+- **纯分析**（审查代码、回答问题）：读代码 → chat 直接回答
+- **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
+
+**重要规则**：
+- 用户确认前不要调用写工具（writeFile/deleteFile）
+- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
+- 仅在对齐理解、确认需求时，省略 confirmType
+- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
+- 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
@@ -51,21 +76,6 @@ action 说明：
   - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
   - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
-
-## 流程选择
-根据本轮临时上下文中的 Active Skill Details 选择流程，不要把默认流程视为硬规则。
-
-- 默认简单修改：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
-- 默认复杂功能：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
-- 如果当前加载的 skill 定义了额外理解、学习、审查或仓库操作节点，优先遵循该 skill。
-- 纯分析任务读取代码后可用 chat 直接回答。
-
-**重要规则**：
-- 用户确认前不要调用写工具（writeFile/deleteFile）
-- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
-- 仅在对齐理解、确认需求时，省略 confirmType
-- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
-- 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 `
 }
 
@@ -85,9 +95,6 @@ export function buildWorldStateContext(state: WorldState): string {
       : state.pendingConfirm.message
     parts.push(`待确认内容: [${state.pendingConfirm.allowWrite ? 'allow_write' : 'read_only'}] ${pendingPreview}`)
   }
-  if (state.workflow?.node) {
-    parts.push(`当前流程节点: ${state.workflow.node}`)
-  }
 
   if (state.designTasks?.length) {
     const completed = state.completedTaskIds.length
@@ -105,13 +112,16 @@ export function buildWorldStateContext(state: WorldState): string {
     parts.push(`可操作目录:\n${state.allowedPaths.map((path) => `- ${path}`).join('\n')}`)
   }
 
+  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile/deleteFile 等写工具）')
+  else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可写文件）')
+
   return parts.join('\n') || '空闲状态，无进行中的任务'
 }
 
 export function buildRuntimeContext(
   state: WorldState,
   memoryContext: string,
-  skillContext: string,
+  allSkills: Skill[],
   pinnedMemoryContext = '',
 ): string {
   const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
@@ -121,9 +131,21 @@ export function buildRuntimeContext(
   if (memoryContext.trim()) {
     parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
   }
-  if (skillContext.trim()) {
-    parts.push(`## 当前加载的 Skills\n${skillContext.trim()}`)
+
+  // Skill catalog — always show compact listing
+  const catalog = getSkillCatalog(allSkills)
+  if (catalog) {
+    parts.push(`## 可用技能 (Skills)\n${catalog}\n\n根据任务需要调用 use_skill(skillName) 加载完整技能指引。`)
   }
+
+  // Loaded skill content — only inject skills the model explicitly loaded
+  if (state.activeSkills.length > 0) {
+    const loadedSkills = allSkills.filter((s) => state.activeSkills.includes(s.name))
+    if (loadedSkills.length > 0) {
+      parts.push(`## 当前加载的技能指引\n${loadedSkills.map((s) => s.content).join('\n\n')}`)
+    }
+  }
+
   return parts.join('\n\n')
 }
 
@@ -254,8 +276,8 @@ export class Agent {
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
     const allSkills = await loadSkills(SKILLS_DIR)
-    const workflowSnapshot = buildWorkflowSnapshot(state, userInput)
-    const skillContext = formatSkillContext(allSkills, selectActiveSkills(allSkills, workflowSnapshot))
+    // Backward compat: initialize activeSkills for existing persisted states
+    if (!state.activeSkills) state.activeSkills = []
     const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
     const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
@@ -265,7 +287,7 @@ export class Agent {
     const memoryContext = formatProjectMemoryContext(memories)
 
     const systemPrompt = buildStableSystemPrompt()
-    const runtimeContext = buildRuntimeContext(state, memoryContext, skillContext, pinnedMemoryContext)
+    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills, pinnedMemoryContext)
 
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
     if (!hasCorrectPrompt) {
@@ -279,7 +301,7 @@ export class Agent {
       engine.state.messages[0].content = systemPrompt
     }
 
-    const tools = toolDefsToOpenAI('write')
+    const tools = [...toolDefsToOpenAI('write'), USE_SKILL_TOOL_DEF]
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
@@ -308,6 +330,27 @@ export class Agent {
           let args: Record<string, string>
           try { args = JSON.parse(tc.arguments) } catch { continue }
 
+          // ── Virtual tool: use_skill ──
+          if (tc.name === 'use_skill') {
+            const skillName = args.skillName?.trim()
+            if (!skillName) {
+              await engine.appendToolResult(tc.id, 'use_skill', '错误：缺少 skillName 参数')
+              continue
+            }
+            const skillContent = useSkill(allSkills, skillName)
+            if (skillContent) {
+              if (!state.activeSkills.includes(skillName)) {
+                state.activeSkills.push(skillName)
+              }
+              await engine.appendToolResult(tc.id, 'use_skill', skillContent)
+              await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
+            } else {
+              const available = allSkills.map((s) => s.name).join(', ')
+              await engine.appendToolResult(tc.id, 'use_skill', `错误：未找到技能 "${skillName}"。可用技能: ${available}`)
+            }
+            continue
+          }
+
           const failureKey = `${tc.name}:${tc.arguments}`
           const failCount = toolFailureCounts.get(failureKey) ?? 0
           if (failCount >= MAX_TOOL_RETRIES) {
@@ -315,7 +358,7 @@ export class Agent {
             continue
           }
 
-          const result = await executeTool(tc.name, args, effectiveAllowedPaths, 'write', state.designConfirmed)
+          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed)
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 

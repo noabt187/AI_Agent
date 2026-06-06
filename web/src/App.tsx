@@ -109,8 +109,14 @@ function messageContent(message: Message): string {
   const raw = message.content.trim()
   if (!raw.startsWith('{')) return message.content
   try {
-    const parsed = JSON.parse(raw) as { message?: string; prompt?: string }
-    return [parsed.message, parsed.prompt].filter(Boolean).join('\n\n') || message.content
+    const parsed = JSON.parse(raw) as { message?: string; prompt?: string; questions?: string[] }
+    const parts: string[] = []
+    if (parsed.message) parts.push(parsed.message)
+    if (parsed.questions?.length) {
+      parts.push(parsed.questions.map((q, i) => `${i + 1}. ${q}`).join('\n'))
+    }
+    if (parsed.prompt) parts.push(parsed.prompt)
+    return parts.join('\n\n') || message.content
   } catch {
     return message.content
   }
@@ -1581,11 +1587,11 @@ export function App() {
                   </button>
                   <div className="skillManagerMain">
                     <strong>{skill.name}</strong>
-                    <span>{skill.summary || skill.trigger}</span>
+                    <span>{skill.summary || skill.description}</span>
                   </div>
                   <div className="skillManagerMeta">
                     <small>{skill.source === 'builtin' ? '内置' : '上传'}</small>
-                    <code>{skill.node || skill.entry || skill.trigger}</code>
+                    <code>{skill.node || skill.entry || skill.description}</code>
                   </div>
                 </article>
               ))}

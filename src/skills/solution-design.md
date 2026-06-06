@@ -1,11 +1,6 @@
 ---
 name: solution-design
-description: 方案设计指引
-summary: 已确认需求后，拆解任务和写入前方案
-trigger: workflow
-node: solution-design
-onAllowWriteNext: code-generation
-priority: 90
+description: 方案设计指引 — 需求明确后将实现方案拆解为任务列表，适用于需求已确认时
 ---
 
 ## Skill: 方案设计

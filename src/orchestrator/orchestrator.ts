@@ -7,7 +7,6 @@ import { Agent } from './agent.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
-import { buildWorkflowSnapshot, loadSkills, resolveNextNode, selectActiveSkills } from '../skills/index.js'
 import {
   appendPinnedProjectMemory,
   createAndStoreProjectMemory,
@@ -18,7 +17,6 @@ import {
 import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
 
 const execAsync = promisify(exec)
-const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
 type AskConfirmFn = (question: string) => Promise<boolean>
 type AskInputFn = (question: string) => Promise<string>
@@ -39,6 +37,7 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
+      activeSkills: [],
     }
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
@@ -51,6 +50,7 @@ export class Orchestrator {
       persisted.completedTaskIds = persisted.completedTaskIds || []
       persisted.failedTaskIds = persisted.failedTaskIds || []
       persisted.errors = persisted.errors || {}
+      persisted.activeSkills = persisted.activeSkills || []
       persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
     }
     return new Orchestrator(sessionId, persisted ?? {
@@ -60,6 +60,7 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
+      activeSkills: [],
     })
   }
 
@@ -105,19 +106,6 @@ export class Orchestrator {
 
   async forgetProjectMemory(id: string): Promise<boolean> {
     return deletePinnedProjectMemory(this.getProjectDir(), id)
-  }
-
-  private async resolveConfirmWorkflow(userInput: string, allowWrite: boolean): Promise<{ currentNode: string; nextNode: string } | undefined> {
-    const skills = await loadSkills(SKILLS_DIR)
-    const snapshot = buildWorkflowSnapshot(this.state, userInput)
-    const selected = selectActiveSkills(skills, snapshot)
-    const currentSkill = selected.primary
-    const currentNode = currentSkill?.node || currentSkill?.name || snapshot.node
-    const defaultNext = allowWrite
-      ? currentSkill?.onAllowWriteNext || 'code-generation'
-      : currentSkill?.onConfirmNext || 'solution-design'
-    const nextNode = resolveNextNode(currentNode, defaultNext, skills)
-    return nextNode ? { currentNode, nextNode } : undefined
   }
 
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
@@ -195,11 +183,11 @@ export class Orchestrator {
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    await this.handleAgentResult(result, onEvent, userInput)
+    await this.handleAgentResult(result, onEvent)
     await this.persist()
   }
 
-  private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler, userInput = '') {
+  private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler) {
     switch (result.action) {
       case 'chat':
         await this.emitOutput(result.message, onEvent)
@@ -219,7 +207,6 @@ export class Orchestrator {
         this.state.pendingConfirm = {
           allowWrite,
           message: result.message || result.prompt,
-          workflow: await this.resolveConfirmWorkflow(userInput, allowWrite),
         }
         if (allowWrite) {
           await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
@@ -266,7 +253,6 @@ export class Orchestrator {
     this.state.errors = {}
     this.state.pendingConfirm = undefined
     this.state.designConfirmed = false
-    this.state.workflow = undefined
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
   }
 
@@ -281,9 +267,6 @@ export class Orchestrator {
       this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
       await this.emitOutput('\n[已确认] 正在继续...', onEvent)
     }
-    const nextNode = pending.workflow?.nextNode ?? buildWorkflowSnapshot(this.state, userInput).node
-    this.state.workflow = { node: nextNode }
-
     await this.persist()
 
     this.abortController = new AbortController()
@@ -291,7 +274,7 @@ export class Orchestrator {
     this.abortController = undefined
     await onEvent?.({ type: 'result', result })
 
-    await this.handleAgentResult(result, onEvent, userInput)
+    await this.handleAgentResult(result, onEvent)
     await this.persist()
   }
 
