@@ -5,7 +5,7 @@ import type { Message } from '../types/index.js'
 
 function convertMessages(messages: Message[]): Array<{ role: 'user' | 'assistant'; content: string }> {
   return messages
-    .filter((m) => m.role !== 'system')
+    .filter((m) => m.role !== 'system' && !m.isMeta)
     .map((m) => {
       if (m.role === 'tool') {
         const prefix = m.toolName ? `[tool_result: ${m.toolName}]` : '[tool_result]'

@@ -34,8 +34,7 @@ const USE_SKILL_TOOL_DEF: ToolDefinition = {
   },
 }
 
-export function buildStableSystemPrompt(): string {
-  return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
+const SYSTEM_PROMPT = `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
 
 ## 工作方式
 你通过"观察→思考→行动"循环工作：
@@ -75,7 +74,6 @@ action 说明：
 ## Auto memory
 When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
-}
 
 export function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
@@ -133,6 +131,13 @@ export function buildRuntimeContext(
   }
 
   return parts.join('\n\n')
+}
+
+function abortedResult(signal?: AbortSignal): AgentResult | null {
+  if (signal?.aborted) {
+    return { action: 'chat', message: '[已中断] 操作被用户取消。' }
+  }
+  return null
 }
 
 export function isPureConfirmationInput(input: string): boolean {
@@ -261,7 +266,7 @@ export class Agent {
       })
       : ''
 
-    const systemPrompt = buildStableSystemPrompt()
+    const systemPrompt = SYSTEM_PROMPT
     const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills)
     const turnLoadedSkills = new Set<string>()
 
@@ -281,8 +286,10 @@ export class Agent {
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
-    try {
-      for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
+    // Helper: consume stream events, accumulating text and tool calls
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const consumeStream = async (stream: AsyncIterable<any>): Promise<void> => {
+      for await (const evt of stream) {
         if (signal?.aborted) break
         if (evt.kind === 'delta') {
           fullText += evt.delta
@@ -295,10 +302,13 @@ export class Agent {
           }
         }
       }
+    }
 
-      if (signal?.aborted) {
-        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-      }
+    try {
+      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext }))
+
+      const abortRet = abortedResult(signal)
+      if (abortRet) return abortRet
 
       const toolFailureCounts = new Map<string, number>()
 
@@ -359,24 +369,11 @@ export class Agent {
         if (signal?.aborted) break
         fullText = ''
         toolCalls = []
-        for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
-          if (signal?.aborted) break
-          if (evt.kind === 'delta') {
-            fullText += evt.delta
-            await onEvent?.({ type: 'delta', text: evt.delta })
-          }
-          if (evt.kind === 'tool_calls') {
-            toolCalls = evt.toolCalls
-            for (const tc of toolCalls) {
-              await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
-            }
-          }
-        }
+        await consumeStream(engine.continueFromToolResults(tools, signal, runtimeContext))
       }
 
-      if (signal?.aborted) {
-        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-      }
+      const a = abortedResult(signal)
+      if (a) return a
 
       if (toolCalls.length > 0) {
         const prevText = fullText
@@ -406,9 +403,8 @@ export class Agent {
 
       return { action: 'chat', message: fullText.trim() }
     } catch (err) {
-      if (signal?.aborted) {
-        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-      }
+      const a = abortedResult(signal)
+      if (a) return a
       throw err
     }
   }

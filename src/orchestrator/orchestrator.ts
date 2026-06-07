@@ -197,6 +197,10 @@ export class Orchestrator {
       this.state.goal = userInput
     }
 
+    await this.runAgentTurn(userInput, onEvent)
+  }
+
+  private async runAgentTurn(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     const controller = new AbortController()
     this.abortController = controller
     let result: import('./types.js').AgentResult
@@ -270,21 +274,7 @@ export class Orchestrator {
     }
     await this.persist()
 
-    const controller = new AbortController()
-    this.abortController = controller
-    let result: import('./types.js').AgentResult
-    try {
-      result = await this.agent.run(this.state.sessionId, userInput, this.state, controller.signal, onEvent, this.metricRecorder)
-    } finally {
-      if (this.abortController === controller) this.abortController = undefined
-    }
-    if (controller.signal.aborted) {
-      await onEvent?.({ type: 'aborted', message: '中断完成' })
-    }
-    await onEvent?.({ type: 'result', result })
-
-    await this.handleAgentResult(result, onEvent)
-    await this.persist()
+    await this.runAgentTurn(userInput, onEvent)
   }
 
   private async handleSetDirectory(onEvent?: AgentEventHandler) {
