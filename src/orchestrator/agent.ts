@@ -54,8 +54,8 @@ export function buildStableSystemPrompt(): string {
 - **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
 
 **重要规则**：
-- 用户确认前不要调用写工具（writeFile/deleteFile）
-- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
+- 用户确认前不要调用写工具。写工具包括 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository。这些工具会修改文件或操作远程仓库，必须先输出 action: confirm, confirmType: allow_write 并等待用户确认后才能调用。
+- confirmType="allow_write" 表示确认后将执行写操作（修改/删除文件、创建 PR、fork/clone 仓库）
 - 仅在对齐理解、确认需求时，省略 confirmType
 - 当前状态、Markdown 记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
@@ -110,8 +110,8 @@ export function buildWorldStateContext(state: WorldState): string {
     parts.push(`可操作目录:\n${state.allowedPaths.map((path) => `- ${path}`).join('\n')}`)
   }
 
-  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile/deleteFile 等写工具）')
-  else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可写文件）')
+  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository）')
+  else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
 }

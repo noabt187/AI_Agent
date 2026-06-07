@@ -79,7 +79,7 @@ const toolRegistry: Record<string, ToolDef> = {
   },
   verifyCode: {
     fn: verifyCodeTool,
-    description: '验证代码质量：运行 lint/test/build + 跨栈一致性检查，changedFiles 为本次修改的文件列表（逗号分隔）',
+    description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
     scope: 'read',
   },
