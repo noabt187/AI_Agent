@@ -211,6 +211,7 @@ export class Orchestrator {
     }
     if (controller.signal.aborted) {
       await onEvent?.({ type: 'aborted', message: '中断完成' })
+      return
     }
     await onEvent?.({ type: 'result', result })
 
