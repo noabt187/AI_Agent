@@ -135,7 +135,10 @@ const toolRegistry: Record<string, ToolDef> = {
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
   return Object.entries(toolRegistry)
-    .filter(([, def]) => def.scope === 'read' || (scope === 'write' && (def.scope === 'write' || def.scope === 'memory')))
+    .filter(([, def]) => {
+      const allowedScopes: ToolScope[] = scope === 'read' ? ['read'] : ['read', 'write', 'memory']
+      return allowedScopes.includes(def.scope)
+    })
     .map(([name, def]) => {
       const properties: Record<string, { type: string; description: string }> = {}
       for (const arg of def.argNames) {
@@ -184,26 +187,28 @@ export async function executeTool(
 
   // 校验 rootDir（如果工具有此参数）
   const rootDir = args.rootDir
-  if (rootDir) {
-    if (!isAbsolute(rootDir)) {
-      return `错误：rootDir 必须是绝对路径，当前值为 "${rootDir}"。当前可操作目录：${allowedPaths.join(', ')}`
-    }
-    if (!isInsideAllowedPaths(rootDir, allowedPaths)) {
-      return `错误：rootDir "${rootDir}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
-    }
-  }
 
-  // 校验路径参数：必须是绝对路径且在可操作目录内
-  const pathArgNames = tool.pathArgNames ?? []
-  for (const argName of pathArgNames) {
-    const val = args[argName]
-    if (!val) continue
+  // Helper: validate a single path argument
+  const validatePathArg = (val: string | undefined, argName: string): string | null => {
+    if (!val) return null
     if (!isAbsolute(val)) {
       return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
     }
     if (!isInsideAllowedPaths(val, allowedPaths)) {
       return `错误：路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
     }
+    return null
+  }
+
+  if (rootDir) {
+    const err = validatePathArg(rootDir, 'rootDir')
+    if (err) return err
+  }
+
+  // 校验路径参数：必须是绝对路径且在可操作目录内
+  for (const argName of tool.pathArgNames ?? []) {
+    const err = validatePathArg(args[argName], argName)
+    if (err) return err
   }
 
   // 必填参数校验

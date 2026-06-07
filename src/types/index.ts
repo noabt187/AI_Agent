@@ -27,4 +27,4 @@ export type State = {
 
 export type Terminal =
   | { type: 'completed' }
-  | { type: 'error'; error: string }
+  | { type: 'error'; error: string; aborted?: boolean }
