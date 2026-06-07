@@ -63,7 +63,7 @@ export function buildStableSystemPrompt(): string {
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
 {"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
-JSON 字符串中不要包含 Markdown 代码块；引用代码时用单引号或普通文字描述，避免未转义双引号导致 JSON 无法解析。
+JSON 字符串涉及到引号文本，使用///"来转义引号，避免 JSON 错误解析。
 
 action 说明：
 - chat：直接回复用户（普通对话、回答问题）
