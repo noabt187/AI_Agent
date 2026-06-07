@@ -197,9 +197,17 @@ export class Orchestrator {
       this.state.goal = userInput
     }
 
-    this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
-    this.abortController = undefined
+    const controller = new AbortController()
+    this.abortController = controller
+    let result: import('./types.js').AgentResult
+    try {
+      result = await this.agent.run(this.state.sessionId, userInput, this.state, controller.signal, onEvent, this.metricRecorder)
+    } finally {
+      if (this.abortController === controller) this.abortController = undefined
+    }
+    if (controller.signal.aborted) {
+      await onEvent?.({ type: 'aborted', message: '中断完成' })
+    }
     await onEvent?.({ type: 'result', result })
 
     await this.handleAgentResult(result, onEvent)
@@ -262,9 +270,17 @@ export class Orchestrator {
     }
     await this.persist()
 
-    this.abortController = new AbortController()
-    const result = await this.agent.run(this.state.sessionId, userInput, this.state, this.abortController.signal, onEvent, this.metricRecorder)
-    this.abortController = undefined
+    const controller = new AbortController()
+    this.abortController = controller
+    let result: import('./types.js').AgentResult
+    try {
+      result = await this.agent.run(this.state.sessionId, userInput, this.state, controller.signal, onEvent, this.metricRecorder)
+    } finally {
+      if (this.abortController === controller) this.abortController = undefined
+    }
+    if (controller.signal.aborted) {
+      await onEvent?.({ type: 'aborted', message: '中断完成' })
+    }
     await onEvent?.({ type: 'result', result })
 
     await this.handleAgentResult(result, onEvent)

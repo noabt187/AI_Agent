@@ -6,12 +6,24 @@ export async function* parseSseLines(
   const decoder = new TextDecoder()
   let buffer = ''
 
-  const onAbort = () => reader.cancel()
+  const onAbort = () => {
+    void reader.cancel().catch(() => {})
+  }
   signal?.addEventListener('abort', onAbort, { once: true })
 
   try {
     while (true) {
-      const { value, done } = await reader.read()
+      if (signal?.aborted) break
+
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (err) {
+        if (signal?.aborted) break
+        throw err
+      }
+
+      const { value, done } = chunk
       if (done) break
       buffer += decoder.decode(value, { stream: true })
 

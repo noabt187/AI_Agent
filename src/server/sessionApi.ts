@@ -38,7 +38,7 @@ export async function getOrchestrator(sessionId: string): Promise<Orchestrator> 
   if (existing) {
     // 验证 session 目录未被外部删除（缓存失效）
     try {
-      await stat(resolve(stateDir, 'sessions', sessionId))
+      await stat(resolve(stateDir, sessionId))
     } catch {
       orchestrators.delete(sessionId)
     }

@@ -61,6 +61,7 @@ export type AgentEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }
+  | { type: 'aborted'; message: string }
   | { type: 'error'; message: string }
 
 export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>
