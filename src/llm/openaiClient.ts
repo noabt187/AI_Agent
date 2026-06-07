@@ -4,9 +4,7 @@ import type { LlmClient, LlmStreamEvent, ToolDefinition } from './types.js'
 import type { Message } from '../types/index.js'
 
 function convertMessages(messages: Message[]): Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }> {
-  return messages
-    .filter((m) => !m.isMeta)
-    .map((m) => {
+  return messages.map((m) => {
     if (m.role === 'tool') {
       // Only send as native tool message if we have a valid tool_call_id
       if (m.toolCallId) {
