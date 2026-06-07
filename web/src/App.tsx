@@ -110,6 +110,7 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 const modelThinkingStatus = '模型思考中'
+const abortDisplayMessage = '操作已取消'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 const themeStorageKey = 'agent-console-theme'
@@ -865,6 +866,24 @@ export function App() {
     ])
   }
 
+  function showAbortNotice() {
+    setActivityItems([])
+    setActivityExpanded(false)
+    setStatus(abortDisplayMessage)
+    setTimeline((current) => {
+      const lastUserIndex = current.map((item) => item.role).lastIndexOf('user')
+      const base = lastUserIndex >= 0 ? current.slice(0, lastUserIndex + 1) : current
+      return [
+        ...base,
+        {
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: 'assistant',
+          content: abortDisplayMessage,
+        },
+      ]
+    })
+  }
+
   async function handleCopyResponse(itemId: string, content: string) {
     try {
       await navigator.clipboard.writeText(content)
@@ -952,9 +971,10 @@ export function App() {
       setStatus(modelThinkingStatus)
       return
     }
+    if (abortingRef.current) return
     if (event.type === 'delta') {
       setDeltaCount((count) => count + 1)
-      if (!abortingRef.current) setStatus('Agent 正在生成')
+      setStatus('Agent 正在生成')
       return
     }
     if (event.type === 'output') {
@@ -962,17 +982,16 @@ export function App() {
       return
     }
     if (event.type === 'aborted') {
-      appendActivity(`[中断] ${event.message}`)
-      setStatus('已中断')
+      showAbortNotice()
       return
     }
     if (event.type === 'tool_call') {
-      if (!abortingRef.current) setStatus('正在执行')
+      setStatus('正在执行')
       appendActivity(formatToolCall(event.name, event.arguments))
       return
     }
     if (event.type === 'tool_result') {
-      if (!abortingRef.current) setStatus('正在执行')
+      setStatus('正在执行')
       const summary = formatToolResult(event.name, event.result)
       if (summary) appendActivity(summary)
       return
@@ -983,14 +1002,9 @@ export function App() {
       return
     }
     if (event.type === 'done') {
-      if (abortingRef.current) {
-        setStatus('已中断')
-        setActivityExpanded(true)
-      } else {
-        setActivityItems([])
-        setActivityExpanded(false)
-        setStatus('就绪')
-      }
+      setActivityItems([])
+      setActivityExpanded(false)
+      setStatus('就绪')
       setAborting(false)
     }
   }
@@ -1007,11 +1021,11 @@ export function App() {
     appendItem({ role: 'user', content: text })
     try {
       await streamPrompt(selectedSessionId, text, handleStreamEvent)
-      await refreshSession(selectedSessionId)
+      await refreshSession(selectedSessionId, { updateTimeline: !abortingRef.current })
       await refreshSessions(selectedSessionId)
     } catch (err) {
       if (abortingRef.current) {
-        setStatus('已中断')
+        showAbortNotice()
       } else {
         appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
         setStatus('出错')
@@ -1026,10 +1040,11 @@ export function App() {
     if (!selectedSessionId || !running || abortingRef.current) return
     setAborting(true)
     setStatus('正在中断')
-    setActivityExpanded(true)
-    appendActivity('[中断] 正在停止当前操作...')
+    setActivityItems([])
+    setActivityExpanded(false)
     try {
       await abortSession(selectedSessionId)
+      showAbortNotice()
     } catch (err) {
       appendActivity(`[中断失败] ${err instanceof Error ? err.message : String(err)}`)
       setStatus('中断失败')
@@ -1101,7 +1116,7 @@ export function App() {
     }
   }, [activityItems, running])
 
-  const showActivityPanel = running || activityItems.length > 0
+  const showActivityPanel = (running && !aborting) || activityItems.length > 0
   const activityPanelTitle = aborting
     ? '正在中断'
     : running && activityItems.length === 0
