@@ -55,6 +55,7 @@ export type StreamEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: unknown }
+  | { type: 'aborted'; message: string }
   | { type: 'done'; sessionId: string }
   | { type: 'error'; message: string }
 

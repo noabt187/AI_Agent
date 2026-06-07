@@ -243,6 +243,7 @@ export function App() {
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const abortingRef = useRef(false)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -275,6 +276,7 @@ export function App() {
   const [elementComment, setElementComment] = useState('')
   const [elementComments, setElementComments] = useState<ElementComment[]>([])
   const [running, setRunning] = useState(false)
+  const [aborting, setAbortingState] = useState(false)
   const [status, setStatus] = useState('未连接')
   const [deltaCount, setDeltaCount] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -288,6 +290,11 @@ export function App() {
   const [skillManagerOpen, setSkillManagerOpen] = useState(false)
   const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
+
+  function setAborting(value: boolean) {
+    abortingRef.current = value
+    setAbortingState(value)
+  }
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
   const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
@@ -947,20 +954,25 @@ export function App() {
     }
     if (event.type === 'delta') {
       setDeltaCount((count) => count + 1)
-      setStatus('Agent 正在生成')
+      if (!abortingRef.current) setStatus('Agent 正在生成')
       return
     }
     if (event.type === 'output') {
       appendItem({ role: 'assistant', content: event.message })
       return
     }
+    if (event.type === 'aborted') {
+      appendActivity(`[中断] ${event.message}`)
+      setStatus('已中断')
+      return
+    }
     if (event.type === 'tool_call') {
-      setStatus('正在执行')
+      if (!abortingRef.current) setStatus('正在执行')
       appendActivity(formatToolCall(event.name, event.arguments))
       return
     }
     if (event.type === 'tool_result') {
-      setStatus('正在执行')
+      if (!abortingRef.current) setStatus('正在执行')
       const summary = formatToolResult(event.name, event.result)
       if (summary) appendActivity(summary)
       return
@@ -971,9 +983,15 @@ export function App() {
       return
     }
     if (event.type === 'done') {
-      setActivityItems([])
-      setActivityExpanded(false)
-      setStatus('就绪')
+      if (abortingRef.current) {
+        setStatus('已中断')
+        setActivityExpanded(true)
+      } else {
+        setActivityItems([])
+        setActivityExpanded(false)
+        setStatus('就绪')
+      }
+      setAborting(false)
     }
   }
 
@@ -992,24 +1010,31 @@ export function App() {
       await refreshSession(selectedSessionId)
       await refreshSessions(selectedSessionId)
     } catch (err) {
-      appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
-      setStatus('出错')
+      if (abortingRef.current) {
+        setStatus('已中断')
+      } else {
+        appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
+        setStatus('出错')
+      }
     } finally {
+      setAborting(false)
       setRunning(false)
     }
   }
 
   async function handleAbort() {
-    if (!selectedSessionId || !running) return
+    if (!selectedSessionId || !running || abortingRef.current) return
+    setAborting(true)
+    setStatus('正在中断')
+    setActivityExpanded(true)
     appendActivity('[中断] 正在停止当前操作...')
     try {
       await abortSession(selectedSessionId)
-    } catch {
-      // abort API 调用失败不影响 UI 恢复
+    } catch (err) {
+      appendActivity(`[中断失败] ${err instanceof Error ? err.message : String(err)}`)
+      setStatus('中断失败')
+      setAborting(false)
     }
-    // 不在这里 setRunning(false) 和 appendItem，
-    // 让 sendPrompt 的 stream 结束和 finally 统一处理状态恢复，
-    // Agent 也会返回 "[已中断]" 消息通过 stream 输出到 timeline
   }
 
   function handleConfirmAction() {
@@ -1056,9 +1081,10 @@ export function App() {
   }
 
   const statusLabel = useMemo(() => {
+    if (aborting) return status || '正在中断'
     if (running) return deltaCount > 0 ? `生成中 · ${deltaCount}` : status || modelThinkingStatus
     return status
-  }, [deltaCount, running, status])
+  }, [aborting, deltaCount, running, status])
 
   const workspaceSubtitle = useMemo(() => {
     if (viewMode === 'metrics') return '会话监控信息'
@@ -1076,7 +1102,9 @@ export function App() {
   }, [activityItems, running])
 
   const showActivityPanel = running || activityItems.length > 0
-  const activityPanelTitle = running && activityItems.length === 0
+  const activityPanelTitle = aborting
+    ? '正在中断'
+    : running && activityItems.length === 0
     ? modelThinkingStatus
     : running
       ? '正在执行'
@@ -1597,7 +1625,7 @@ export function App() {
             }}
           />
           {running ? (
-            <button className="sendButton abort" title="停止" type="button" onClick={() => void handleAbort()}>
+            <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting} onClick={() => void handleAbort()}>
               <CircleStop size={19} />
             </button>
           ) : (
