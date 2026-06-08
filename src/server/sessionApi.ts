@@ -166,6 +166,14 @@ export async function updateRepositoryConfig(sessionId: string, config: unknown)
   return loadSession(sessionId)
 }
 
+export async function clearPendingConfirm(sessionId: string): Promise<unknown> {
+  const orchestrator = await getOrchestrator(sessionId)
+  orchestrator.state.pendingConfirm = undefined
+  orchestrator.state.designConfirmed = false
+  await orchestrator.persist()
+  return loadSession(sessionId)
+}
+
 export async function addMemoryItem(sessionId: string, body: Record<string, unknown>): Promise<unknown> {
   const content = typeof body.body === 'string' ? body.body.trim() : ''
   const description = typeof body.description === 'string' ? body.description.trim() : content

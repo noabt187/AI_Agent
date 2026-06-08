@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent as ReactChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
+  AlertTriangle,
   CheckCircle2,
   CircleStop,
   Check,
@@ -10,11 +11,13 @@ import {
   FolderOpen,
   Gauge,
   GitPullRequest,
+  List,
   MessageSquare,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  PieChart,
   Plus,
   Power,
   PowerOff,
@@ -25,10 +28,12 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  TrendingUp,
   X,
 } from 'lucide-react'
 import {
   abortSession,
+  clearPendingConfirm,
   createSession,
   deleteSession,
   deleteSkill,
@@ -91,6 +96,7 @@ type PlanOption = {
 
 type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
 type ViewMode = 'chat' | 'preview' | 'metrics'
+type MetricsViewMode = 'detail' | 'trend' | 'anomaly' | 'composition'
 type ThemeMode = 'dark' | 'light'
 type NegativeFeedbackDraft = {
   itemId: string
@@ -124,6 +130,7 @@ const abortDisplayMessage = '操作已取消'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 const themeStorageKey = 'agent-console-theme'
+const dismissedConfirmStoragePrefix = 'agent-console-dismissed-confirm:'
 
 function getInitialThemeMode(): ThemeMode {
   if (typeof window === 'undefined') return 'dark'
@@ -171,6 +178,11 @@ function formatDuration(value: number): string {
   if (value <= 0) return '0 ms'
   if (value < 1000) return `${value} ms`
   return `${(value / 1000).toFixed(2)} s`
+}
+
+function percentOf(value: number, max: number): number {
+  if (max <= 0) return 0
+  return Math.max(3, Math.min(100, Math.round((value / max) * 100)))
 }
 
 function parseToolArguments(raw: string): Record<string, string> {
@@ -226,7 +238,9 @@ function isWindowsClient(): boolean {
 
 function inferPendingConfirm(timeline: TimelineItem[], running: boolean): PendingConfirm | undefined {
   if (running) return undefined
-  const latestAssistant = [...timeline].reverse().find((item) => item.role === 'assistant')
+  const latestVisible = [...timeline].reverse().find((item) => item.role === 'assistant' || item.role === 'user')
+  if (latestVisible?.role !== 'assistant') return undefined
+  const latestAssistant = latestVisible
   if (!latestAssistant) return undefined
   const content = latestAssistant.content.trim()
   if (!content || /任务完成|已完成|验证通过/.test(content)) return undefined
@@ -248,6 +262,16 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
 
 function pendingConfirmKey(sessionId: string, confirm: PendingConfirm): string {
   return [sessionId, confirm.allowWrite ? 'write' : 'read', confirm.message].join('\n')
+}
+
+function loadDismissedPendingConfirmKey(sessionId: string): string {
+  if (typeof window === 'undefined' || !sessionId) return ''
+  return window.localStorage.getItem(`${dismissedConfirmStoragePrefix}${sessionId}`) || ''
+}
+
+function saveDismissedPendingConfirmKey(sessionId: string, key: string): void {
+  if (typeof window === 'undefined' || !sessionId) return
+  window.localStorage.setItem(`${dismissedConfirmStoragePrefix}${sessionId}`, key)
 }
 
 function uniquePlanOptions(options: PlanOption[]): PlanOption[] {
@@ -324,6 +348,7 @@ export function App() {
   const [previewEditorOpen, setPreviewEditorOpen] = useState(false)
   const [repositoryEditorOpen, setRepositoryEditorOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
+  const [metricsViewMode, setMetricsViewMode] = useState<MetricsViewMode>('detail')
   const [metrics, setMetrics] = useState<SessionMetrics | null>(null)
   const [metricsError, setMetricsError] = useState('')
   const [sessionMemory, setSessionMemory] = useState<SessionMemory | null>(null)
@@ -372,8 +397,7 @@ export function App() {
     [selectedSessionId, sessions],
   )
 
-  const inferredPendingConfirm = useMemo(() => inferPendingConfirm(timeline, running), [timeline, running])
-  const rawPendingConfirm = session?.state.pendingConfirm || inferredPendingConfirm
+  const rawPendingConfirm = session?.state.pendingConfirm
   const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
     ? pendingConfirmKey(selectedSessionId, rawPendingConfirm)
     : ''
@@ -398,7 +422,9 @@ export function App() {
 
   function clearPendingConfirmLocal(options: { dismiss?: boolean } = {}) {
     if (options.dismiss && selectedSessionId && pendingConfirm) {
-      setDismissedPendingConfirmKey(pendingConfirmKey(selectedSessionId, pendingConfirm))
+      const key = pendingConfirmKey(selectedSessionId, pendingConfirm)
+      saveDismissedPendingConfirmKey(selectedSessionId, key)
+      setDismissedPendingConfirmKey(key)
     }
     setSession((current) => current
       ? {
@@ -449,7 +475,7 @@ export function App() {
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId
     if (selectedSessionId) void refreshSession(selectedSessionId)
-    setDismissedPendingConfirmKey('')
+    setDismissedPendingConfirmKey(loadDismissedPendingConfirmKey(selectedSessionId))
     setActivityItems([])
     setActivityExpanded(false)
     setRepositoryError('')
@@ -1293,9 +1319,16 @@ export function App() {
     void sendPrompt(selectedPlanText)
   }
 
-  function handleCancelConfirm() {
+  async function handleCancelConfirm() {
     clearPendingConfirmLocal({ dismiss: true })
-    void sendPrompt('取消')
+    if (!selectedSessionId) return
+    try {
+      const detail = await clearPendingConfirm(selectedSessionId)
+      setSession(detail)
+      setStatus('已取消确认')
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : '取消确认失败')
+    }
   }
 
   function handleComparePlans() {
@@ -1377,6 +1410,33 @@ export function App() {
       : '执行过程'
 
   const memoryMode = sessionMemory?.settings.recallMode || session?.state.memorySettings?.recallMode || 'auto'
+  const metricCalls = metrics?.calls || []
+  const metricMaxTotalTokens = Math.max(0, ...metricCalls.map((call) => call.promptTokens + call.completionTokens))
+  const metricMaxLatency = Math.max(0, ...metricCalls.map((call) => call.latencyMs))
+  const metricMaxFirstToken = Math.max(0, ...metricCalls.map((call) => call.firstTokenMs))
+  const metricAnomalies = useMemo(() => {
+    if (!metrics || metrics.calls.length === 0) return []
+    const averageTokens = metrics.summary.callCount === 0
+      ? 0
+      : metrics.summary.totalTokens / metrics.summary.callCount
+    return metrics.calls
+      .map((call, index) => {
+        const totalTokens = call.promptTokens + call.completionTokens
+        const reasons = [
+          averageTokens > 0 && totalTokens >= averageTokens * 2 ? 'Token 偏高' : '',
+          metrics.summary.averageLatencyMs > 0 && call.latencyMs >= metrics.summary.averageLatencyMs * 2 ? '延迟偏高' : '',
+          metrics.summary.averageFirstTokenMs > 0 && call.firstTokenMs >= metrics.summary.averageFirstTokenMs * 2 ? '首 Token 偏慢' : '',
+        ].filter(Boolean)
+        return { call, index, totalTokens, reasons }
+      })
+      .filter((item) => item.reasons.length > 0)
+  }, [metrics])
+  const metricsViewOptions: Array<{ key: MetricsViewMode; label: string; icon: typeof List }> = [
+    { key: 'detail', label: '明细', icon: List },
+    { key: 'trend', label: '趋势', icon: TrendingUp },
+    { key: 'anomaly', label: '异常', icon: AlertTriangle },
+    { key: 'composition', label: '构成', icon: PieChart },
+  ]
   const themeButtonTitle = themeMode === 'dark' ? '切换浅色模式' : '切换暗色模式'
   const appShellClassName = [
     'appShell',
@@ -1674,35 +1734,151 @@ export function App() {
                   </article>
                 </section>
 
-                <section className="metricsTableWrap">
-                  <table className="metricsTable">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>时间</th>
-                        <th>Prompt</th>
-                        <th>Completion</th>
-                        <th>总计</th>
-                        <th>延迟</th>
-                        <th>首 Token</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {metrics.calls.map((call, index) => (
-                        <tr key={`${call.timestamp}-${index}`}>
-                          <td>{index + 1}</td>
-                          <td>{call.timestamp ? formatTime(call.timestamp) : '-'}</td>
-                          <td>{formatNumber(call.promptTokens)}</td>
-                          <td>{formatNumber(call.completionTokens)}</td>
-                          <td>{formatNumber(call.promptTokens + call.completionTokens)}</td>
-                          <td>{formatDuration(call.latencyMs)}</td>
-                          <td>{formatDuration(call.firstTokenMs)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {metrics.calls.length === 0 ? <div className="emptyMetrics">当前会话还没有模型调用记录</div> : null}
+                <section className="metricsModeTabs" aria-label="监控展示方式">
+                  {metricsViewOptions.map((option) => {
+                    const Icon = option.icon
+                    return (
+                      <button
+                        key={option.key}
+                        type="button"
+                        className={metricsViewMode === option.key ? 'active' : ''}
+                        onClick={() => setMetricsViewMode(option.key)}
+                      >
+                        <Icon size={16} />
+                        {option.label}
+                      </button>
+                    )
+                  })}
                 </section>
+
+                {metricsViewMode === 'detail' ? (
+                  <section className="metricsTableWrap">
+                    <table className="metricsTable">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>时间</th>
+                          <th>Prompt</th>
+                          <th>Completion</th>
+                          <th>总计</th>
+                          <th>延迟</th>
+                          <th>首 Token</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {metricCalls.map((call, index) => (
+                          <tr key={`${call.timestamp}-${index}`}>
+                            <td>{index + 1}</td>
+                            <td>{call.timestamp ? formatTime(call.timestamp) : '-'}</td>
+                            <td>{formatNumber(call.promptTokens)}</td>
+                            <td>{formatNumber(call.completionTokens)}</td>
+                            <td>{formatNumber(call.promptTokens + call.completionTokens)}</td>
+                            <td>{formatDuration(call.latencyMs)}</td>
+                            <td>{formatDuration(call.firstTokenMs)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {metricCalls.length === 0 ? <div className="emptyMetrics">当前会话还没有模型调用记录</div> : null}
+                  </section>
+                ) : null}
+
+                {metricsViewMode === 'trend' ? (
+                  <section className="metricsTrendPanel">
+                    {metricCalls.length === 0 ? <div className="emptyMetrics">当前会话还没有模型调用记录</div> : null}
+                    {metricCalls.map((call, index) => {
+                      const totalTokens = call.promptTokens + call.completionTokens
+                      return (
+                        <article className="metricsTrendRow" key={`${call.timestamp}-${index}`}>
+                          <div className="metricCallIndex">#{index + 1}</div>
+                          <div className="metricTrendBars">
+                            <div className="metricTrendLine token">
+                              <span style={{ width: `${percentOf(totalTokens, metricMaxTotalTokens)}%` }} />
+                            </div>
+                            <div className="metricTrendLine latency">
+                              <span style={{ width: `${percentOf(call.latencyMs, metricMaxLatency)}%` }} />
+                            </div>
+                            <div className="metricTrendLine firstToken">
+                              <span style={{ width: `${percentOf(call.firstTokenMs, metricMaxFirstToken)}%` }} />
+                            </div>
+                          </div>
+                          <div className="metricTrendValues">
+                            <strong>{formatNumber(totalTokens)} token</strong>
+                            <span>{formatDuration(call.latencyMs)} / {formatDuration(call.firstTokenMs)}</span>
+                          </div>
+                        </article>
+                      )
+                    })}
+                    {metricCalls.length > 0 ? (
+                      <div className="metricLegend">
+                        <span className="token">Token</span>
+                        <span className="latency">延迟</span>
+                        <span className="firstToken">首 Token</span>
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
+
+                {metricsViewMode === 'anomaly' ? (
+                  <section className="metricsAnomalyGrid">
+                    {metricAnomalies.length === 0 ? (
+                      <div className="emptyMetrics">未发现明显异常调用</div>
+                    ) : null}
+                    {metricAnomalies.map((item) => (
+                      <article className="metricsAnomalyCard" key={`${item.call.timestamp}-${item.index}`}>
+                        <div>
+                          <strong>#{item.index + 1}</strong>
+                          <span>{item.call.timestamp ? formatTime(item.call.timestamp) : '-'}</span>
+                        </div>
+                        <p>{item.reasons.join(' / ')}</p>
+                        <dl>
+                          <div>
+                            <dt>Token</dt>
+                            <dd>{formatNumber(item.totalTokens)}</dd>
+                          </div>
+                          <div>
+                            <dt>延迟</dt>
+                            <dd>{formatDuration(item.call.latencyMs)}</dd>
+                          </div>
+                          <div>
+                            <dt>首 Token</dt>
+                            <dd>{formatDuration(item.call.firstTokenMs)}</dd>
+                          </div>
+                        </dl>
+                      </article>
+                    ))}
+                  </section>
+                ) : null}
+
+                {metricsViewMode === 'composition' ? (
+                  <section className="metricsCompositionPanel">
+                    {metricCalls.length === 0 ? <div className="emptyMetrics">当前会话还没有模型调用记录</div> : null}
+                    {metricCalls.map((call, index) => {
+                      const totalTokens = call.promptTokens + call.completionTokens
+                      const promptPercent = totalTokens > 0 ? Math.round((call.promptTokens / totalTokens) * 100) : 0
+                      const completionPercent = totalTokens > 0 ? 100 - promptPercent : 0
+                      return (
+                        <article className="metricsCompositionRow" key={`${call.timestamp}-${index}`}>
+                          <div className="metricCallIndex">#{index + 1}</div>
+                          <div className="compositionStack" aria-label={`第 ${index + 1} 次调用 Token 构成`}>
+                            <span className="prompt" style={{ width: `${promptPercent}%` }} />
+                            <span className="completion" style={{ width: `${completionPercent}%` }} />
+                          </div>
+                          <div className="compositionValues">
+                            <strong>{formatNumber(totalTokens)}</strong>
+                            <span>P {promptPercent}% / C {completionPercent}%</span>
+                          </div>
+                        </article>
+                      )
+                    })}
+                    {metricCalls.length > 0 ? (
+                      <div className="metricLegend">
+                        <span className="prompt">Prompt</span>
+                        <span className="completion">Completion</span>
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
               </>
             )}
           </div>

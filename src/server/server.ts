@@ -3,6 +3,7 @@ import { URL } from 'node:url'
 import {
   abortSession,
   addMemoryItem,
+  clearPendingConfirm,
   createSession,
   deleteSession,
   getOrchestrator,
@@ -274,6 +275,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (sessionId && method === 'POST' && pathname.endsWith('/repository')) {
       const body = await readJson(req)
       sendJson(res, 200, await updateRepositoryConfig(sessionId, body.repository ?? body))
+      return
+    }
+
+    if (sessionId && method === 'DELETE' && pathname.endsWith('/pending-confirm')) {
+      sendJson(res, 200, await clearPendingConfirm(sessionId))
       return
     }
 
