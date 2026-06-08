@@ -64,6 +64,10 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
       let usage: { promptTokens: number; completionTokens: number } | undefined
       let doneYielded = false
 
+      // Fallback: track char counts for token estimation when API omits usage
+      let outputChars = 0
+      const inputChars = messages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0)
+
       // Helper: yield accumulated tool calls as a tool_calls event
       const flushToolCalls = function* (): Generator<LlmStreamEvent> {
         if (toolCallsAcc.size === 0) return
@@ -82,7 +86,12 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
       const yieldDoneIfNeeded = function* (): Generator<LlmStreamEvent> {
         if (doneYielded) return
         yield* flushToolCalls()
-        yield { type: 'done', usage }
+        // Use API usage if it has non-zero values, otherwise estimate from char counts
+        const hasRealUsage = usage && (usage.promptTokens > 0 || usage.completionTokens > 0)
+        const finalUsage = hasRealUsage
+          ? usage!
+          : { promptTokens: Math.round(inputChars / 3.5), completionTokens: Math.round(outputChars / 3.5) }
+        yield { type: 'done', usage: finalUsage }
         doneYielded = true
       }
 
@@ -99,10 +108,14 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
           // Capture usage from any chunk that carries it (do this FIRST —
           // usage may appear in the same chunk as finish_reason + delta)
           if (parsed.usage) {
-            usage = {
-              promptTokens: parsed.usage.prompt_tokens ?? 0,
-              completionTokens: parsed.usage.completion_tokens ?? 0,
+            let p = parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? 0
+            let c = parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? 0
+            // Fallback: some APIs/proxies only return total_tokens
+            if (p === 0 && c === 0 && typeof parsed.usage.total_tokens === 'number') {
+              p = Math.round(parsed.usage.total_tokens * 0.7)
+              c = Math.round(parsed.usage.total_tokens * 0.3)
             }
+            usage = { promptTokens: p, completionTokens: c }
           }
 
           const delta = parsed.choices?.[0]?.delta
@@ -111,6 +124,7 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
           // Text content
           const content = delta?.content
           if (typeof content === 'string' && content) {
+            outputChars += content.length
             yield { type: 'delta', text: content }
           }
 

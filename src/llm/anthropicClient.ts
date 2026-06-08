@@ -50,6 +50,10 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
       let inputTokens = 0
       let outputTokens = 0
 
+      // Fallback: track char counts for token estimation when API returns all zeros
+      let outputChars = 0
+      const inputChars = convertMessages(messages).reduce((sum, m) => sum + m.content.length, 0)
+
       for await (const line of parseSseLines(res.body, signal)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
@@ -62,6 +66,7 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
           if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
             const text = parsed.delta?.text
             if (typeof text === 'string' && text) {
+              outputChars += text.length
               yield { type: 'delta', text }
             }
           }
@@ -69,10 +74,10 @@ export function createAnthropicClient(baseUrl: string, apiKey: string, model: st
             outputTokens = parsed.usage.output_tokens ?? 0
           }
           if (parsed.type === 'message_stop') {
-            const usage = (inputTokens > 0 || outputTokens > 0)
+            const finalUsage = (inputTokens > 0 || outputTokens > 0)
               ? { promptTokens: inputTokens, completionTokens: outputTokens }
-              : undefined
-            yield { type: 'done', usage }
+              : { promptTokens: Math.round(inputChars / 3.5), completionTokens: Math.round(outputChars / 3.5) }
+            yield { type: 'done', usage: finalUsage }
           }
         } catch {
           continue
