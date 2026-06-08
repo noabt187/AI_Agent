@@ -14,7 +14,14 @@ import {
   loadPinnedProjectMemories,
   type PinnedProjectMemory,
 } from '../memory/projectMemory.js'
-import { isMemoryRecallMode, normalizeMemorySettings, type MemoryRecallMode, type MemorySettings } from './types.js'
+import {
+  isMemoryRecallMode,
+  normalizeMemorySettings,
+  normalizeRepositoryConfig,
+  type MemoryRecallMode,
+  type MemorySettings,
+  type RepositoryConfig,
+} from './types.js'
 
 const execAsync = promisify(exec)
 
@@ -40,6 +47,7 @@ export class Orchestrator {
       activeSkills: [],
     }
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
+    this.state.repository = normalizeRepositoryConfig(this.state.repository)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
@@ -52,11 +60,13 @@ export class Orchestrator {
       persisted.errors = persisted.errors || {}
       persisted.activeSkills = persisted.activeSkills || []
       persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
+      persisted.repository = normalizeRepositoryConfig(persisted.repository)
     }
     return new Orchestrator(sessionId, persisted ?? {
       sessionId,
       allowedPaths: [],
       memorySettings: normalizeMemorySettings(),
+      repository: normalizeRepositoryConfig(),
       completedTaskIds: [],
       failedTaskIds: [],
       errors: {},
@@ -97,6 +107,11 @@ export class Orchestrator {
 
   async setMemoryRecallMode(mode: MemoryRecallMode): Promise<void> {
     this.state.memorySettings = { recallMode: mode }
+    await this.persist()
+  }
+
+  async setRepositoryConfig(config: Partial<RepositoryConfig>): Promise<void> {
+    this.state.repository = normalizeRepositoryConfig(config)
     await this.persist()
   }
 

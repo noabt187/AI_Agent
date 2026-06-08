@@ -14,8 +14,28 @@ export type MemorySettings = {
   recallMode: MemoryRecallMode
 }
 
+export type RepositoryConfig = {
+  repoUrl?: string
+  prRepoUrl?: string
+  upstreamUrl?: string
+  defaultBaseBranch?: string
+}
+
 export function isMemoryRecallMode(value: unknown): value is MemoryRecallMode {
   return value === 'auto' || value === 'off' || value === 'on'
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+export function normalizeRepositoryConfig(config?: Partial<RepositoryConfig>): RepositoryConfig {
+  return {
+    repoUrl: optionalString(config?.repoUrl),
+    prRepoUrl: optionalString(config?.prRepoUrl),
+    upstreamUrl: optionalString(config?.upstreamUrl),
+    defaultBaseBranch: optionalString(config?.defaultBaseBranch),
+  }
 }
 
 export function normalizeMemorySettings(settings?: Partial<MemorySettings>): MemorySettings {
@@ -32,6 +52,7 @@ export type WorldState = {
   sessionId: string
   allowedPaths: string[]
   memorySettings?: MemorySettings
+  repository?: RepositoryConfig
 
   // User intent
   goal?: string

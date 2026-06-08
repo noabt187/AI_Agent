@@ -8,6 +8,7 @@ import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
+import type { RepositoryConfig } from '../orchestrator/types.js'
 
 type ToolScope = 'read' | 'write'
 
@@ -20,6 +21,35 @@ type ToolDef = {
   scope: ToolScope
   requiredArgNames?: string[]
   pathArgNames?: string[]
+}
+
+function isDefaultValueToken(value: string | undefined): boolean {
+  const trimmed = value?.trim().toLowerCase() ?? ''
+  return !trimmed || trimmed === 'auto' || trimmed === '-'
+}
+
+function applyRepositoryDefaults(
+  name: string,
+  args: Record<string, string>,
+  repository?: RepositoryConfig,
+): Record<string, string> {
+  const nextArgs = { ...args }
+  if (name === 'createPullRequest') {
+    if (isDefaultValueToken(nextArgs.repoUrl) && repository?.repoUrl) nextArgs.repoUrl = repository.repoUrl
+    if (isDefaultValueToken(nextArgs.prRepoUrl) && repository?.prRepoUrl) nextArgs.prRepoUrl = repository.prRepoUrl
+    if (isDefaultValueToken(nextArgs.baseBranch) && repository?.defaultBaseBranch) {
+      nextArgs.baseBranch = repository.defaultBaseBranch
+    }
+  }
+  if (name === 'forkRepository' && isDefaultValueToken(nextArgs.repoUrl)) {
+    const defaultForkSource = repository?.upstreamUrl || repository?.prRepoUrl || repository?.repoUrl
+    if (defaultForkSource) nextArgs.repoUrl = defaultForkSource
+  }
+  if (name === 'cloneRepository' && isDefaultValueToken(nextArgs.repoUrl)) {
+    const defaultCloneSource = repository?.repoUrl || repository?.upstreamUrl
+    if (defaultCloneSource) nextArgs.repoUrl = defaultCloneSource
+  }
+  return nextArgs
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -145,9 +175,11 @@ export async function executeTool(
   args: Record<string, string>,
   allowedPaths: string[],
   designConfirmed?: boolean,
+  repository?: RepositoryConfig,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
+  const effectiveArgs = applyRepositoryDefaults(name, args, repository)
 
   // 写权限检查
   if (tool.scope === 'write' && !designConfirmed) {
@@ -155,7 +187,7 @@ export async function executeTool(
   }
 
   // 校验 rootDir（如果工具有此参数）
-  const rootDir = args.rootDir
+  const rootDir = effectiveArgs.rootDir
   if (rootDir) {
     if (!isAbsolute(rootDir)) {
       return `错误：rootDir 必须是绝对路径，当前值为 "${rootDir}"。当前可操作目录：${allowedPaths.join(', ')}`
@@ -168,7 +200,7 @@ export async function executeTool(
   // 校验路径参数：必须是绝对路径且在可操作目录内
   const pathArgNames = tool.pathArgNames ?? []
   for (const argName of pathArgNames) {
-    const val = args[argName]
+    const val = effectiveArgs[argName]
     if (!val) continue
     if (!isAbsolute(val)) {
       return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
@@ -181,14 +213,14 @@ export async function executeTool(
   // 必填参数校验
   const requiredArgNames = tool.requiredArgNames ?? tool.argNames
   for (const argName of requiredArgNames) {
-    if (!args[argName] || args[argName].trim() === '') {
+    if (!effectiveArgs[argName] || effectiveArgs[argName].trim() === '') {
       return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
     }
   }
 
   try {
     const effectiveRootDir = rootDir || allowedPaths[0]
-    const argValues = [effectiveRootDir, ...tool.argNames.map((n) => args[n] ?? '')]
+    const argValues = [effectiveRootDir, ...tool.argNames.map((n) => effectiveArgs[n] ?? '')]
     return await tool.fn(effectiveRootDir, ...argValues.slice(1))
   } catch (e: unknown) {
     return `工具执行错误：${e instanceof Error ? e.message : String(e)}`

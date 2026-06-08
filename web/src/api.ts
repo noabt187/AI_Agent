@@ -19,6 +19,13 @@ export type MemorySettings = {
   recallMode: MemoryRecallMode
 }
 
+export type RepositoryConfig = {
+  repoUrl?: string
+  prRepoUrl?: string
+  upstreamUrl?: string
+  defaultBaseBranch?: string
+}
+
 export type PinnedProjectMemory = {
   id: string
   createdAt: number
@@ -31,6 +38,7 @@ export type WorldState = {
   sessionId: string
   allowedPaths: string[]
   memorySettings?: MemorySettings
+  repository?: RepositoryConfig
   pendingConfirm?: { allowWrite: boolean; message: string }
   goal?: string
 }
@@ -163,6 +171,13 @@ export async function updateMemorySettings(sessionId: string, recallMode: Memory
   return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/memory-settings`, {
     method: 'POST',
     body: JSON.stringify({ recallMode }),
+  })
+}
+
+export async function updateRepositoryConfig(sessionId: string, repository: RepositoryConfig): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/repository`, {
+    method: 'POST',
+    body: JSON.stringify({ repository }),
   })
 }
 
