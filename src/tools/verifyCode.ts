@@ -1,7 +1,7 @@
-import { readFile, access } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
+import { access } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
-import { exec } from 'node:child_process'
+import { runCommand } from '../utils/command.js'
 
 // ── Types ──
 
@@ -13,13 +13,18 @@ interface Section {
 
 // ── Helpers ──
 
-function runCmd(cmd: string, cwd: string, timeout = 120_000): Promise<{ ok: boolean; output: string }> {
-  return new Promise((r) => {
-    exec(cmd, { cwd, timeout, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-      const raw = [stdout, stderr].filter(Boolean).join('\n')
-      r({ ok: !err, output: raw.slice(0, 3000) })
-    })
-  })
+/** 拆分命令字符串并调用 runCommand，兼容 verifyCode 现有调用方式 */
+async function runCmd(cmd: string, cwd: string, timeout = 120_000): Promise<{ ok: boolean; output: string }> {
+  const parts = cmd.split(/\s+/)
+  try {
+    const { stdout, stderr } = await runCommand(parts[0], parts.slice(1), cwd, timeout)
+    const raw = [stdout, stderr].filter(Boolean).join('\n')
+    return { ok: true, output: raw.slice(0, 3000) }
+  } catch (e: unknown) {
+    const err = e as { stdout?: string; stderr?: string; message?: string }
+    const raw = [err.stdout, err.stderr].filter(Boolean).join('\n')
+    return { ok: false, output: raw.slice(0, 3000) || err.message || '命令执行失败' }
+  }
 }
 
 async function fileExists(p: string): Promise<boolean> {
