@@ -91,13 +91,15 @@ export class QueryEngine {
     const terminal = yield* this.queryLoop(options?.tools, options?.signal, options?.runtimeContext)
 
     if (terminal.type === 'error') {
-      const errMsg = {
+      const isAbort = terminal.aborted === true
+      const errMsg: Message = {
         uuid: newUuid(),
-        role: 'assistant' as const,
+        role: isAbort ? 'tool' : 'assistant',
         content: terminal.error,
         createdAt: Date.now(),
         isMeta: true,
       }
+      if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
     }
@@ -107,13 +109,15 @@ export class QueryEngine {
     const terminal = yield* this.queryLoop(tools, signal, runtimeContext)
 
     if (terminal.type === 'error') {
-      const errMsg = {
+      const isAbort = terminal.aborted === true
+      const errMsg: Message = {
         uuid: newUuid(),
-        role: 'assistant' as const,
+        role: isAbort ? 'tool' : 'assistant',
         content: terminal.error,
         createdAt: Date.now(),
         isMeta: true,
       }
+      if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
     }
@@ -155,6 +159,9 @@ export class QueryEngine {
           }
         }
       } catch (e: unknown) {
+        if (signal?.aborted) {
+          return { type: 'error', error: '操作已取消', aborted: true }
+        }
         lastError = e instanceof Error ? e.message : String(e)
       }
 

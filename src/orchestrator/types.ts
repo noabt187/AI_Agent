@@ -62,16 +62,12 @@ export type WorldState = {
   designTasks?: DesignTask[]
   completedTaskIds: string[]
   failedTaskIds: string[]
-  errors: Record<string, string>
 
   // Pending confirmation
   pendingConfirm?: { allowWrite: boolean; message: string }
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
-
-  // Skill system: names of skills loaded via use_skill tool
-  activeSkills: string[]
 }
 
 export type AgentResult =
@@ -86,6 +82,7 @@ export type AgentEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }
+  | { type: 'aborted'; message: string }
   | { type: 'error'; message: string }
 
 export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>

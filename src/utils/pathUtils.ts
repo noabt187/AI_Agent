@@ -1,4 +1,4 @@
-import { resolve, relative, sep } from 'node:path'
+import { resolve, relative } from 'node:path'
 
 export function isInsideAllowedPaths(targetPath: string, allowedPaths: string[]): boolean {
   const resolvedTarget = resolve(targetPath)
@@ -12,8 +12,3 @@ export function isInsideAllowedPaths(targetPath: string, allowedPaths: string[])
   return false
 }
 
-export function assertInsideAllowedPaths(targetPath: string, allowedPaths: string[]): void {
-  if (!isInsideAllowedPaths(targetPath, allowedPaths)) {
-    throw new Error(`路径越界："${targetPath}" 不在允许的操作目录内`)
-  }
-}

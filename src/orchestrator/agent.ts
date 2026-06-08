@@ -7,10 +7,7 @@ import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
 import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
-  formatPinnedProjectMemoryContext,
-  formatProjectMemoryContext,
-  loadPinnedProjectMemories,
-  searchProjectMemories,
+  formatMemoryContext,
 } from '../memory/projectMemory.js'
 import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
@@ -18,7 +15,6 @@ import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
-const TASK_MEMORY_LIMIT = 3
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
@@ -38,8 +34,7 @@ const USE_SKILL_TOOL_DEF: ToolDefinition = {
   },
 }
 
-export function buildStableSystemPrompt(): string {
-  return `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
+const SYSTEM_PROMPT = `你是全栈开发助手。通过读取代码、分析需求、设计方案、编写代码来帮助用户完成开发任务。
 
 ## 工作方式
 你通过"观察→思考→行动"循环工作：
@@ -58,16 +53,16 @@ export function buildStableSystemPrompt(): string {
 - **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
 
 **重要规则**：
-- 用户确认前不要调用写工具（writeFile/deleteFile）
-- confirmType="allow_write" 表示确认后将对项目文件执行增、删、改操作
+- 用户确认前不要调用写工具。写工具包括 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository。这些工具会修改文件或操作远程仓库，必须先输出 action: confirm, confirmType: allow_write 并等待用户确认后才能调用。
+- confirmType="allow_write" 表示确认后将执行写操作（修改/删除文件、创建 PR、fork/clone 仓库）
 - 仅在对齐理解、确认需求时，省略 confirmType
-- 当前状态、项目固定记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
+- 当前状态、Markdown 记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
 ## 输出格式
 当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
 {"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
-JSON 字符串中不要包含 Markdown 代码块；引用代码时用单引号或普通文字描述，避免未转义双引号导致 JSON 无法解析。
+JSON 字符串涉及到引号文本，使用///"来转义引号，避免 JSON 错误解析。
 
 action 说明：
 - chat：直接回复用户（普通对话、回答问题）
@@ -76,8 +71,9 @@ action 说明：
   - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
   - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
 - done：任务完成，message 为完成总结
+## Auto memory
+When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
-}
 
 export function buildWorldStateContext(state: WorldState): string {
   const parts: string[] = []
@@ -124,8 +120,8 @@ export function buildWorldStateContext(state: WorldState): string {
     }
   }
 
-  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile/deleteFile 等写工具）')
-  else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可写文件）')
+  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository）')
+  else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
 }
@@ -134,14 +130,10 @@ export function buildRuntimeContext(
   state: WorldState,
   memoryContext: string,
   allSkills: Skill[],
-  pinnedMemoryContext = '',
 ): string {
   const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
-  if (pinnedMemoryContext.trim()) {
-    parts.push(`## 项目固定记忆（用户明确要求）\n${pinnedMemoryContext.trim()}`)
-  }
   if (memoryContext.trim()) {
-    parts.push(`## 相关历史任务记忆（仅供参考，不代表当前代码事实）\n${memoryContext.trim()}`)
+    parts.push(`## Memory\n${memoryContext.trim()}`)
   }
 
   // Skill catalog — always show compact listing
@@ -150,15 +142,14 @@ export function buildRuntimeContext(
     parts.push(`## 可用技能 (Skills)\n${catalog}\n\n根据任务需要调用 use_skill(skillName) 加载完整技能指引。`)
   }
 
-  // Loaded skill content — only inject skills the model explicitly loaded
-  if (state.activeSkills.length > 0) {
-    const loadedSkills = allSkills.filter((s) => state.activeSkills.includes(s.name))
-    if (loadedSkills.length > 0) {
-      parts.push(`## 当前加载的技能指引\n${loadedSkills.map((s) => s.content).join('\n\n')}`)
-    }
-  }
-
   return parts.join('\n\n')
+}
+
+function abortedResult(signal?: AbortSignal): AgentResult | null {
+  if (signal?.aborted) {
+    return { action: 'chat', message: '[已中断] 操作被用户取消。' }
+  }
+  return null
 }
 
 export function isPureConfirmationInput(input: string): boolean {
@@ -226,48 +217,37 @@ function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
   }
 }
 
+function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: string): AgentResult | null {
+  const action = obj.action
+  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText) }
+  if (action === 'ask_user') {
+    const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
+    if (questions.length === 0) return null
+    return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
+  }
+  if (action === 'confirm') {
+    const prompt = String(obj.prompt || '')
+    const message = obj.message ? String(obj.message) : undefined
+    // 'design' is legacy alias for 'allow_write'
+    const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
+    const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
+    return { action: 'confirm', prompt, message, confirmType: ct }
+  }
+  if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
+  return null
+}
+
 export function parseAgentResult(raw: string): AgentResult | null {
   const jsonText = extractJsonText(raw)
   try {
-    const obj = JSON.parse(jsonText)
-    const action = obj.action
-    if (action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
-    if (action === 'ask_user') {
-      const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
-      if (questions.length === 0) return null
-      return { action: 'ask_user', questions, message: obj.message ? String(obj.message) : undefined }
-    }
-    if (action === 'confirm') {
-      const prompt = String(obj.prompt || '')
-      const message = obj.message ? String(obj.message) : undefined
-      // 'design' is legacy alias for 'allow_write'
-      const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
-      const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
-      return { action: 'confirm', prompt, message, confirmType: ct }
-    }
-    if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
-    return null
+    return agentResultFromParsed(JSON.parse(jsonText), raw.trim())
   } catch {
     try {
       let fixed = jsonText
       fixed = fixed.replace(/("thinking"\s*:\s*")([\s\S]*?)(")(?=\s*,\s*")/g, (_match, prefix, content) => {
         return prefix + content.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
       })
-      const obj = JSON.parse(fixed)
-      if (obj.action === 'chat') return { action: 'chat', message: String(obj.message || raw.trim()) }
-      if (obj.action === 'ask_user') {
-        const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
-        if (questions.length > 0) return { action: 'ask_user', questions }
-      }
-      if (obj.action === 'confirm') {
-        const prompt = String(obj.prompt || '')
-        const message = obj.message ? String(obj.message) : undefined
-        // 'design' is legacy alias for 'allow_write'
-        const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
-        const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
-        return { action: 'confirm', prompt, message, confirmType: ct }
-      }
-      if (obj.action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
+      return agentResultFromParsed(JSON.parse(fixed), raw.trim())
     } catch {}
     return parseToolOperationMarkdownConfirm(raw)
   }
@@ -288,18 +268,19 @@ export class Agent {
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
     const allSkills = await loadSkills(SKILLS_DIR)
-    // Backward compat: initialize activeSkills for existing persisted states
-    if (!state.activeSkills) state.activeSkills = []
-    const pinnedMemories = await loadPinnedProjectMemories(effectiveAllowedPaths[0])
-    const pinnedMemoryContext = formatPinnedProjectMemoryContext(pinnedMemories)
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
-    const memories = shouldRecallTaskMemories(state, userInput)
-      ? await searchProjectMemories(effectiveAllowedPaths[0], taskMemoryQuery, TASK_MEMORY_LIMIT)
-      : []
-    const memoryContext = formatProjectMemoryContext(memories)
+    const memoryContext = shouldRecallTaskMemories(state, userInput)
+      ? await formatMemoryContext({
+        projectDir: effectiveAllowedPaths[0],
+        sessionId,
+        query: taskMemoryQuery,
+        includeAllIndexes: true,
+      })
+      : ''
 
-    const systemPrompt = buildStableSystemPrompt()
-    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills, pinnedMemoryContext)
+    const systemPrompt = SYSTEM_PROMPT
+    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills)
+    const turnLoadedSkills = new Set<string>()
 
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
     if (!hasCorrectPrompt) {
@@ -317,8 +298,11 @@ export class Agent {
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
-    try {
-      for await (const evt of engine.submitMessage(userInput, { tools, signal, runtimeContext })) {
+    // Helper: consume stream events, accumulating text and tool calls
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const consumeStream = async (stream: AsyncIterable<any>): Promise<void> => {
+      for await (const evt of stream) {
+        if (signal?.aborted) break
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })
@@ -330,6 +314,13 @@ export class Agent {
           }
         }
       }
+    }
+
+    try {
+      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext }))
+
+      const abortRet = abortedResult(signal)
+      if (abortRet) return abortRet
 
       const toolFailureCounts = new Map<string, number>()
 
@@ -351,9 +342,7 @@ export class Agent {
             }
             const skillContent = useSkill(allSkills, skillName)
             if (skillContent) {
-              if (!state.activeSkills.includes(skillName)) {
-                state.activeSkills.push(skillName)
-              }
+              turnLoadedSkills.add(skillName)
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
               await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
             } else {
@@ -370,7 +359,15 @@ export class Agent {
             continue
           }
 
-          const result = await executeTool(tc.name, args, effectiveAllowedPaths, state.designConfirmed, state.repository)
+          if (signal?.aborted) break
+          const result = await executeTool(
+            tc.name,
+            args,
+            effectiveAllowedPaths,
+            state.designConfirmed,
+            signal,
+            { turnLoadedSkills, repository: state.repository },
+          )
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 
@@ -384,23 +381,11 @@ export class Agent {
         if (signal?.aborted) break
         fullText = ''
         toolCalls = []
-        for await (const evt of engine.continueFromToolResults(tools, signal, runtimeContext)) {
-          if (evt.kind === 'delta') {
-            fullText += evt.delta
-            await onEvent?.({ type: 'delta', text: evt.delta })
-          }
-          if (evt.kind === 'tool_calls') {
-            toolCalls = evt.toolCalls
-            for (const tc of toolCalls) {
-              await onEvent?.({ type: 'tool_call', name: tc.name, arguments: tc.arguments })
-            }
-          }
-        }
+        await consumeStream(engine.continueFromToolResults(tools, signal, runtimeContext))
       }
 
-      if (signal?.aborted) {
-        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-      }
+      const a = abortedResult(signal)
+      if (a) return a
 
       if (toolCalls.length > 0) {
         const prevText = fullText
@@ -430,9 +415,8 @@ export class Agent {
 
       return { action: 'chat', message: fullText.trim() }
     } catch (err) {
-      if (signal?.aborted) {
-        return { action: 'chat', message: '[已中断] 操作被用户取消。' }
-      }
+      const a = abortedResult(signal)
+      if (a) return a
       throw err
     }
   }

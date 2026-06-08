@@ -601,7 +601,6 @@ small {
 
 .memoryPanel {
   flex: 0 0 auto;
-  min-height: 180px;
 }
 
 .memoryModeStack {
@@ -632,11 +631,41 @@ small {
   opacity: 0.5;
 }
 
+.memorySummary {
+  display: grid;
+  gap: 6px;
+  color: #9fb4ca;
+  font-size: 13px;
+}
+
+.memoryManageButton {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 8px;
+  background: rgba(10, 24, 43, 0.78);
+  color: #d9e9ff;
+  font-size: 13px;
+  font-weight: 760;
+}
+
 .memoryComposer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   gap: 8px;
   align-items: stretch;
+}
+
+.memoryTypeSelect {
+  min-height: 34px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+  padding: 0 10px;
 }
 
 .memoryComposer textarea {
@@ -679,6 +708,15 @@ small {
   padding: 9px;
 }
 
+.memoryItem.clickable {
+  cursor: pointer;
+}
+
+.memoryItem.clickable:hover {
+  border-color: rgba(34, 211, 238, 0.42);
+  background: rgba(34, 211, 238, 0.08);
+}
+
 .memoryItem p,
 .memoryEmpty,
 .memoryError {
@@ -688,6 +726,11 @@ small {
 
 .memoryItem p {
   overflow-wrap: anywhere;
+}
+
+.memoryItem em {
+  color: #8397ad;
+  font-style: normal;
 }
 
 .memoryEmpty {
@@ -735,6 +778,91 @@ small {
 .repositoryForm input:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.memoryLayerTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  padding: 12px 18px;
+}
+
+.memoryLayerTabs button {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+}
+
+.memoryLayerTabs button.active {
+  border-color: rgba(34, 211, 238, 0.7);
+  background: rgba(34, 211, 238, 0.14);
+}
+
+.memoryManagerBody {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px 18px 18px;
+}
+
+.memoryLayerInfo {
+  display: grid;
+  gap: 8px;
+}
+
+.memoryLayerInfo div {
+  display: grid;
+  gap: 3px;
+}
+
+.memoryLayerInfo strong {
+  color: #f3f8ff;
+}
+
+.memoryLayerInfo span {
+  color: #91a6bd;
+  font-size: 13px;
+}
+
+.memoryPathPill {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 18, 34, 0.58);
+  color: #d9e9ff;
+  padding: 8px 10px;
+}
+
+.memoryPathPill code {
+  overflow: hidden;
+  color: #9fb4ca;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memoryManagerList {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.commentsPanel {
+  min-height: 150px;
 }
 
 .commentList {
@@ -856,14 +984,16 @@ small {
 }
 
 .skillStatusDot {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
-  background: #b75d52;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14), 0 0 12px rgba(239, 68, 68, 0.3);
 }
 
 .skillStatusDot.enabled {
-  background: #9c8d70;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16), 0 0 14px rgba(34, 197, 94, 0.42);
 }
 
 .hiddenFileInput {
@@ -880,7 +1010,8 @@ small {
   padding: 9px 10px;
 }
 
-.skillManagerModal {
+.skillManagerModal,
+.memoryManagerModal {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   width: min(760px, 100%);
@@ -892,7 +1023,12 @@ small {
   color: #f3efe7;
 }
 
-.skillManagerModal header {
+.memoryManagerModal {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.skillManagerModal header,
+.memoryManagerModal header {
   display: flex;
   justify-content: space-between;
   gap: 16px;
@@ -900,13 +1036,15 @@ small {
   padding: 16px 18px;
 }
 
-.skillManagerModal h3 {
+.skillManagerModal h3,
+.memoryManagerModal h3 {
   margin: 0;
   color: #fbf8f1;
   font-size: 18px;
 }
 
-.skillManagerModal p {
+.skillManagerModal p,
+.memoryManagerModal p {
   margin-top: 4px;
   color: #aaa194;
   font-size: 13px;
@@ -939,6 +1077,14 @@ small {
   border: 1px solid rgba(212, 197, 171, 0.2);
   border-radius: 8px;
   background: rgba(43, 39, 32, 0.76);
+}
+
+.skillLampButton.enabled {
+  border-color: rgba(34, 197, 94, 0.32);
+}
+
+.skillLampButton.disabled {
+  border-color: rgba(239, 68, 68, 0.32);
 }
 
 .skillManagerMain,
@@ -2210,12 +2356,23 @@ small {
   background: rgba(255, 255, 255, 0.76);
 }
 
+.themeLight .memoryItem.clickable:hover {
+  border-color: rgba(159, 181, 188, 0.78);
+  background: rgba(243, 248, 248, 0.92);
+}
+
 .themeLight .memoryItem p {
   color: #536160;
 }
 
+.themeLight .memoryItem em,
+.themeLight .memoryPathPill code {
+  color: #748382;
+}
+
 .themeLight .skillStatusDot.enabled {
-  background: #8da8a1;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14), 0 0 12px rgba(22, 163, 74, 0.28);
 }
 
 .themeLight .composer textarea:focus,

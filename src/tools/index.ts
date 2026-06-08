@@ -6,11 +6,12 @@ import { verifyCodeTool } from './verifyCode.js'
 import { createPullRequestTool } from './createPullRequest.js'
 import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
+import { writeMemoryTool } from './writeMemory.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
 
-type ToolScope = 'read' | 'write'
+type ToolScope = 'read' | 'write' | 'memory'
 
 type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
@@ -21,6 +22,12 @@ type ToolDef = {
   scope: ToolScope
   requiredArgNames?: string[]
   pathArgNames?: string[]
+  argDescriptions?: Record<string, string>
+}
+
+type ExecuteToolOptions = {
+  turnLoadedSkills?: Set<string>
+  repository?: RepositoryConfig
 }
 
 function isDefaultValueToken(value: string | undefined): boolean {
@@ -96,14 +103,14 @@ const toolRegistry: Record<string, ToolDef> = {
     scope: 'write',
   },
   execCommand: {
-    fn: execCommandTool,
+    fn: (rootDir: string, command: string) => execCommandTool(rootDir, command),
     description: '在项目目录下执行 shell 命令，用于运行 lint、test、build 等',
     argNames: ['rootDir', 'command'],
     scope: 'read',
   },
   verifyCode: {
     fn: verifyCodeTool,
-    description: '验证代码质量：运行 lint/test/build + 跨栈一致性检查，changedFiles 为本次修改的文件列表（逗号分隔）',
+    description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
     scope: 'read',
   },
@@ -113,6 +120,17 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['rootDir', 'repoUrl', 'title', 'body', 'baseBranch', 'headBranch', 'commitMessage', 'draft', 'remote', 'prRepoUrl', 'headOwner'],
     scope: 'write',
     requiredArgNames: ['rootDir'],
+    argDescriptions: {
+      title: 'title，可传 auto 使用默认值',
+      body: 'body，可传 auto 使用默认值',
+      baseBranch: 'baseBranch，可传 auto 使用默认值',
+      headBranch: 'headBranch，可传 auto 使用默认值',
+      commitMessage: 'commitMessage，可传 auto 使用默认值',
+      draft: 'draft，可传 auto 使用默认值',
+      remote: 'remote，可传 auto 使用默认值',
+      prRepoUrl: 'prRepoUrl，可传 auto 使用默认值',
+      headOwner: 'headOwner，可传 auto 使用默认值',
+    },
   },
   forkRepository: {
     fn: forkRepositoryTool,
@@ -135,24 +153,32 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['rootDir', 'sessionId'],
     scope: 'read',
   },
+  writeMemory: {
+    fn: writeMemoryTool,
+    description: 'Write a durable project/global Markdown memory item. Use only after calling use_skill("auto-memory") in the same turn.',
+    argNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
+    scope: 'memory',
+    requiredArgNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
+  },
 }
 
 // ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
   return Object.entries(toolRegistry)
-    .filter(([, def]) => scope === 'write' || def.scope === 'read')
+    .filter(([, def]) => {
+      const allowedScopes: ToolScope[] = scope === 'read' ? ['read'] : ['read', 'write', 'memory']
+      return allowedScopes.includes(def.scope)
+    })
     .map(([name, def]) => {
       const properties: Record<string, { type: string; description: string }> = {}
       for (const arg of def.argNames) {
         properties[arg] = {
           type: 'string',
-          description: arg === 'rootDir'
-            ? '项目根目录'
-            : (name === 'createPullRequest' && arg !== 'repoUrl' ? `${arg}，可传 auto 使用默认值` : arg),
+          description: def.argDescriptions?.[arg] ?? (arg === 'rootDir' ? '项目根目录' : arg),
         }
       }
-      const required = def.requiredArgNames ?? (name === 'createPullRequest' ? ['rootDir'] : def.argNames)
+      const required = def.requiredArgNames ?? def.argNames
       return {
         type: 'function' as const,
         function: {
@@ -175,39 +201,46 @@ export async function executeTool(
   args: Record<string, string>,
   allowedPaths: string[],
   designConfirmed?: boolean,
-  repository?: RepositoryConfig,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
-  const effectiveArgs = applyRepositoryDefaults(name, args, repository)
+  const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
   // 写权限检查
   if (tool.scope === 'write' && !designConfirmed) {
     return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
   }
 
-  // 校验 rootDir（如果工具有此参数）
-  const rootDir = effectiveArgs.rootDir
-  if (rootDir) {
-    if (!isAbsolute(rootDir)) {
-      return `错误：rootDir 必须是绝对路径，当前值为 "${rootDir}"。当前可操作目录：${allowedPaths.join(', ')}`
-    }
-    if (!isInsideAllowedPaths(rootDir, allowedPaths)) {
-      return `错误：rootDir "${rootDir}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
-    }
+  if (tool.scope === 'memory' && !options?.turnLoadedSkills?.has('auto-memory')) {
+    return '错误：writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。'
   }
 
-  // 校验路径参数：必须是绝对路径且在可操作目录内
-  const pathArgNames = tool.pathArgNames ?? []
-  for (const argName of pathArgNames) {
-    const val = effectiveArgs[argName]
-    if (!val) continue
+  // 校验 rootDir（如果工具有此参数）
+  const rootDir = effectiveArgs.rootDir
+
+  // Helper: validate a single path argument
+  const validatePathArg = (val: string | undefined, argName: string): string | null => {
+    if (!val) return null
     if (!isAbsolute(val)) {
       return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
     }
     if (!isInsideAllowedPaths(val, allowedPaths)) {
       return `错误：路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
     }
+    return null
+  }
+
+  if (rootDir) {
+    const err = validatePathArg(rootDir, 'rootDir')
+    if (err) return err
+  }
+
+  // 校验路径参数：必须是绝对路径且在可操作目录内
+  for (const argName of tool.pathArgNames ?? []) {
+    const err = validatePathArg(effectiveArgs[argName], argName)
+    if (err) return err
   }
 
   // 必填参数校验
@@ -220,8 +253,16 @@ export async function executeTool(
 
   try {
     const effectiveRootDir = rootDir || allowedPaths[0]
-    const argValues = [effectiveRootDir, ...tool.argNames.map((n) => effectiveArgs[n] ?? '')]
-    return await tool.fn(effectiveRootDir, ...argValues.slice(1))
+    const argValues = tool.argNames
+      .filter((n) => n !== 'rootDir') // rootDir injected separately above
+      .map((n) => effectiveArgs[n] ?? '')
+
+    // execCommand supports AbortSignal to force-kill child processes
+    if (name === 'execCommand' && signal) {
+      return await execCommandTool(effectiveRootDir, argValues[0] ?? '', signal)
+    }
+
+    return await tool.fn(effectiveRootDir, ...argValues)
   } catch (e: unknown) {
     return `工具执行错误：${e instanceof Error ? e.message : String(e)}`
   }

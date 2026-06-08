@@ -32,8 +32,8 @@ import {
   createSession,
   deleteSession,
   deleteSkill,
+  deleteMemoryItem,
   downloadSessionExport,
-  forgetPinnedMemory,
   listSessions,
   listSkills,
   listDirectories,
@@ -41,7 +41,8 @@ import {
   loadSessionMemory,
   loadSessionMetrics,
   pickDirectory,
-  rememberPinnedMemory,
+  revealMemoryItem,
+  saveMemoryItem,
   streamPrompt,
   updateMemorySettings,
   updateRepositoryConfig,
@@ -52,7 +53,9 @@ import {
   type Message,
   type DirectoryListing,
   type ManagedSkill,
+  type MemoryLayerId,
   type MemoryRecallMode,
+  type MemoryType,
   type RepositoryConfig,
   type SessionMemory,
   type SessionMetrics,
@@ -117,6 +120,7 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 const modelThinkingStatus = '模型思考中'
+const abortDisplayMessage = '操作已取消'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 const themeStorageKey = 'agent-console-theme'
@@ -187,14 +191,14 @@ function summarizeLines(text: string, maxLines = 3): string {
 
 function formatToolCall(name: string, rawArguments: string): string {
   const args = parseToolArguments(rawArguments)
-  const file = args.relativePath || args.dirPath || args.pattern || args.keyword || args.changedFiles
+  const file = args.filePath || args.dirPath || args.pattern || args.keyword || args.changedFiles
 
-  if (name === 'readTextFile') return `读取文件：${args.relativePath || '未指定文件'}`
+  if (name === 'readTextFile') return `读取文件：${args.filePath || '未指定文件'}`
   if (name === 'listDirectory') return `查看目录：${args.dirPath || '.'}`
   if (name === 'searchFiles') return `搜索文件：${args.pattern || '未指定模式'}`
   if (name === 'searchContent') return `搜索内容：${args.keyword || '未指定关键词'}`
-  if (name === 'writeFile') return `修改文件：${args.relativePath || '未指定文件'}`
-  if (name === 'deleteFile') return `删除文件：${args.relativePath || '未指定文件'}`
+  if (name === 'writeFile') return `修改文件：${args.filePath || '未指定文件'}`
+  if (name === 'deleteFile') return `删除文件：${args.filePath || '未指定文件'}`
   if (name === 'execCommand') return `运行命令：${args.command || '未指定命令'}`
   if (name === 'verifyCode') return `验证代码：${file || '本次修改'}`
   return `调用工具：${name}`
@@ -302,6 +306,7 @@ export function App() {
   const selectedSessionIdRef = useRef('')
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const abortingRef = useRef(false)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -328,6 +333,9 @@ export function App() {
   const [repositoryDraft, setRepositoryDraft] = useState<RepositoryConfig>({})
   const [repositoryBusy, setRepositoryBusy] = useState(false)
   const [repositoryError, setRepositoryError] = useState('')
+  const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
+  const [activeMemoryLayer, setActiveMemoryLayer] = useState<MemoryLayerId>('project')
+  const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [selectedPlanKey, setSelectedPlanKey] = useState('')
@@ -336,6 +344,7 @@ export function App() {
   const [elementComment, setElementComment] = useState('')
   const [elementComments, setElementComments] = useState<ElementComment[]>([])
   const [running, setRunning] = useState(false)
+  const [aborting, setAbortingState] = useState(false)
   const [status, setStatus] = useState('未连接')
   const [deltaCount, setDeltaCount] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -349,6 +358,11 @@ export function App() {
   const [skillManagerOpen, setSkillManagerOpen] = useState(false)
   const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
+
+  function setAborting(value: boolean) {
+    abortingRef.current = value
+    setAbortingState(value)
+  }
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
   const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
@@ -711,13 +725,18 @@ export function App() {
     setRepositoryEditorOpen(true)
   }
 
-  async function handleRememberPinned() {
+  async function handleSaveMemoryItem() {
     const content = memoryDraft.trim()
     if (!selectedSessionId || !content || memoryBusy) return
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      const result = await rememberPinnedMemory(selectedSessionId, content)
+      const result = await saveMemoryItem(selectedSessionId, {
+        layer: activeMemoryLayer,
+        type: activeMemoryType,
+        description: content,
+        body: content,
+      })
       setSessionMemory(result.memoryState)
       setMemoryDraft('')
     } catch (err) {
@@ -727,13 +746,27 @@ export function App() {
     }
   }
 
-  async function handleForgetPinned(id: string) {
+  async function handleDeleteMemoryItem(name: string) {
     if (!selectedSessionId || memoryBusy) return
     setMemoryBusy(true)
     setMemoryError('')
     try {
-      const result = await forgetPinnedMemory(selectedSessionId, id)
+      const result = await deleteMemoryItem(selectedSessionId, name)
       setSessionMemory(result.memoryState)
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMemoryBusy(false)
+    }
+  }
+
+  async function handleRevealMemoryItem(layer: MemoryLayerId, name: string) {
+    if (!selectedSessionId || memoryBusy) return
+    setMemoryBusy(true)
+    setMemoryError('')
+    try {
+      await revealMemoryItem(selectedSessionId, layer, name)
+      setStatus('已打开记忆文件位置')
     } catch (err) {
       setMemoryError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1054,6 +1087,24 @@ export function App() {
     ])
   }
 
+  function showAbortNotice() {
+    setActivityItems([])
+    setActivityExpanded(false)
+    setStatus(abortDisplayMessage)
+    setTimeline((current) => {
+      const lastUserIndex = current.map((item) => item.role).lastIndexOf('user')
+      const base = lastUserIndex >= 0 ? current.slice(0, lastUserIndex + 1) : current
+      return [
+        ...base,
+        {
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: 'assistant',
+          content: abortDisplayMessage,
+        },
+      ]
+    })
+  }
+
   async function handleCopyResponse(itemId: string, content: string) {
     try {
       await navigator.clipboard.writeText(content)
@@ -1141,6 +1192,7 @@ export function App() {
       setStatus(modelThinkingStatus)
       return
     }
+    if (abortingRef.current) return
     if (event.type === 'delta') {
       streamingRawTextRef.current += event.text
       const visibleText = visibleStreamingText(streamingRawTextRef.current)
@@ -1155,6 +1207,10 @@ export function App() {
     }
     if (event.type === 'output') {
       finalizeAssistantOutput(event.message)
+      return
+    }
+    if (event.type === 'aborted') {
+      showAbortNotice()
       return
     }
     if (event.type === 'tool_call') {
@@ -1177,6 +1233,7 @@ export function App() {
       setActivityItems([])
       setActivityExpanded(false)
       setStatus('就绪')
+      setAborting(false)
     }
   }
 
@@ -1195,27 +1252,35 @@ export function App() {
     appendItem({ role: 'user', content: text })
     try {
       await streamPrompt(selectedSessionId, text, handleStreamEvent)
-      await refreshSession(selectedSessionId)
+      await refreshSession(selectedSessionId, { updateTimeline: !abortingRef.current })
       await refreshSessions(selectedSessionId)
     } catch (err) {
-      appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
-      setStatus('出错')
+      if (abortingRef.current) {
+        showAbortNotice()
+      } else {
+        appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
+        setStatus('出错')
+      }
     } finally {
+      setAborting(false)
       setRunning(false)
     }
   }
 
   async function handleAbort() {
-    if (!selectedSessionId || !running) return
-    appendActivity('[中断] 正在停止当前操作...')
+    if (!selectedSessionId || !running || abortingRef.current) return
+    setAborting(true)
+    setStatus('正在中断')
+    setActivityItems([])
+    setActivityExpanded(false)
     try {
       await abortSession(selectedSessionId)
-    } catch {
-      // abort API 调用失败不影响 UI 恢复
+      showAbortNotice()
+    } catch (err) {
+      appendActivity(`[中断失败] ${err instanceof Error ? err.message : String(err)}`)
+      setStatus('中断失败')
+      setAborting(false)
     }
-    // 不在这里 setRunning(false) 和 appendItem，
-    // 让 sendPrompt 的 stream 结束和 finally 统一处理状态恢复，
-    // Agent 也会返回 "[已中断]" 消息通过 stream 输出到 timeline
   }
 
   function handleConfirmAction() {
@@ -1282,9 +1347,10 @@ export function App() {
   }
 
   const statusLabel = useMemo(() => {
+    if (aborting) return status || '正在中断'
     if (running) return deltaCount > 0 ? `生成中 · ${deltaCount}` : status || modelThinkingStatus
     return status
-  }, [deltaCount, running, status])
+  }, [aborting, deltaCount, running, status])
 
   const workspaceSubtitle = useMemo(() => {
     if (viewMode === 'metrics') return '会话监控信息'
@@ -1301,8 +1367,10 @@ export function App() {
     }
   }, [activityItems, running])
 
-  const showActivityPanel = running || activityItems.length > 0
-  const activityPanelTitle = running && activityItems.length === 0
+  const showActivityPanel = (running && !aborting) || activityItems.length > 0
+  const activityPanelTitle = aborting
+    ? '正在中断'
+    : running && activityItems.length === 0
     ? modelThinkingStatus
     : running
       ? '正在执行'
@@ -1315,6 +1383,9 @@ export function App() {
     sidebarCollapsed ? 'sidebarCollapsed' : '',
     themeMode === 'light' ? 'themeLight' : 'themeDark',
   ].filter(Boolean).join(' ')
+  const memoryLayers = sessionMemory?.layers || []
+  const memoryTotal = memoryLayers.reduce((sum, layer) => sum + layer.items.length, 0)
+  const selectedMemoryLayer = memoryLayers.find((layer) => layer.id === activeMemoryLayer) || memoryLayers[0] || null
 
   return (
     <main className={appShellClassName}>
@@ -1420,7 +1491,7 @@ export function App() {
         <section className="panel memoryPanel">
           <div className="panelHeader">
             <span>记忆</span>
-            <small>{memoryMode}</small>
+            <small>{memoryMode} · {memoryTotal}</small>
           </div>
           <div className="memoryModeStack" role="group" aria-label="记忆召回模式">
             {(['auto', 'off', 'on'] as MemoryRecallMode[]).map((mode) => (
@@ -1435,35 +1506,25 @@ export function App() {
               </button>
             ))}
           </div>
-          <div className="memoryComposer">
-            <textarea
-              value={memoryDraft}
-              onChange={(event) => setMemoryDraft(event.target.value)}
-              placeholder="写入项目约束或偏好"
-              disabled={!selectedSessionId || memoryBusy}
-            />
-            <button
-              type="button"
-              className="miniActionButton"
-              title="添加固定记忆"
-              disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
-              onClick={() => void handleRememberPinned()}
-            >
-              <Plus size={16} />
-            </button>
+          <div className="memorySummary">
+            {memoryLayers.map((layer) => (
+              <span key={layer.id}>{layer.label}: {layer.items.length}</span>
+            ))}
+            {memoryLayers.length === 0 ? <span>暂无记忆信息</span> : null}
           </div>
           {memoryError ? <div className="memoryError">{memoryError}</div> : null}
-          <div className="memoryList">
-            {(sessionMemory?.pinned || []).map((item) => (
-              <article className="memoryItem" key={item.id}>
-                <p>{item.content}</p>
-                <button type="button" className="miniIconButton static" title="删除固定记忆" onClick={() => void handleForgetPinned(item.id)}>
-                  <Trash2 size={15} />
-                </button>
-              </article>
-            ))}
-            {sessionMemory && sessionMemory.pinned.length === 0 ? <div className="memoryEmpty">无固定记忆</div> : null}
-          </div>
+          <button
+            type="button"
+            className="memoryManageButton"
+            disabled={!selectedSessionId}
+            onClick={() => {
+              setMemoryManagerOpen(true)
+              void refreshMemory()
+            }}
+          >
+            <Settings2 size={16} />
+            管理记忆
+          </button>
         </section>
 
         <section className="panel skillPanel">
@@ -1473,9 +1534,9 @@ export function App() {
           </div>
           <div className="skillPanelSummary">
             <span className="skillStatusDot enabled" />
-            <span>{enabledSkillCount} enabled</span>
+            <span>{enabledSkillCount} 启用</span>
             <span className="skillStatusDot" />
-            <span>{skills.length - enabledSkillCount} unloaded</span>
+            <span>{skills.length - enabledSkillCount} 卸载</span>
           </div>
           <div className="skillPanelActions">
             <button type="button" disabled={skillsBusy} onClick={handleUploadSkillClick}>
@@ -1876,7 +1937,7 @@ export function App() {
             }}
           />
           {running ? (
-            <button className="sendButton abort" title="停止" type="button" onClick={() => void handleAbort()}>
+            <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting} onClick={() => void handleAbort()}>
               <CircleStop size={19} />
             </button>
           ) : (
@@ -1929,6 +1990,125 @@ export function App() {
         </div>
       ) : null}
 
+      {memoryManagerOpen ? (
+        <div className="modalBackdrop">
+          <section className="memoryManagerModal" aria-label="记忆管理">
+            <header>
+              <div>
+                <h3>记忆管理</h3>
+                <p>会话、项目和全局记忆分别存放，召回关闭时不会注入 Agent 上下文。</p>
+              </div>
+              <button className="miniIconButton static" title="关闭" onClick={() => setMemoryManagerOpen(false)}>
+                <X size={17} />
+              </button>
+            </header>
+
+            <div className="memoryLayerTabs">
+              {memoryLayers.map((layer) => (
+                <button
+                  key={layer.id}
+                  className={activeMemoryLayer === layer.id ? 'active' : ''}
+                  onClick={() => setActiveMemoryLayer(layer.id)}
+                >
+                  {layer.label}
+                  <small>{layer.items.length}</small>
+                </button>
+              ))}
+            </div>
+
+            {memoryError ? <div className="skillManagerError">{memoryError}</div> : null}
+
+            {selectedMemoryLayer ? (
+              <div className="memoryManagerBody">
+                <section className="memoryLayerInfo">
+                  <div>
+                    <strong>{selectedMemoryLayer.label}</strong>
+                    <span>{selectedMemoryLayer.scope}</span>
+                    <span>手动记忆和自动记忆都会显示在这里。</span>
+                    {selectedMemoryLayer.id === 'project' && sessionMemory?.projectInfo ? (
+                      <span>Project: {sessionMemory.projectInfo.displayName}</span>
+                    ) : null}
+                  </div>
+                  <div className="memoryPathPill">
+                    <span>索引</span>
+                    <code>{selectedMemoryLayer.paths.index}</code>
+                  </div>
+                </section>
+
+                <select
+                  className="memoryTypeSelect"
+                  value={activeMemoryType}
+                  onChange={(event) => setActiveMemoryType(event.target.value as MemoryType)}
+                  disabled={!selectedSessionId || memoryBusy}
+                >
+                  <option value="project">project</option>
+                  <option value="feedback">feedback</option>
+                  <option value="user">user</option>
+                  <option value="reference">reference</option>
+                </select>
+
+                <div className="memoryComposer">
+                  <textarea
+                    value={memoryDraft}
+                    onChange={(event) => setMemoryDraft(event.target.value)}
+                    placeholder={`写入${selectedMemoryLayer.label}`}
+                    disabled={!selectedSessionId || memoryBusy}
+                  />
+                  <button
+                    type="button"
+                    className="miniActionButton"
+                    title="添加记忆"
+                    disabled={!memoryDraft.trim() || !selectedSessionId || memoryBusy}
+                    onClick={() => void handleSaveMemoryItem()}
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+
+                <div className="memoryManagerList">
+                  {selectedMemoryLayer.items.map((item) => (
+                    <article
+                      className="memoryItem clickable"
+                      key={item.id}
+                      title="打开记忆文件位置"
+                      onClick={() => void handleRevealMemoryItem(item.layer, item.name)}
+                    >
+                      <p>
+                        <strong>{item.name}</strong> <span>[{item.type}]</span>
+                        <br />
+                        {item.description}
+                        <br />
+                        <small>{item.filePath}</small>
+                        {item.content ? (
+                          <>
+                            <br />
+                            <em>{item.content.slice(0, 140)}{item.content.length > 140 ? '...' : ''}</em>
+                          </>
+                        ) : null}
+                      </p>
+                      <button
+                        type="button"
+                        className="miniIconButton static"
+                        title="删除记忆"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleDeleteMemoryItem(item.name)
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </article>
+                  ))}
+                  {selectedMemoryLayer.items.length === 0 ? <div className="memoryEmpty">暂无记忆</div> : null}
+                </div>
+              </div>
+            ) : (
+              <div className="memoryEmpty">暂无记忆信息</div>
+            )}
+          </section>
+        </div>
+      ) : null}
+
       {skillManagerOpen ? (
         <div className="modalBackdrop">
           <section className="skillManagerModal" aria-label="Skill 管理">
@@ -1956,7 +2136,7 @@ export function App() {
                 >
                   <button
                     type="button"
-                    className="skillLampButton"
+                    className={skill.enabled ? 'skillLampButton enabled' : 'skillLampButton disabled'}
                     title={skill.enabled ? '卸载 Skill' : '启用 Skill'}
                     disabled={skillsBusy}
                     onClick={() => void handleSkillEnabled(skill, !skill.enabled)}
@@ -1968,8 +2148,8 @@ export function App() {
                     <span>{skill.summary || skill.description}</span>
                   </div>
                   <div className="skillManagerMeta">
-                    <small>{skill.source === 'builtin' ? '内置' : '上传'}</small>
-                    <code>{skill.node || skill.entry || skill.description}</code>
+                    <small>{skill.enabled ? '启用' : '卸载'} / {skill.source === 'builtin' ? '内置' : '上传'}</small>
+                    {skill.node || skill.entry ? <code>{skill.node || skill.entry}</code> : null}
                   </div>
                 </article>
               ))}

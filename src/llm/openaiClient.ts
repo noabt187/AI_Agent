@@ -62,70 +62,60 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
       // Accumulate tool calls by index (streaming chunks)
       const toolCallsAcc = new Map<number, { id: string; name: string; arguments: string }>()
       let usage: { promptTokens: number; completionTokens: number } | undefined
+      let doneYielded = false
 
-      for await (const line of parseSseLines(res.body)) {
+      // Helper: yield accumulated tool calls as a tool_calls event
+      const flushToolCalls = function* (): Generator<LlmStreamEvent> {
+        if (toolCallsAcc.size === 0) return
+        yield {
+          type: 'tool_calls',
+          toolCalls: Array.from(toolCallsAcc.values()).map((tc) => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+          })),
+        }
+        toolCallsAcc.clear()
+      }
+
+      // Helper: flush tool calls + yield done if not already yielded
+      const yieldDoneIfNeeded = function* (): Generator<LlmStreamEvent> {
+        if (doneYielded) return
+        yield* flushToolCalls()
+        yield { type: 'done', usage }
+        doneYielded = true
+      }
+
+      for await (const line of parseSseLines(res.body, signal)) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6)
         if (data === '[DONE]') {
-          // usage 已在 usage chunk 处理时 yield 过 done，此处仅作为兜底
-          if (!usage) {
-            yield { type: 'done', usage }
-          }
+          yield* yieldDoneIfNeeded()
           break
         }
         try {
           const parsed = JSON.parse(data)
 
-          // Usage chunk (choices is empty array, usage present)
-          if (parsed.usage && (!parsed.choices || parsed.choices.length === 0)) {
+          // Capture usage from any chunk that carries it (do this FIRST —
+          // usage may appear in the same chunk as finish_reason + delta)
+          if (parsed.usage) {
             usage = {
               promptTokens: parsed.usage.prompt_tokens ?? 0,
               completionTokens: parsed.usage.completion_tokens ?? 0,
             }
-            // 立即 yield done，确保监控记录不丢失
-            if (toolCallsAcc.size > 0) {
-              yield {
-                type: 'tool_calls',
-                toolCalls: Array.from(toolCallsAcc.values()).map((tc) => ({
-                  id: tc.id,
-                  name: tc.name,
-                  arguments: tc.arguments,
-                })),
-              }
-              toolCallsAcc.clear()
-            }
-            yield { type: 'done', usage }
-            continue
           }
 
           const delta = parsed.choices?.[0]?.delta
-          if (!delta) {
-            if (parsed.choices?.[0]?.finish_reason) {
-              // Flush accumulated tool calls before done
-              if (toolCallsAcc.size > 0) {
-                yield {
-                  type: 'tool_calls',
-                  toolCalls: Array.from(toolCallsAcc.values()).map((tc) => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.arguments,
-                  })),
-                }
-                toolCallsAcc.clear()
-              }
-              yield { type: 'done', usage }
-            }
-            continue
-          }
+          const finishReason: string | undefined = parsed.choices?.[0]?.finish_reason
 
           // Text content
-          const content = delta.content
+          const content = delta?.content
           if (typeof content === 'string' && content) {
             yield { type: 'delta', text: content }
           }
 
-          // Tool calls
-          if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+          // Tool calls accumulation
+          if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
               const idx: number = tc.index ?? 0
               if (!toolCallsAcc.has(idx)) {
@@ -138,27 +128,26 @@ export function createOpenAiClient(baseUrl: string, apiKey: string, model: strin
             }
           }
 
-          // Finish reason
-          if (parsed.choices?.[0]?.finish_reason) {
-            if (toolCallsAcc.size > 0) {
-              yield {
-                type: 'tool_calls',
-                toolCalls: Array.from(toolCallsAcc.values()).map((tc) => ({
-                  id: tc.id,
-                  name: tc.name,
-                  arguments: tc.arguments,
-                })),
-              }
-              toolCallsAcc.clear()
+          // Handle finish_reason
+          if (finishReason) {
+            if (finishReason === 'tool_calls') {
+              // Flush tool calls but don't end the stream — more calls follow
+              yield* flushToolCalls()
+            } else if (usage) {
+              // We have both finish_reason and usage — yield done immediately
+              yield* yieldDoneIfNeeded()
             }
-            if (parsed.choices[0].finish_reason !== 'tool_calls') {
-              yield { type: 'done', usage }
-            }
+            // If no usage yet, don't yield done here; the standalone usage
+            // chunk, [DONE], or post-loop safety net will handle it.
           }
         } catch {
           continue
         }
       }
+
+      // Safety net: if the stream ended without yielding done (e.g., some
+      // APIs omit the [DONE] marker), yield it now so the metric is recorded.
+      yield* yieldDoneIfNeeded()
     },
   }
 }

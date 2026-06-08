@@ -8,6 +8,10 @@ dist/
 state/*
 !state/.gitkeep
 
+# Durable local memory
+memory/*
+!memory/.gitkeep
+
 # Claude Code session
 .ccb/
 

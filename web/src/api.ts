@@ -26,12 +26,17 @@ export type RepositoryConfig = {
   defaultBaseBranch?: string
 }
 
-export type PinnedProjectMemory = {
+export type MemoryLayerId = 'session' | 'project' | 'global'
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
+
+export type MemoryItem = {
   id: string
-  createdAt: number
+  name: string
+  description: string
+  type: MemoryType
+  layer: MemoryLayerId
   content: string
-  keywords: string[]
-  sourceSessionId: string
+  filePath: string
 }
 
 export type WorldState = {
@@ -58,6 +63,7 @@ export type StreamEvent =
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: unknown }
+  | { type: 'aborted'; message: string }
   | { type: 'done'; sessionId: string }
   | { type: 'error'; message: string }
 
@@ -100,7 +106,22 @@ export type SessionMetrics = {
 
 export type SessionMemory = {
   settings: MemorySettings
-  pinned: PinnedProjectMemory[]
+  projectInfo: {
+    key: string
+    displayName: string
+    rootDir: string
+    remoteUrl?: string
+  }
+  layers: Array<{
+    id: MemoryLayerId
+    label: string
+    scope: string
+    paths: {
+      directory: string
+      index: string
+    }
+    items: MemoryItem[]
+  }>
 }
 
 export type ManagedSkill = {
@@ -181,16 +202,26 @@ export async function updateRepositoryConfig(sessionId: string, repository: Repo
   })
 }
 
-export async function rememberPinnedMemory(sessionId: string, content: string): Promise<{ memoryState: SessionMemory }> {
-  return jsonRequest<{ memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned`, {
+export async function saveMemoryItem(
+  sessionId: string,
+  input: { layer: MemoryLayerId; name?: string; description?: string; type?: MemoryType; body: string },
+): Promise<{ memoryState: SessionMemory }> {
+  return jsonRequest<{ memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/items`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(input),
   })
 }
 
-export async function forgetPinnedMemory(sessionId: string, id: string): Promise<{ deleted: boolean; memoryState: SessionMemory }> {
-  return jsonRequest<{ deleted: boolean; memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/pinned/${encodeURIComponent(id)}`, {
+export async function deleteMemoryItem(sessionId: string, name: string): Promise<{ deleted: boolean; memoryState: SessionMemory }> {
+  return jsonRequest<{ deleted: boolean; memoryState: SessionMemory }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/items/${encodeURIComponent(name)}`, {
     method: 'DELETE',
+  })
+}
+
+export async function revealMemoryItem(sessionId: string, layer: MemoryLayerId, name: string): Promise<{ ok: boolean; filePath: string }> {
+  return jsonRequest<{ ok: boolean; filePath: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/memory/items/${encodeURIComponent(name)}/reveal`, {
+    method: 'POST',
+    body: JSON.stringify({ layer }),
   })
 }
 
