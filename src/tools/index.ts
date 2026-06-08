@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path'
 import { readTextFile, listDirectory, searchFiles, searchContent } from './fileRead.js'
 import { writeFileTool, deleteFileTool } from './fileWrite.js'
-import { execCommandTool } from './execCommand.js'
+
 import { verifyCodeTool } from './verifyCode.js'
 import { createPullRequestTool } from './createPullRequest.js'
 import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
@@ -101,12 +101,6 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['filePath'],
     pathArgNames: ['filePath'],
     scope: 'write',
-  },
-  execCommand: {
-    fn: (rootDir: string, command: string) => execCommandTool(rootDir, command),
-    description: '在项目目录下执行 shell 命令，用于运行 lint、test、build 等',
-    argNames: ['rootDir', 'command'],
-    scope: 'read',
   },
   verifyCode: {
     fn: verifyCodeTool,
@@ -256,11 +250,6 @@ export async function executeTool(
     const argValues = tool.argNames
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
       .map((n) => effectiveArgs[n] ?? '')
-
-    // execCommand supports AbortSignal to force-kill child processes
-    if (name === 'execCommand' && signal) {
-      return await execCommandTool(effectiveRootDir, argValues[0] ?? '', signal)
-    }
 
     return await tool.fn(effectiveRootDir, ...argValues)
   } catch (e: unknown) {

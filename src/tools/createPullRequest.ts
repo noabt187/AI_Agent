@@ -1,215 +1,32 @@
-import { execFile } from 'node:child_process'
-import { access } from 'node:fs/promises'
-import { promisify } from 'node:util'
+import {
+  runGit,
+  addAll,
+  commit,
+  pushUpstream,
+  getCurrentBranch,
+  getDiffStat,
+  getRemoteUrl,
+  remoteExists,
+  addOrSetRemote,
+  branchExists,
+  createAndCheckout,
+  validateRefName,
+  validateRemoteName,
+  timestampBranch,
+} from '../utils/git.js'
+import {
+  runGh,
+  checkGhReady,
+  createPR,
+  parseRepoUrl,
+  optionalValue,
+  parseBoolean,
+  type RepoRef,
+} from '../utils/gh.js'
 
-const execFileAsync = promisify(execFile)
+// ── Tool ──
 
-type CommandResult = {
-  stdout: string
-  stderr: string
-}
-
-async function runCommand(file: string, args: string[], cwd: string): Promise<CommandResult> {
-  const result = await execFileAsync(file, args, {
-    cwd,
-    timeout: 120000,
-    maxBuffer: 1024 * 1024,
-  })
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  }
-}
-
-async function runGit(rootDir: string, args: string[]): Promise<string> {
-  const { stdout, stderr } = await runCommand('git', args, rootDir)
-  return [stdout, stderr].filter(Boolean).join('\n').trim()
-}
-
-const WINDOWS_GH_PATHS = [
-  'C:\\Program Files\\GitHub CLI\\gh.exe',
-  'C:\\Program Files (x86)\\GitHub CLI\\gh.exe',
-]
-
-let cachedGhCommand: string | null = null
-
-async function resolveGhCommand(): Promise<string> {
-  if (cachedGhCommand) return cachedGhCommand
-
-  try {
-    await runCommand('gh', ['--version'], process.cwd())
-    cachedGhCommand = 'gh'
-    return cachedGhCommand
-  } catch {}
-
-  for (const candidate of WINDOWS_GH_PATHS) {
-    try {
-      await access(candidate)
-      cachedGhCommand = candidate
-      return cachedGhCommand
-    } catch {}
-  }
-
-  return 'gh'
-}
-
-async function runGh(rootDir: string, args: string[]): Promise<string> {
-  const ghCommand = await resolveGhCommand()
-  const { stdout, stderr } = await runCommand(ghCommand, args, rootDir)
-  return [stdout, stderr].filter(Boolean).join('\n').trim()
-}
-
-function isDefaultValueToken(value: string | undefined): boolean {
-  const trimmed = value?.trim().toLowerCase() ?? ''
-  return !trimmed || trimmed === 'auto' || trimmed === '-'
-}
-
-function optionalValue(value: string): string | undefined {
-  const trimmed = value.trim()
-  if (isDefaultValueToken(trimmed)) return undefined
-  return trimmed
-}
-
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
-  if (!value) return defaultValue
-  const normalized = value.trim().toLowerCase()
-  if (!normalized || normalized === 'auto' || normalized === '-') return defaultValue
-  return ['1', 'true', 'yes', 'y', 'draft'].includes(normalized)
-}
-
-function timestampBranch(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `agent/pr-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-}
-
-function validateRefName(name: string, label: string): void {
-  if (!/^[A-Za-z0-9._/-]+$/.test(name)
-    || name.startsWith('-')
-    || name.includes('..')
-    || name.includes('//')
-    || name.endsWith('/')
-    || name.endsWith('.')) {
-    throw new Error(`${label} 不合法: ${name}`)
-  }
-}
-
-function validateRemoteName(name: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(name) || name.startsWith('-')) {
-    throw new Error(`remote 名不合法: ${name}`)
-  }
-}
-
-function toGhRepo(repoUrl: string): string {
-  const trimmed = repoUrl.trim().replace(/\.git$/, '')
-  const sshMatch = trimmed.match(/^git@([^:]+):(.+)$/)
-  if (sshMatch) {
-    return `${sshMatch[1]}/${sshMatch[2]}`
-  }
-
-  try {
-    const url = new URL(trimmed)
-    const path = url.pathname.replace(/^\/+/, '')
-    if (url.hostname === 'github.com') return path
-    return `${url.hostname}/${path}`
-  } catch {}
-
-  return trimmed
-}
-
-export type GitHubRepositoryRef = {
-  owner: string
-  name: string
-  fullName: string
-}
-
-export function parseGitHubRepository(repoUrl: string): GitHubRepositoryRef {
-  const repo = toGhRepo(repoUrl).replace(/\.git$/, '').replace(/^\/+|\/+$/g, '')
-  const parts = repo.split('/').filter(Boolean)
-  const startIndex = parts[0]?.includes('.') ? 1 : 0
-  const owner = parts[startIndex]
-  const name = parts[startIndex + 1]
-
-  if (!owner || !name || parts.length < startIndex + 2) {
-    throw new Error(`GitHub 仓库地址不合法: ${repoUrl}`)
-  }
-
-  validateGitHubSegment(owner, 'owner')
-  validateGitHubSegment(name, 'repository')
-
-  return {
-    owner,
-    name,
-    fullName: `${owner}/${name}`,
-  }
-}
-
-export function validateGitHubSegment(value: string, label: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(value)
-    || value.startsWith('-')
-    || value.endsWith('-')
-    || value.includes('..')) {
-    throw new Error(`${label} 不合法: ${value}`)
-  }
-}
-
-function githubCliSetupMessage(reason: string): string {
-  return [
-    `错误：${reason}`,
-    '',
-    'GitHub 仓库操作需要本机安装并登录 GitHub CLI（gh）。',
-    '',
-    'Windows PowerShell:',
-    '  winget install --id GitHub.cli',
-    '  gh auth login',
-    '  gh auth status',
-    '',
-    'macOS:',
-    '  brew install gh',
-    '  gh auth login',
-    '  gh auth status',
-    '',
-    'Linux:',
-    '  请参考 https://github.com/cli/cli/blob/trunk/docs/install_linux.md 安装 gh',
-    '  gh auth login',
-    '  gh auth status',
-  ].join('\n')
-}
-
-async function checkGitHubCliReady(rootDir: string): Promise<string | null> {
-  try {
-    await runGh(rootDir, ['--version'])
-  } catch {
-    return githubCliSetupMessage('未检测到 GitHub CLI（gh）')
-  }
-
-  try {
-    await runGh(rootDir, ['auth', 'status'])
-  } catch {
-    return githubCliSetupMessage('GitHub CLI 尚未登录或 token 权限不足')
-  }
-
-  return null
-}
-
-async function remoteExists(rootDir: string, remoteName: string): Promise<boolean> {
-  try {
-    await runGit(rootDir, ['remote', 'get-url', remoteName])
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function getCurrentBranch(rootDir: string): Promise<string> {
-  try {
-    return await runGit(rootDir, ['branch', '--show-current'])
-  } catch {
-    return ''
-  }
-}
-
-async function createPullRequestTool(
+export async function createPullRequestTool(
   rootDir: string,
   repoUrlArg: string,
   titleArg: string,
@@ -222,7 +39,10 @@ async function createPullRequestTool(
   prRepoUrlArg: string,
   headOwnerArg: string,
 ): Promise<string> {
-  await runGit(rootDir, ['rev-parse', '--is-inside-work-tree'])
+  // 确保是 git 仓库
+  try { await runGit(rootDir, ['rev-parse', '--is-inside-work-tree']) } catch {
+    return '错误：当前目录不是 git 仓库。'
+  }
 
   const status = await runGit(rootDir, ['status', '--porcelain'])
   if (!status.trim()) {
@@ -241,46 +61,44 @@ async function createPullRequestTool(
   validateRefName(baseBranch, 'baseBranch')
   validateRefName(headBranch, 'headBranch')
 
+  // 确定推送仓库
   const explicitRepoUrl = optionalValue(repoUrlArg)
-  let repoUrl = explicitRepoUrl
-  const hasRemote = await remoteExists(rootDir, remoteName)
-
-  if (repoUrl) {
-    if (hasRemote) {
-      await runGit(rootDir, ['remote', 'set-url', remoteName, repoUrl])
-    } else {
-      await runGit(rootDir, ['remote', 'add', remoteName, repoUrl])
-    }
-  } else if (hasRemote) {
-    repoUrl = await runGit(rootDir, ['remote', 'get-url', remoteName])
+  let pushUrl: string
+  if (explicitRepoUrl) {
+    await addOrSetRemote(rootDir, remoteName, explicitRepoUrl)
+    pushUrl = explicitRepoUrl
   } else {
-    return `错误：无法推断远程仓库。请让用户提供 repoUrl，或先在项目中配置 git remote "${remoteName}"。`
+    const remoteUrl = await getRemoteUrl(rootDir, remoteName)
+    if (!remoteUrl) {
+      return `错误：无法推断远程仓库。请让用户提供 repoUrl，或先在项目中配置 git remote "${remoteName}"。`
+    }
+    pushUrl = remoteUrl
   }
 
-  const ghReadyError = await checkGitHubCliReady(rootDir)
-  if (ghReadyError) return ghReadyError
+  const ghError = await checkGhReady(rootDir)
+  if (ghError) return ghError
 
-  const pushRepo = parseGitHubRepository(repoUrl)
+  const pushRepo = parseRepoUrl(pushUrl)
   const explicitPrRepoUrl = optionalValue(prRepoUrlArg)
-  const prRepoUrl = explicitPrRepoUrl ?? repoUrl
-  const prRepo = parseGitHubRepository(prRepoUrl)
+  const prRepoUrl = explicitPrRepoUrl ?? pushUrl
+  const prRepo = parseRepoUrl(prRepoUrl)
   const headOwner = optionalValue(headOwnerArg) ?? pushRepo.owner
 
+  // 切换/创建 head 分支
   const currentBranch = await getCurrentBranch(rootDir)
   if (currentBranch !== headBranch) {
-    try {
-      await runGit(rootDir, ['show-ref', '--verify', `refs/heads/${headBranch}`])
+    if (await branchExists(rootDir, headBranch)) {
       return `错误：本地分支 "${headBranch}" 已存在。请换一个 headBranch，或先切到该分支后重试。`
-    } catch {
-      await runGit(rootDir, ['checkout', '-b', headBranch])
     }
+    await createAndCheckout(rootDir, headBranch)
   }
 
-  await runGit(rootDir, ['add', '-A'])
-  await runGit(rootDir, ['commit', '-m', commitMessage])
+  // 提交 & 推送
+  await addAll(rootDir)
+  await commit(rootDir, commitMessage)
 
-  const diffStat = await runGit(rootDir, ['show', '--stat', '--oneline', '--no-renames', 'HEAD'])
-  await runGit(rootDir, ['push', '-u', remoteName, headBranch])
+  const diffStat = await getDiffStat(rootDir)
+  await pushUpstream(rootDir, remoteName, headBranch)
 
   const body = bodyFromUser ?? [
     'Agent 自动提交的变更。',
@@ -290,23 +108,14 @@ async function createPullRequestTool(
     '```',
   ].join('\n')
 
-  const prArgs = [
-    'pr',
-    'create',
-    '--repo',
-    prRepo.fullName,
-    '--base',
-    baseBranch,
-    '--head',
-    `${headOwner}:${headBranch}`,
-    '--title',
+  const prOutput = await createPR(rootDir, {
+    repo: prRepo.fullName,
+    base: baseBranch,
+    head: `${headOwner}:${headBranch}`,
     title,
-    '--body',
     body,
-  ]
-  if (draft) prArgs.push('--draft')
-
-  const prOutput = await runGh(rootDir, prArgs)
+    draft,
+  })
 
   return [
     'PR 创建成功。',
@@ -319,5 +128,3 @@ async function createPullRequestTool(
     prOutput,
   ].join('\n')
 }
-
-export { createPullRequestTool }

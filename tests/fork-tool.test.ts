@@ -5,29 +5,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseAgentResult } from '../src/orchestrator/agent.js'
 import { useSkill, getSkillCatalog, type Skill } from '../src/skills/index.js'
-import { parseGitHubRepository } from '../src/tools/createPullRequest.js'
+import { parseRepoUrl } from '../src/utils/gh.js'
 import { executeTool, toolDefsToOpenAI } from '../src/tools/index.js'
 
-test('parseGitHubRepository accepts common GitHub repository formats', () => {
-  assert.deepEqual(parseGitHubRepository('https://github.com/noabt187/AI_Agent.git'), {
+test('parseRepoUrl accepts common GitHub repository formats', () => {
+  assert.deepEqual(parseRepoUrl('https://github.com/noabt187/AI_Agent.git'), {
     owner: 'noabt187',
     name: 'AI_Agent',
     fullName: 'noabt187/AI_Agent',
   })
 
-  assert.deepEqual(parseGitHubRepository('git@github.com:guwan-real/Vibecoding-skills-for-interview.git'), {
+  assert.deepEqual(parseRepoUrl('git@github.com:guwan-real/Vibecoding-skills-for-interview.git'), {
     owner: 'guwan-real',
     name: 'Vibecoding-skills-for-interview',
     fullName: 'guwan-real/Vibecoding-skills-for-interview',
   })
 
-  assert.deepEqual(parseGitHubRepository('guwan-real/Vibecoding-skills-for-interview'), {
+  assert.deepEqual(parseRepoUrl('guwan-real/Vibecoding-skills-for-interview'), {
     owner: 'guwan-real',
     name: 'Vibecoding-skills-for-interview',
     fullName: 'guwan-real/Vibecoding-skills-for-interview',
   })
 
-  assert.deepEqual(parseGitHubRepository('https://github.com/guwan-real/Vibecoding-skills-for-interview/tree/main'), {
+  assert.deepEqual(parseRepoUrl('https://github.com/guwan-real/Vibecoding-skills-for-interview/tree/main'), {
     owner: 'guwan-real',
     name: 'Vibecoding-skills-for-interview',
     fullName: 'guwan-real/Vibecoding-skills-for-interview',
