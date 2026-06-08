@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 
-const DEFAULT_PORTS = '3001,5173,5174,5175'
+const DEFAULT_PORTS = '3090,3001,5173,5174,5175'
 const portsArgIndex = process.argv.indexOf('--ports')
 const cliPorts = portsArgIndex >= 0 ? process.argv[portsArgIndex + 1] : ''
 const ports = (cliPorts || process.env.DEV_CLEAN_PORTS || DEFAULT_PORTS)
