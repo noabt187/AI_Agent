@@ -9,6 +9,7 @@ import { compressContextTool } from './compressContext.js'
 import { writeMemoryTool } from './writeMemory.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
+import type { RepositoryConfig } from '../orchestrator/types.js'
 
 type ToolScope = 'read' | 'write' | 'memory'
 
@@ -26,6 +27,36 @@ type ToolDef = {
 
 type ExecuteToolOptions = {
   turnLoadedSkills?: Set<string>
+  repository?: RepositoryConfig
+}
+
+function isDefaultValueToken(value: string | undefined): boolean {
+  const trimmed = value?.trim().toLowerCase() ?? ''
+  return !trimmed || trimmed === 'auto' || trimmed === '-'
+}
+
+function applyRepositoryDefaults(
+  name: string,
+  args: Record<string, string>,
+  repository?: RepositoryConfig,
+): Record<string, string> {
+  const nextArgs = { ...args }
+  if (name === 'createPullRequest') {
+    if (isDefaultValueToken(nextArgs.repoUrl) && repository?.repoUrl) nextArgs.repoUrl = repository.repoUrl
+    if (isDefaultValueToken(nextArgs.prRepoUrl) && repository?.prRepoUrl) nextArgs.prRepoUrl = repository.prRepoUrl
+    if (isDefaultValueToken(nextArgs.baseBranch) && repository?.defaultBaseBranch) {
+      nextArgs.baseBranch = repository.defaultBaseBranch
+    }
+  }
+  if (name === 'forkRepository' && isDefaultValueToken(nextArgs.repoUrl)) {
+    const defaultForkSource = repository?.upstreamUrl || repository?.prRepoUrl || repository?.repoUrl
+    if (defaultForkSource) nextArgs.repoUrl = defaultForkSource
+  }
+  if (name === 'cloneRepository' && isDefaultValueToken(nextArgs.repoUrl)) {
+    const defaultCloneSource = repository?.repoUrl || repository?.upstreamUrl
+    if (defaultCloneSource) nextArgs.repoUrl = defaultCloneSource
+  }
+  return nextArgs
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -175,6 +206,7 @@ export async function executeTool(
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
+  const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
   // 写权限检查
   if (tool.scope === 'write' && !designConfirmed) {
@@ -186,7 +218,7 @@ export async function executeTool(
   }
 
   // 校验 rootDir（如果工具有此参数）
-  const rootDir = args.rootDir
+  const rootDir = effectiveArgs.rootDir
 
   // Helper: validate a single path argument
   const validatePathArg = (val: string | undefined, argName: string): string | null => {
@@ -207,14 +239,14 @@ export async function executeTool(
 
   // 校验路径参数：必须是绝对路径且在可操作目录内
   for (const argName of tool.pathArgNames ?? []) {
-    const err = validatePathArg(args[argName], argName)
+    const err = validatePathArg(effectiveArgs[argName], argName)
     if (err) return err
   }
 
   // 必填参数校验
   const requiredArgNames = tool.requiredArgNames ?? tool.argNames
   for (const argName of requiredArgNames) {
-    if (!args[argName] || args[argName].trim() === '') {
+    if (!effectiveArgs[argName] || effectiveArgs[argName].trim() === '') {
       return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
     }
   }
@@ -223,7 +255,7 @@ export async function executeTool(
     const effectiveRootDir = rootDir || allowedPaths[0]
     const argValues = tool.argNames
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
-      .map((n) => args[n] ?? '')
+      .map((n) => effectiveArgs[n] ?? '')
 
     // execCommand supports AbortSignal to force-kill child processes
     if (name === 'execCommand' && signal) {

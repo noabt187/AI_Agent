@@ -9,6 +9,7 @@ import {
   FileUp,
   FolderOpen,
   Gauge,
+  GitPullRequest,
   MessageSquare,
   Moon,
   PanelLeftClose,
@@ -44,6 +45,7 @@ import {
   saveMemoryItem,
   streamPrompt,
   updateMemorySettings,
+  updateRepositoryConfig,
   updateAllowedPaths,
   updateSkillEnabled,
   updateSessionTitle,
@@ -54,6 +56,7 @@ import {
   type MemoryLayerId,
   type MemoryRecallMode,
   type MemoryType,
+  type RepositoryConfig,
   type SessionMemory,
   type SessionMetrics,
   type SessionDetail,
@@ -72,11 +75,18 @@ type TimelineItem = {
 type ActivityItem = {
   id: string
   content: string
+  sessionId: string
 }
 
 type PendingConfirm = {
   allowWrite: boolean
   message: string
+}
+
+type PlanOption = {
+  key: string
+  label: string
+  value?: string
 }
 
 type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
@@ -223,7 +233,9 @@ function inferPendingConfirm(timeline: TimelineItem[], running: boolean): Pendin
 
   const hasAllowWriteWarning = content.includes(allowWriteConfirmWarning)
     || /获得文件写入权限|增\/删\/改/.test(content)
+  const waitingForChoice = /请选择|选择.*方案|选择.*选项|A\/B\/C|A\/B\/C\/D|A\/B\/C\/D\/E/.test(content)
   const waitingForConfirm = hasAllowWriteWarning
+    || waitingForChoice
     || /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
     || (/确认/.test(content) && /是否|吗|？|\?/.test(content))
   if (!waitingForConfirm) return undefined
@@ -238,10 +250,60 @@ function pendingConfirmKey(sessionId: string, confirm: PendingConfirm): string {
   return [sessionId, confirm.allowWrite ? 'write' : 'read', confirm.message].join('\n')
 }
 
+function uniquePlanOptions(options: PlanOption[]): PlanOption[] {
+  const seen = new Set<string>()
+  return options.filter((option) => {
+    if (seen.has(option.key)) return false
+    seen.add(option.key)
+    return true
+  })
+}
+
+function detectPlanOptions(content: string): PlanOption[] {
+  const matches: PlanOption[] = []
+  const optionLetters = 'ABCDEFGH'
+
+  for (const line of content.split('\n')) {
+    const tableMatch = line.match(/^\s*\|\s*([A-Ha-h])\s*\|\s*(.+?)\s*\|/)
+    if (!tableMatch) continue
+    const key = tableMatch[1].toUpperCase()
+    const value = tableMatch[2].replace(/^["“”]+|["“”]+$/g, '').trim()
+    matches.push({
+      key,
+      label: key,
+      value,
+    })
+  }
+
+  const patterns = [
+    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([A-Ha-h]))(?:[：:、\s.)）-]|$)/g,
+    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([一二三四五六七八]))(?:[：:、\s.)）-]|$)/g,
+    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:([A-Ha-h])\s*[.)）]\s*)(?=\S)/g,
+  ]
+
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const raw = match[2] || match[1]
+      const normalized = raw.trim().toUpperCase()
+      const key = optionLetters.includes(normalized) ? normalized : raw.trim()
+      matches.push({
+        key,
+        label: optionLetters.includes(key) ? `方案 ${key}` : `方案${key}`,
+      })
+    }
+  }
+
+  return uniquePlanOptions(matches).slice(0, 8)
+}
+
 export function App() {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const streamingAssistantIdRef = useRef<string | null>(null)
+  const streamingRawTextRef = useRef('')
+  const streamingVisibleTextRef = useRef('')
+  const selectedSessionIdRef = useRef('')
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
   const abortingRef = useRef(false)
@@ -260,6 +322,7 @@ export function App() {
   const [previewDraftUrl, setPreviewDraftUrl] = useState('http://localhost:4000')
   const [previewUrl, setPreviewUrl] = useState('')
   const [previewEditorOpen, setPreviewEditorOpen] = useState(false)
+  const [repositoryEditorOpen, setRepositoryEditorOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metrics, setMetrics] = useState<SessionMetrics | null>(null)
   const [metricsError, setMetricsError] = useState('')
@@ -267,11 +330,15 @@ export function App() {
   const [memoryDraft, setMemoryDraft] = useState('')
   const [memoryError, setMemoryError] = useState('')
   const [memoryBusy, setMemoryBusy] = useState(false)
+  const [repositoryDraft, setRepositoryDraft] = useState<RepositoryConfig>({})
+  const [repositoryBusy, setRepositoryBusy] = useState(false)
+  const [repositoryError, setRepositoryError] = useState('')
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
   const [activeMemoryLayer, setActiveMemoryLayer] = useState<MemoryLayerId>('project')
   const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
+  const [selectedPlanKey, setSelectedPlanKey] = useState('')
   const [annotateActive, setAnnotateActive] = useState(false)
   const [selectedElement, setSelectedElement] = useState<AnnotatedElement | null>(null)
   const [elementComment, setElementComment] = useState('')
@@ -313,7 +380,13 @@ export function App() {
   const pendingConfirm = activePendingConfirmKey && activePendingConfirmKey === dismissedPendingConfirmKey
     ? undefined
     : rawPendingConfirm
+  const pendingPlanOptions = useMemo(() => (
+    pendingConfirm ? detectPlanOptions(pendingConfirm.message) : []
+  ), [pendingConfirm])
+  const hasPlanChoices = pendingPlanOptions.length > 1
+  const selectedPlan = pendingPlanOptions.find((option) => option.key === selectedPlanKey)
   const operationRoot = session?.state.allowedPaths[0] || ''
+  const repository = session?.state.repository || {}
   const enabledSkillCount = skills.filter((skill) => skill.enabled).length
   const sortedSkills = useMemo(
     () => [...skills].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)),
@@ -338,6 +411,7 @@ export function App() {
       : current)
     setConfirmEditorOpen(false)
     setConfirmDraft('')
+    setSelectedPlanKey('')
   }
 
   async function refreshSessions(preferredId?: string | null) {
@@ -369,9 +443,21 @@ export function App() {
   }, [themeMode])
 
   useEffect(() => {
+    setSelectedPlanKey('')
+  }, [activePendingConfirmKey])
+
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId
     if (selectedSessionId) void refreshSession(selectedSessionId)
     setDismissedPendingConfirmKey('')
+    setActivityItems([])
+    setActivityExpanded(false)
+    setRepositoryError('')
   }, [selectedSessionId])
+
+  useEffect(() => {
+    setRepositoryDraft(session?.state.repository || {})
+  }, [session?.id, session?.state.repository])
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -612,6 +698,33 @@ export function App() {
     }
   }
 
+  async function handleSaveRepositoryConfig() {
+    if (!selectedSessionId || repositoryBusy) return
+    setRepositoryBusy(true)
+    setRepositoryError('')
+    try {
+      const detail = await updateRepositoryConfig(selectedSessionId, repositoryDraft)
+      setSession(detail)
+      setRepositoryDraft(detail.state.repository || {})
+      setRepositoryEditorOpen(false)
+      setStatus('仓库配置已更新')
+    } catch (err) {
+      setRepositoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRepositoryBusy(false)
+    }
+  }
+
+  function updateRepositoryDraft(key: keyof RepositoryConfig, value: string) {
+    setRepositoryDraft((current) => ({ ...current, [key]: value }))
+  }
+
+  function openRepositoryEditor() {
+    setRepositoryDraft(session?.state.repository || {})
+    setRepositoryError('')
+    setRepositoryEditorOpen(true)
+  }
+
   async function handleSaveMemoryItem() {
     const content = memoryDraft.trim()
     if (!selectedSessionId || !content || memoryBusy) return
@@ -828,10 +941,12 @@ export function App() {
   async function handleSendComments() {
     if (elementComments.length === 0) return
     const commentPrompt = buildAnnotationPrompt(elementComments, operationRoot)
+    setElementComments([])
+    setSelectedElement(null)
+    setElementComment('')
+    setAnnotateActive(false)
     setViewMode('chat')
     await sendPrompt(commentPrompt)
-    setElementComments([])
-    setAnnotateActive(false)
   }
 
   function appendItem(item: Omit<TimelineItem, 'id'>) {
@@ -856,11 +971,117 @@ export function App() {
     })
   }
 
+  function appendAssistantDelta(text: string) {
+    if (!text) return
+    setTimeline((current) => {
+      const streamingId = streamingAssistantIdRef.current
+      if (streamingId) {
+        return current.map((item) => (
+          item.id === streamingId
+            ? { ...item, content: `${item.content}${text}` }
+            : item
+        ))
+      }
+
+      const previous = current.at(-1)
+      if (previous?.role === 'assistant') {
+        streamingAssistantIdRef.current = previous.id
+        return [
+          ...current.slice(0, -1),
+          { ...previous, content: `${previous.content}${text}` },
+        ]
+      }
+
+      const id = `stream-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      streamingAssistantIdRef.current = id
+      return [
+        ...current,
+        {
+          id,
+          role: 'assistant',
+          content: text,
+        },
+      ]
+    })
+  }
+
+  function finalizeAssistantOutput(message: string) {
+    const streamingId = streamingAssistantIdRef.current
+    streamingAssistantIdRef.current = null
+    streamingRawTextRef.current = ''
+    streamingVisibleTextRef.current = ''
+
+    if (!streamingId) {
+      appendItem({ role: 'assistant', content: message })
+      return
+    }
+
+    setTimeline((current) => current.map((item) => (
+      item.id === streamingId
+        ? { ...item, content: message }
+        : item
+    )))
+  }
+
+  function readPartialJsonStringField(raw: string, fieldName: string): string | null {
+    const marker = `"${fieldName}"`
+    const keyIndex = raw.indexOf(marker)
+    if (keyIndex === -1) return null
+
+    const colonIndex = raw.indexOf(':', keyIndex + marker.length)
+    if (colonIndex === -1) return null
+
+    let quoteIndex = colonIndex + 1
+    while (quoteIndex < raw.length && /\s/.test(raw[quoteIndex])) quoteIndex += 1
+    if (raw[quoteIndex] !== '"') return null
+
+    let value = ''
+    let escaped = false
+    for (let index = quoteIndex + 1; index < raw.length; index += 1) {
+      const char = raw[index]
+      if (escaped) {
+        if (char === 'n') value += '\n'
+        else if (char === 'r') value += '\r'
+        else if (char === 't') value += '\t'
+        else if (char === '"' || char === '\\' || char === '/') value += char
+        else if (char === 'u' && index + 4 < raw.length) {
+          const hex = raw.slice(index + 1, index + 5)
+          const codePoint = Number.parseInt(hex, 16)
+          value += Number.isNaN(codePoint) ? `\\u${hex}` : String.fromCharCode(codePoint)
+          index += 4
+        } else {
+          value += char
+        }
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') return value
+      value += char
+    }
+
+    return value
+  }
+
+  function visibleStreamingText(raw: string): string {
+    const trimmedStart = raw.trimStart()
+    if (!trimmedStart.startsWith('{')) return raw
+    return readPartialJsonStringField(raw, 'message')
+      ?? readPartialJsonStringField(raw, 'prompt')
+      ?? ''
+  }
+
   function appendActivity(content: string) {
+    const activitySessionId = selectedSessionId
+    if (!activitySessionId || activitySessionId !== selectedSessionIdRef.current) return
     setActivityItems((current) => [
       ...current,
       {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        sessionId: activitySessionId,
         content,
       },
     ])
@@ -973,12 +1194,19 @@ export function App() {
     }
     if (abortingRef.current) return
     if (event.type === 'delta') {
+      streamingRawTextRef.current += event.text
+      const visibleText = visibleStreamingText(streamingRawTextRef.current)
+      const previousVisibleText = streamingVisibleTextRef.current
+      if (visibleText.length > previousVisibleText.length && visibleText.startsWith(previousVisibleText)) {
+        appendAssistantDelta(visibleText.slice(previousVisibleText.length))
+        streamingVisibleTextRef.current = visibleText
+      }
       setDeltaCount((count) => count + 1)
       setStatus('Agent 正在生成')
       return
     }
     if (event.type === 'output') {
-      appendItem({ role: 'assistant', content: event.message })
+      finalizeAssistantOutput(event.message)
       return
     }
     if (event.type === 'aborted') {
@@ -1014,6 +1242,9 @@ export function App() {
     if (!text || !selectedSessionId || running) return
     setPrompt('')
     setDeltaCount(0)
+    streamingAssistantIdRef.current = null
+    streamingRawTextRef.current = ''
+    streamingVisibleTextRef.current = ''
     setStatus(modelThinkingStatus)
     setRunning(true)
     setActivityItems([])
@@ -1053,13 +1284,28 @@ export function App() {
   }
 
   function handleConfirmAction() {
+    const selectedPlanText = selectedPlan
+      ? selectedPlan.value
+        ? `我选择 ${selectedPlan.label}：${selectedPlan.value}，确认执行。`
+        : `我选择${selectedPlan.label}，确认执行。`
+      : '确认'
     clearPendingConfirmLocal()
-    void sendPrompt('确认')
+    void sendPrompt(selectedPlanText)
   }
 
   function handleCancelConfirm() {
     clearPendingConfirmLocal({ dismiss: true })
     void sendPrompt('取消')
+  }
+
+  function handleComparePlans() {
+    if (!pendingConfirm) return
+    clearPendingConfirmLocal()
+    void sendPrompt([
+      '请对比这些候选方案，简要说明各自优缺点、适用场景和推荐选择。',
+      `候选方案内容是：\n${pendingConfirm.message}`,
+      '先不要执行。',
+    ].join('\n\n'))
   }
 
   function handleEditConfirm() {
@@ -1069,23 +1315,28 @@ export function App() {
 
   function buildConfirmEditPrompt(feedback: string): string {
     if (!pendingConfirm) return feedback
+    const selectedPlanLine = selectedPlan
+      ? `用户当前选择的是：${selectedPlan.label}${selectedPlan.value ? `：${selectedPlan.value}` : ''}`
+      : ''
     if (pendingConfirm.allowWrite) {
       return [
         '用户正在修改待确认的方案（含写权限）。',
         `原待确认内容是：\n${pendingConfirm.message}`,
+        selectedPlanLine,
         `用户修改意见是：\n${feedback}`,
         '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
         '不要写代码。',
-      ].join('\n\n')
+      ].filter(Boolean).join('\n\n')
     }
 
     return [
       '用户正在修改待确认的内容。',
       `原待确认内容是：\n${pendingConfirm.message}`,
+      selectedPlanLine,
       `用户修改意见是：\n${feedback}`,
       '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
       '不要写代码。',
-    ].join('\n\n')
+    ].filter(Boolean).join('\n\n')
   }
 
   function handleSubmitConfirmEdit() {
@@ -1276,31 +1527,6 @@ export function App() {
           </button>
         </section>
 
-        <section className="panel commentsPanel">
-          <div className="panelHeader">
-            <span>评论</span>
-            <small>{elementComments.length}</small>
-          </div>
-          <div className="commentList">
-            {elementComments.map((item) => (
-              <article className="commentItem" key={item.id}>
-                <div>
-                  <strong>{item.tagName}</strong>
-                  <span>{item.text || item.selector}</span>
-                </div>
-                <p>{item.comment}</p>
-                <button className="miniIconButton" title="删除评论" onClick={() => handleRemoveComment(item.id)}>
-                  <Trash2 size={15} />
-                </button>
-              </article>
-            ))}
-          </div>
-          <button className="sendCommentsButton" disabled={elementComments.length === 0 || running} onClick={() => void handleSendComments()}>
-            <MessageSquare size={17} />
-            发送给 Agent
-          </button>
-        </section>
-
         <section className="panel skillPanel">
           <div className="panelHeader">
             <span>SKILL</span>
@@ -1365,6 +1591,18 @@ export function App() {
           </div>
 
           <section className="workspaceControls">
+            <div className="controlGroup repositoryControl">
+              <button
+                className="openRepositoryButton"
+                disabled={!selectedSessionId}
+                onClick={openRepositoryEditor}
+                title={repository.repoUrl ? repository.repoUrl : '编辑当前会话仓库'}
+              >
+                <GitPullRequest size={17} />
+                编辑仓库
+              </button>
+            </div>
+
             <div className="controlGroup pathControl">
               <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
                 <FolderOpen size={17} />
@@ -1555,27 +1793,58 @@ export function App() {
           </div>
         )}
 
-        {selectedElement ? (
+        {selectedElement || elementComments.length > 0 ? (
           <div className="elementCommentDock">
-            <div className="selectedElementMeta">
-              <strong>{selectedElement.tagName}</strong>
-              <span>{selectedElement.text || selectedElement.selector}</span>
-            </div>
-            <textarea
-              value={elementComment}
-              onChange={(event) => setElementComment(event.target.value)}
-              placeholder="写下你想改哪里"
-            />
-            <div className="dockActions">
-              <button onClick={() => setSelectedElement(null)}>
-                <X size={16} />
-                关闭
-              </button>
-              <button disabled={!elementComment.trim()} onClick={handleAddComment}>
-                <CheckCircle2 size={16} />
-                添加评论
-              </button>
-            </div>
+            {selectedElement ? (
+              <div className="commentComposerRow">
+                <div className="selectedElementMeta">
+                  <strong>{selectedElement.tagName}</strong>
+                  <span>{selectedElement.text || selectedElement.selector}</span>
+                </div>
+                <textarea
+                  value={elementComment}
+                  onChange={(event) => setElementComment(event.target.value)}
+                  placeholder="写下你想改哪里"
+                />
+                <div className="dockActions">
+                  <button onClick={() => setSelectedElement(null)}>
+                    <X size={16} />
+                    关闭
+                  </button>
+                  <button disabled={!elementComment.trim()} onClick={handleAddComment}>
+                    <CheckCircle2 size={16} />
+                    添加评论
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {elementComments.length > 0 ? (
+              <div className="commentQueueRow">
+                <div className="commentQueueHeader">
+                  <span>评论</span>
+                  <strong>{elementComments.length}</strong>
+                </div>
+                <div className="commentList">
+                  {elementComments.map((item) => (
+                    <article className="commentItem" key={item.id}>
+                      <div>
+                        <strong>{item.tagName}</strong>
+                        <span>{item.text || item.selector}</span>
+                      </div>
+                      <p>{item.comment}</p>
+                      <button className="miniIconButton" title="删除评论" onClick={() => handleRemoveComment(item.id)}>
+                        <Trash2 size={15} />
+                      </button>
+                    </article>
+                  ))}
+                </div>
+                <button className="sendCommentsButton" disabled={running} onClick={() => void handleSendComments()}>
+                  <MessageSquare size={17} />
+                  发送给 Agent
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1607,14 +1876,42 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <div className="confirmActions">
-                <button className="primary" onClick={handleConfirmAction}>
-                  <CheckCircle2 size={18} />
-                  确认
-                </button>
-                <button className="secondary" onClick={handleEditConfirm}>修改</button>
-                <button className="secondary" onClick={handleCancelConfirm}>取消</button>
-              </div>
+              <>
+                {hasPlanChoices && !selectedPlan ? (
+                  <div className="confirmChoiceRow">
+                    <span>选择一个方案继续</span>
+                    <div className="confirmActions">
+                      {pendingPlanOptions.map((option) => (
+                        <button
+                          key={option.key}
+                          className="primary"
+                          onClick={() => setSelectedPlanKey(option.key)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                      <button className="secondary" onClick={handleComparePlans}>让 Agent 对比</button>
+                      <button className="secondary" onClick={handleEditConfirm}>我想调整</button>
+                      <button className="secondary" onClick={handleCancelConfirm}>取消</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="confirmChoiceRow">
+                    {selectedPlan ? <span>已选择 {selectedPlan.label}</span> : null}
+                    <div className="confirmActions">
+                      <button className="primary" onClick={handleConfirmAction}>
+                        <CheckCircle2 size={18} />
+                        确认执行
+                      </button>
+                      {selectedPlan ? (
+                        <button className="secondary" onClick={() => setSelectedPlanKey('')}>重选方案</button>
+                      ) : null}
+                      <button className="secondary" onClick={handleEditConfirm}>继续调整</button>
+                      <button className="secondary" onClick={handleCancelConfirm}>取消</button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         ) : null}
@@ -1926,6 +2223,70 @@ export function App() {
                 <button onClick={() => setPreviewEditorOpen(false)}>取消</button>
                 <button disabled={!previewDraftUrl.trim()} onClick={savePreviewAddress}>
                   打开预览
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {repositoryEditorOpen ? (
+        <div className="modalBackdrop">
+          <section className="repositoryModal" aria-label="编辑仓库配置">
+            <header>
+              <div>
+                <h3>编辑仓库</h3>
+                <p>配置当前会话的仓库地址和 PR 默认参数</p>
+              </div>
+              <button className="miniIconButton static" title="关闭" onClick={() => setRepositoryEditorOpen(false)}>
+                <X size={17} />
+              </button>
+            </header>
+            <div className="repositoryModalBody">
+              <div className="repositoryForm">
+                <label>
+                  <span>仓库地址</span>
+                  <input
+                    value={repositoryDraft.repoUrl || ''}
+                    onChange={(event) => updateRepositoryDraft('repoUrl', event.target.value)}
+                    placeholder="https://github.com/owner/repo.git"
+                    disabled={!selectedSessionId || repositoryBusy}
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  <span>PR 目标</span>
+                  <input
+                    value={repositoryDraft.prRepoUrl || ''}
+                    onChange={(event) => updateRepositoryDraft('prRepoUrl', event.target.value)}
+                    placeholder="默认同仓库地址"
+                    disabled={!selectedSessionId || repositoryBusy}
+                  />
+                </label>
+                <label>
+                  <span>源仓库</span>
+                  <input
+                    value={repositoryDraft.upstreamUrl || ''}
+                    onChange={(event) => updateRepositoryDraft('upstreamUrl', event.target.value)}
+                    placeholder="用于 fork/上游仓库"
+                    disabled={!selectedSessionId || repositoryBusy}
+                  />
+                </label>
+                <label>
+                  <span>Base 分支</span>
+                  <input
+                    value={repositoryDraft.defaultBaseBranch || ''}
+                    onChange={(event) => updateRepositoryDraft('defaultBaseBranch', event.target.value)}
+                    placeholder="main"
+                    disabled={!selectedSessionId || repositoryBusy}
+                  />
+                </label>
+              </div>
+              {repositoryError ? <div className="memoryError">{repositoryError}</div> : null}
+              <div className="dockActions">
+                <button onClick={() => setRepositoryEditorOpen(false)}>取消</button>
+                <button disabled={!selectedSessionId || repositoryBusy} onClick={() => void handleSaveRepositoryConfig()}>
+                  保存
                 </button>
               </div>
             </div>

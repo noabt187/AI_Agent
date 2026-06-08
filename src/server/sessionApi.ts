@@ -3,7 +3,7 @@ import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
-import { isMemoryRecallMode, type MemoryRecallMode } from '../orchestrator/types.js'
+import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 
 const stateDir = resolve(process.cwd(), 'state')
@@ -154,6 +154,15 @@ export async function updateMemorySettings(sessionId: string, recallMode: unknow
   }
   const orchestrator = await getOrchestrator(sessionId)
   await orchestrator.setMemoryRecallMode(recallMode as MemoryRecallMode)
+  return loadSession(sessionId)
+}
+
+export async function updateRepositoryConfig(sessionId: string, config: unknown): Promise<unknown> {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('repository 配置必须是对象')
+  }
+  const orchestrator = await getOrchestrator(sessionId)
+  await orchestrator.setRepositoryConfig(normalizeRepositoryConfig(config as Partial<RepositoryConfig>))
   return loadSession(sessionId)
 }
 

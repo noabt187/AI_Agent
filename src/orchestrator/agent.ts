@@ -108,6 +108,18 @@ export function buildWorldStateContext(state: WorldState): string {
     parts.push(`可操作目录:\n${state.allowedPaths.map((path) => `- ${path}`).join('\n')}`)
   }
 
+  if (state.repository) {
+    const repoLines = [
+      state.repository.repoUrl ? `- repoUrl: ${state.repository.repoUrl}` : '',
+      state.repository.prRepoUrl ? `- prRepoUrl: ${state.repository.prRepoUrl}` : '',
+      state.repository.upstreamUrl ? `- upstreamUrl: ${state.repository.upstreamUrl}` : '',
+      state.repository.defaultBaseBranch ? `- defaultBaseBranch: ${state.repository.defaultBaseBranch}` : '',
+    ].filter(Boolean)
+    if (repoLines.length > 0) {
+      parts.push(`仓库配置:\n${repoLines.join('\n')}`)
+    }
+  }
+
   if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository）')
   else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
@@ -354,7 +366,7 @@ export class Agent {
             effectiveAllowedPaths,
             state.designConfirmed,
             signal,
-            { turnLoadedSkills },
+            { turnLoadedSkills, repository: state.repository },
           )
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)

@@ -500,7 +500,8 @@ small {
   line-height: 1.35;
 }
 
-.choosePathButton {
+.choosePathButton,
+.openRepositoryButton {
   display: inline-flex;
   min-height: 38px;
   align-items: center;
@@ -531,11 +532,18 @@ small {
 }
 
 .choosePathButton:hover,
+.openRepositoryButton:hover,
 .openPreviewButton:hover {
   border-color: rgba(216, 202, 174, 0.52);
   background: rgba(55, 49, 39, 0.9);
   box-shadow: 0 0 22px rgba(216, 202, 174, 0.14);
   transform: translateY(-1px);
+}
+
+.openRepositoryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
 }
 
 .urlInput {
@@ -739,6 +747,39 @@ small {
   padding: 9px;
 }
 
+.repositoryForm {
+  display: grid;
+  gap: 12px;
+}
+
+.repositoryForm label {
+  display: grid;
+  gap: 5px;
+}
+
+.repositoryForm span {
+  color: #8a8172;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.repositoryForm input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #e4ddd0;
+  border-radius: 8px;
+  background: #fbfaf7;
+  color: #302d27;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.repositoryForm input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .memoryLayerTabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -826,8 +867,8 @@ small {
 
 .commentList {
   display: flex;
-  max-height: 220px;
-  flex-direction: column;
+  min-width: 0;
+  flex: 1;
   gap: 8px;
   overflow: auto;
 }
@@ -1161,7 +1202,7 @@ small {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(220px, 1.15fr) minmax(260px, 1fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(150px, 0.72fr) minmax(190px, 0.9fr) minmax(210px, 0.9fr) minmax(280px, 0.8fr);
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -1614,16 +1655,55 @@ small {
   align-items: center;
 }
 
+.confirmChoiceRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.confirmChoiceRow > span {
+  color: #f8df9b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .elementCommentDock {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid rgba(212, 197, 171, 0.2);
+  background: linear-gradient(180deg, rgba(43, 39, 32, 0.96), rgba(33, 31, 27, 0.94));
+  padding: 12px 22px;
+}
+
+.commentComposerRow {
   display: grid;
   grid-template-columns: minmax(160px, 260px) minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  border-top: 1px solid rgba(212, 197, 171, 0.2);
-  background: linear-gradient(180deg, rgba(43, 39, 32, 0.96), rgba(33, 31, 27, 0.94));
-  padding: 12px 22px;
+}
+
+.commentQueueRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.commentQueueHeader {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: #d8caae;
+  font-weight: 800;
+}
+
+.commentQueueHeader strong {
+  color: #aaa194;
+  font-size: 13px;
 }
 
 .selectedElementMeta {
@@ -1788,9 +1868,10 @@ small {
   box-shadow: 0 24px 70px rgba(57, 49, 38, 0.22);
 }
 
-.previewAddressModal {
+.previewAddressModal,
+.repositoryModal {
   display: grid;
-  width: min(520px, 100%);
+  width: min(560px, 100%);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1811,7 +1892,8 @@ small {
   color: #f3efe7;
 }
 
-.previewAddressModal header {
+.previewAddressModal header,
+.repositoryModal header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1829,7 +1911,8 @@ small {
   padding: 16px 18px;
 }
 
-.previewAddressModal h3 {
+.previewAddressModal h3,
+.repositoryModal h3 {
   margin: 0;
   color: #22211d;
   font-size: 18px;
@@ -1841,7 +1924,8 @@ small {
   font-size: 18px;
 }
 
-.previewAddressModal p {
+.previewAddressModal p,
+.repositoryModal p {
   margin-top: 4px;
   font-size: 13px;
 }
@@ -1852,7 +1936,8 @@ small {
   font-size: 13px;
 }
 
-.previewAddressBody {
+.previewAddressBody,
+.repositoryModalBody {
   display: grid;
   gap: 14px;
   padding: 18px;
@@ -2118,6 +2203,7 @@ small {
 .themeLight .sidebar .iconButton,
 .themeLight .collapsedRail .iconButton,
 .themeLight .choosePathButton,
+.themeLight .openRepositoryButton,
 .themeLight .openPreviewButton,
 .themeLight .modeButton,
 .themeLight .skillPanelActions button,
@@ -2135,6 +2221,7 @@ small {
 .themeLight .sidebar .iconButton:hover,
 .themeLight .collapsedRail .iconButton:hover,
 .themeLight .choosePathButton:hover,
+.themeLight .openRepositoryButton:hover,
 .themeLight .openPreviewButton:hover,
 .themeLight .modeButton:hover:not(:disabled),
 .themeLight .feedbackReasonGrid button:hover,
@@ -2220,6 +2307,7 @@ small {
 
 .themeLight .sessionTitleInput,
 .themeLight .memoryComposer textarea,
+.themeLight .repositoryForm input,
 .themeLight .composer textarea,
 .themeLight .elementCommentDock textarea,
 .themeLight .feedbackBody textarea,
@@ -2230,8 +2318,13 @@ small {
 }
 
 .themeLight .memoryComposer textarea::placeholder,
+.themeLight .repositoryForm input::placeholder,
 .themeLight .composer textarea::placeholder {
   color: #8a9694;
+}
+
+.themeLight .repositoryForm span {
+  color: #697775;
 }
 
 .themeLight .memoryModeButton {
@@ -2284,6 +2377,7 @@ small {
 
 .themeLight .composer textarea:focus,
 .themeLight .urlInput:focus,
+.themeLight .repositoryForm input:focus,
 .themeLight .confirmBar textarea:focus,
 .themeLight .elementCommentDock textarea:focus,
 .themeLight .feedbackBody textarea:focus,
@@ -2449,6 +2543,16 @@ small {
 
   .confirmEditRow {
     flex-direction: column;
+  }
+
+  .commentComposerRow,
+  .commentQueueRow {
+    grid-template-columns: 1fr;
+  }
+
+  .dockActions,
+  .sendCommentsButton {
+    justify-self: stretch;
   }
 
   .metricsSummary {
