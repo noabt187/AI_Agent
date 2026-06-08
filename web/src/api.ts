@@ -202,6 +202,12 @@ export async function updateRepositoryConfig(sessionId: string, repository: Repo
   })
 }
 
+export async function clearPendingConfirm(sessionId: string): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/pending-confirm`, {
+    method: 'DELETE',
+  })
+}
+
 export async function saveMemoryItem(
   sessionId: string,
   input: { layer: MemoryLayerId; name?: string; description?: string; type?: MemoryType; body: string },

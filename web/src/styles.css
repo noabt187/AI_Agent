@@ -606,23 +606,25 @@ small {
 .memoryModeStack {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .memoryModeButton {
-  min-height: 32px;
-  border: 1px solid #e4ddd0;
+  min-height: 34px;
+  border: 1px solid rgba(212, 197, 171, 0.24);
   border-radius: 8px;
-  background: #ffffff;
-  color: #514b41;
+  background: rgba(43, 39, 32, 0.68);
+  color: #b8aea0;
   font-size: 13px;
   font-weight: 720;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .memoryModeButton.active {
-  border-color: #82755f;
-  background: #f7f0e3;
-  color: #82755f;
+  border-color: rgba(216, 202, 174, 0.64);
+  background: linear-gradient(180deg, rgba(138, 119, 93, 0.28), rgba(145, 130, 104, 0.16));
+  color: #f6f1e8;
+  box-shadow: inset 0 -2px 0 rgba(216, 202, 174, 0.24), 0 0 18px rgba(216, 202, 174, 0.12);
 }
 
 .memoryModeButton:disabled,
@@ -633,9 +635,19 @@ small {
 
 .memorySummary {
   display: grid;
-  gap: 6px;
-  color: #9fb4ca;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  color: #aaa194;
   font-size: 13px;
+}
+
+.memorySummary span {
+  min-width: 0;
+  border: 1px solid rgba(212, 197, 171, 0.16);
+  border-radius: 8px;
+  background: rgba(33, 31, 27, 0.42);
+  padding: 8px;
+  text-align: center;
 }
 
 .memoryManageButton {
@@ -644,12 +656,18 @@ small {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid rgba(125, 211, 252, 0.24);
+  border: 1px solid rgba(212, 197, 171, 0.24);
   border-radius: 8px;
-  background: rgba(10, 24, 43, 0.78);
-  color: #d9e9ff;
+  background: rgba(43, 39, 32, 0.68);
+  color: #f3efe7;
   font-size: 13px;
   font-weight: 760;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.memoryManageButton:hover:not(:disabled) {
+  border-color: rgba(216, 202, 174, 0.52);
+  background: rgba(55, 49, 39, 0.9);
 }
 
 .memoryComposer {
@@ -661,10 +679,10 @@ small {
 
 .memoryTypeSelect {
   min-height: 34px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(212, 197, 171, 0.22);
   border-radius: 8px;
-  background: rgba(9, 18, 34, 0.58);
-  color: #d9e9ff;
+  background: rgba(43, 39, 32, 0.68);
+  color: #f3efe7;
   padding: 0 10px;
 }
 
@@ -672,20 +690,24 @@ small {
   min-height: 58px;
   max-height: 96px;
   resize: vertical;
-  border: 1px solid #e4ddd0;
+  border: 1px solid rgba(212, 197, 171, 0.22);
   border-radius: 8px;
-  background: #fbfaf7;
-  color: #302d27;
+  background: rgba(33, 31, 27, 0.68);
+  color: #f3efe7;
   padding: 9px 10px;
+}
+
+.memoryComposer textarea::placeholder {
+  color: #8d8376;
 }
 
 .miniActionButton {
   display: inline-grid;
   min-height: 34px;
   place-items: center;
-  border: 1px solid #82755f;
+  border: 1px solid rgba(216, 202, 174, 0.5);
   border-radius: 8px;
-  background: #82755f;
+  background: rgba(138, 119, 93, 0.36);
   color: #ffffff;
 }
 
@@ -702,9 +724,9 @@ small {
   grid-template-columns: minmax(0, 1fr) 28px;
   gap: 8px;
   align-items: start;
-  border: 1px solid #e6dfd2;
+  border: 1px solid rgba(212, 197, 171, 0.18);
   border-radius: 8px;
-  background: #fbfaf7;
+  background: rgba(33, 31, 27, 0.52);
   padding: 9px;
 }
 
@@ -713,14 +735,14 @@ small {
 }
 
 .memoryItem.clickable:hover {
-  border-color: rgba(34, 211, 238, 0.42);
-  background: rgba(34, 211, 238, 0.08);
+  border-color: rgba(216, 202, 174, 0.42);
+  background: rgba(216, 202, 174, 0.08);
 }
 
 .memoryItem p,
 .memoryEmpty,
 .memoryError {
-  color: #6a6358;
+  color: #aaa194;
   font-size: 13px;
 }
 
@@ -729,13 +751,14 @@ small {
 }
 
 .memoryItem em {
-  color: #8397ad;
+  color: #8d8376;
   font-style: normal;
 }
 
 .memoryEmpty {
-  border: 1px dashed #e4ddd0;
+  border: 1px dashed rgba(212, 197, 171, 0.3);
   border-radius: 8px;
+  background: rgba(33, 31, 27, 0.34);
   padding: 9px;
 }
 
@@ -784,7 +807,8 @@ small {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  border-bottom: 1px solid rgba(212, 197, 171, 0.16);
+  background: rgba(33, 31, 27, 0.34);
   padding: 12px 18px;
 }
 
@@ -794,15 +818,23 @@ small {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
+  border: 1px solid rgba(212, 197, 171, 0.22);
   border-radius: 8px;
-  background: rgba(9, 18, 34, 0.58);
-  color: #d9e9ff;
+  background: rgba(43, 39, 32, 0.68);
+  color: #cfc5b7;
+  font-weight: 760;
+}
+
+.memoryLayerTabs button small {
+  color: #8d8376;
+  font-size: 13px;
 }
 
 .memoryLayerTabs button.active {
-  border-color: rgba(34, 211, 238, 0.7);
-  background: rgba(34, 211, 238, 0.14);
+  border-color: rgba(216, 202, 174, 0.64);
+  background: linear-gradient(180deg, rgba(138, 119, 93, 0.28), rgba(145, 130, 104, 0.16));
+  color: #f6f1e8;
+  box-shadow: inset 0 -2px 0 rgba(216, 202, 174, 0.24), 0 0 18px rgba(216, 202, 174, 0.12);
 }
 
 .memoryManagerBody {
@@ -825,11 +857,11 @@ small {
 }
 
 .memoryLayerInfo strong {
-  color: #f3f8ff;
+  color: #f6f1e8;
 }
 
 .memoryLayerInfo span {
-  color: #91a6bd;
+  color: #aaa194;
   font-size: 13px;
 }
 
@@ -838,16 +870,16 @@ small {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
   align-items: center;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(212, 197, 171, 0.18);
   border-radius: 8px;
-  background: rgba(9, 18, 34, 0.58);
-  color: #d9e9ff;
+  background: rgba(33, 31, 27, 0.56);
+  color: #d8caae;
   padding: 8px 10px;
 }
 
 .memoryPathPill code {
   overflow: hidden;
-  color: #9fb4ca;
+  color: #aaa194;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1327,6 +1359,33 @@ small {
   line-height: 1.15;
 }
 
+.metricsModeTabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.metricsModeTabs button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(212, 197, 171, 0.22);
+  border-radius: 8px;
+  background: rgba(43, 39, 32, 0.74);
+  color: #cfc5b7;
+  padding: 0 12px;
+  font-weight: 740;
+}
+
+.metricsModeTabs button.active {
+  border-color: rgba(216, 202, 174, 0.68);
+  background: linear-gradient(180deg, rgba(138, 119, 93, 0.28), rgba(145, 130, 104, 0.18));
+  color: #fbf8f1;
+}
+
 .metricsTableWrap {
   overflow: auto;
   border: 1px solid rgba(212, 197, 171, 0.18);
@@ -1363,6 +1422,180 @@ small {
 
 .metricsTable tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.metricsTrendPanel,
+.metricsCompositionPanel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(212, 197, 171, 0.18);
+  border-radius: 8px;
+  background: rgba(43, 39, 32, 0.78);
+  padding: 12px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
+.metricsTrendRow,
+.metricsCompositionRow {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) minmax(132px, auto);
+  gap: 12px;
+  align-items: center;
+  min-height: 54px;
+  border-bottom: 1px solid rgba(212, 197, 171, 0.1);
+  padding-bottom: 10px;
+}
+
+.metricsTrendRow:last-of-type,
+.metricsCompositionRow:last-of-type {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.metricCallIndex {
+  color: #d8caae;
+  font-weight: 800;
+}
+
+.metricTrendBars {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.metricTrendLine,
+.compositionStack {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(212, 197, 171, 0.12);
+}
+
+.metricTrendLine span,
+.compositionStack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.metricTrendLine.token span,
+.metricLegend .token::before {
+  background: #d8caae;
+}
+
+.metricTrendLine.latency span,
+.metricLegend .latency::before {
+  background: #82c7b4;
+}
+
+.metricTrendLine.firstToken span,
+.metricLegend .firstToken::before {
+  background: #e8a86d;
+}
+
+.metricTrendValues,
+.compositionValues {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  text-align: right;
+}
+
+.metricTrendValues strong,
+.compositionValues strong {
+  color: #f6f1e8;
+  font-size: 14px;
+}
+
+.metricTrendValues span,
+.compositionValues span {
+  color: #aaa194;
+  font-size: 12px;
+}
+
+.metricLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: #aaa194;
+  font-size: 12px;
+  padding-top: 4px;
+}
+
+.metricLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metricLegend span::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  content: '';
+}
+
+.metricsAnomalyGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.metricsAnomalyCard {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(232, 168, 109, 0.32);
+  border-radius: 8px;
+  background: rgba(52, 42, 31, 0.86);
+  padding: 12px;
+}
+
+.metricsAnomalyCard > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.metricsAnomalyCard strong {
+  color: #f6f1e8;
+}
+
+.metricsAnomalyCard span,
+.metricsAnomalyCard dt {
+  color: #aaa194;
+  font-size: 12px;
+}
+
+.metricsAnomalyCard p {
+  color: #f2c89a;
+  font-weight: 760;
+}
+
+.metricsAnomalyCard dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metricsAnomalyCard dd {
+  color: #f3efe7;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.compositionStack {
+  display: flex;
+  height: 14px;
+}
+
+.compositionStack .prompt,
+.metricLegend .prompt::before {
+  background: #d8caae;
+}
+
+.compositionStack .completion,
+.metricLegend .completion::before {
+  background: #82c7b4;
 }
 
 .metricsError,
@@ -2269,6 +2502,47 @@ small {
     rgba(247, 249, 249, 0.7);
 }
 
+.themeLight .metricsModeTabs button,
+.themeLight .metricsTrendPanel,
+.themeLight .metricsCompositionPanel,
+.themeLight .metricsAnomalyCard {
+  border-color: rgba(213, 222, 225, 0.72);
+  background: rgba(255, 255, 255, 0.78);
+  color: #536160;
+  box-shadow: 0 10px 24px rgba(53, 66, 72, 0.045);
+}
+
+.themeLight .metricsModeTabs button.active {
+  border-color: #b9c9ce;
+  background: #f3f8f8;
+  color: #425a61;
+}
+
+.themeLight .metricsTrendRow,
+.themeLight .metricsCompositionRow {
+  border-color: rgba(213, 222, 225, 0.58);
+}
+
+.themeLight .metricCallIndex,
+.themeLight .metricTrendValues strong,
+.themeLight .compositionValues strong,
+.themeLight .metricsAnomalyCard strong,
+.themeLight .metricsAnomalyCard dd {
+  color: #26302f;
+}
+
+.themeLight .metricTrendValues span,
+.themeLight .compositionValues span,
+.themeLight .metricLegend,
+.themeLight .metricsAnomalyCard span,
+.themeLight .metricsAnomalyCard dt {
+  color: #6b7776;
+}
+
+.themeLight .metricsAnomalyCard p {
+  color: #8f5d27;
+}
+
 .themeLight .sessionItem,
 .themeLight .commentItem,
 .themeLight .activityPanel,
@@ -2337,6 +2611,43 @@ small {
   border-color: #b9c9ce;
   background: #f3f8f8;
   color: #425a61;
+}
+
+.themeLight .memorySummary span,
+.themeLight .memoryManageButton,
+.themeLight .memoryLayerTabs button,
+.themeLight .memoryPathPill,
+.themeLight .memoryTypeSelect {
+  border-color: rgba(213, 222, 225, 0.72);
+  background: rgba(255, 255, 255, 0.72);
+  color: #536160;
+  box-shadow: 0 8px 20px rgba(53, 66, 72, 0.04);
+}
+
+.themeLight .memoryManageButton:hover:not(:disabled),
+.themeLight .memoryLayerTabs button.active {
+  border-color: #b9c9ce;
+  background: #ffffff;
+  color: #26302f;
+}
+
+.themeLight .memoryLayerTabs {
+  border-color: rgba(213, 222, 225, 0.66);
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.themeLight .memoryLayerInfo strong {
+  color: #26302f;
+}
+
+.themeLight .memoryLayerInfo span,
+.themeLight .memoryLayerTabs button small,
+.themeLight .memoryComposer textarea::placeholder {
+  color: #6b7776;
+}
+
+.themeLight .memoryPathPill code {
+  color: #697775;
 }
 
 .themeLight .miniActionButton {
