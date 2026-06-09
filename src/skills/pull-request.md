@@ -15,7 +15,7 @@ description: PR 提交指引 — 创建 GitHub Pull Request 的完整流程，�
 7. `headOwner` 用于跨仓库 PR 的 `owner:headBranch`；同仓库 PR 可传 "auto"。
 8. 调用 createPullRequest 前，必须使用 `action=confirm, confirmType="allow_write"` 向用户确认 PR 参数：rootDir、repoUrl、prRepoUrl、baseBranch、headBranch、headOwner/auto、title、body、commitMessage、draft。不要在用户未确认前调用 createPullRequest。
 9. 用户明确确认后再调用 createPullRequest。
-10. 不要用 execCommand 探测 `git status`、`git remote`、`gh auth`；createPullRequest 工具会自行检查 git 和 gh 状态。缺少参数时用 ask_user，参数足够时直接确认 PR 参数。
+10. createPullRequest 工具会自行检查 git 和 gh 状态，无需提前探测。缺少参数时用 ask_user，参数足够时直接确认 PR 参数。
 11. createPullRequest 返回无法推断远程仓库时，向用户追问 GitHub 仓库地址。
 12. PR 创建成功后，输出 action=done，并在 message 中包含 PR 链接和提交摘要。
 
