@@ -6,11 +6,12 @@ description: 代码生成与验证指引 — 按任务列表编写代码并调�
 ## Skill: 代码生成
 
 当有已确认的任务列表（designTasks 已设置），需要编写代码时：
-1. 按任务依赖顺序逐个执行
-2. 先用 readTextFile 读取目标文件，理解现状
-3. 编写代码后用 writeFile 写入
-4. 按需用 deleteFile 删除（需用户确认）
-5. 遵循项目现有编码风格，最小改动原则
+1. 在第一次 writeFile 之前，调用一次 saveCheckpoint(rootDir, "<修改描述>") 存档。存档只执行一次，修改完成后不要再存。
+2. 按任务依赖顺序逐个执行
+3. 先用 readTextFile 读取目标文件，理解现状
+4. 编写代码后用 writeFile 写入
+5. 按需用 deleteFile 删除（需用户确认）
+6. 遵循项目现有编码风格，最小改动原则
 
 ## 验证（必须执行）
 
