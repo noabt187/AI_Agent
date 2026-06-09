@@ -9,6 +9,7 @@ import {
   getOrchestrator,
   isSessionRunning,
   listSessions,
+  loadRepositoryIdentity,
   loadSessionExport,
   loadSessionMemory,
   loadSession,
@@ -275,6 +276,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (sessionId && method === 'POST' && pathname.endsWith('/repository')) {
       const body = await readJson(req)
       sendJson(res, 200, await updateRepositoryConfig(sessionId, body.repository ?? body))
+      return
+    }
+
+    if (sessionId && method === 'GET' && pathname.endsWith('/repository/identity')) {
+      sendJson(res, 200, await loadRepositoryIdentity(sessionId))
       return
     }
 

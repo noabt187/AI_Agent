@@ -19,6 +19,9 @@ export type RepositoryConfig = {
   prRepoUrl?: string
   upstreamUrl?: string
   defaultBaseBranch?: string
+  githubLogin?: string
+  gitUserName?: string
+  gitUserEmail?: string
 }
 
 export function isMemoryRecallMode(value: unknown): value is MemoryRecallMode {
@@ -35,6 +38,9 @@ export function normalizeRepositoryConfig(config?: Partial<RepositoryConfig>): R
     prRepoUrl: optionalString(config?.prRepoUrl),
     upstreamUrl: optionalString(config?.upstreamUrl),
     defaultBaseBranch: optionalString(config?.defaultBaseBranch),
+    githubLogin: optionalString(config?.githubLogin),
+    gitUserName: optionalString(config?.gitUserName),
+    gitUserEmail: optionalString(config?.gitUserEmail),
   }
 }
 

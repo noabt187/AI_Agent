@@ -24,6 +24,16 @@ export type RepositoryConfig = {
   prRepoUrl?: string
   upstreamUrl?: string
   defaultBaseBranch?: string
+  githubLogin?: string
+  gitUserName?: string
+  gitUserEmail?: string
+}
+
+export type RepositoryIdentity = {
+  rootDir: string
+  githubLogin?: string
+  gitUserName?: string
+  gitUserEmail?: string
 }
 
 export type MemoryLayerId = 'session' | 'project' | 'global'
@@ -200,6 +210,10 @@ export async function updateRepositoryConfig(sessionId: string, repository: Repo
     method: 'POST',
     body: JSON.stringify({ repository }),
   })
+}
+
+export async function loadRepositoryIdentity(sessionId: string): Promise<RepositoryIdentity> {
+  return jsonRequest<RepositoryIdentity>(`/api/sessions/${encodeURIComponent(sessionId)}/repository/identity`)
 }
 
 export async function clearPendingConfirm(sessionId: string): Promise<SessionDetail> {
