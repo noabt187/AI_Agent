@@ -7,6 +7,7 @@ import { createPullRequestTool } from './createPullRequest.js'
 import { forkRepositoryTool, cloneRepositoryTool } from './repositoryTools.js'
 import { compressContextTool } from './compressContext.js'
 import { writeMemoryTool } from './writeMemory.js'
+import { saveCheckpointTool } from './saveCheckpoint.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
@@ -153,6 +154,17 @@ const toolRegistry: Record<string, ToolDef> = {
     argNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
     scope: 'memory',
     requiredArgNames: ['rootDir', 'layer', 'name', 'description', 'type', 'body'],
+  },
+  saveCheckpoint: {
+    fn: saveCheckpointTool,
+    description: '保存代码存档或回退到指定版本。不传 revertTo 则 git commit 存档（修改前自动调用，不弹确认）；传 revertTo 则 git reset --hard 回退到指定 commit（需用户确认）。',
+    argNames: ['rootDir', 'message', 'revertTo'],
+    scope: 'write',
+    requiredArgNames: ['rootDir'],
+    argDescriptions: {
+      message: '存档描述，不传自动生成时间戳',
+      revertTo: '要回退到的 commit hash，不传表示保存存档',
+    },
   },
 }
 
