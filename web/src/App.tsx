@@ -42,6 +42,7 @@ import {
   listSessions,
   listSkills,
   listDirectories,
+  loadRepositoryIdentity,
   loadSession,
   loadSessionMemory,
   loadSessionMetrics,
@@ -62,6 +63,7 @@ import {
   type MemoryRecallMode,
   type MemoryType,
   type RepositoryConfig,
+  type RepositoryIdentity,
   type SessionMemory,
   type SessionMetrics,
   type SessionDetail,
@@ -356,6 +358,8 @@ export function App() {
   const [memoryError, setMemoryError] = useState('')
   const [memoryBusy, setMemoryBusy] = useState(false)
   const [repositoryDraft, setRepositoryDraft] = useState<RepositoryConfig>({})
+  const [repositoryIdentity, setRepositoryIdentity] = useState<RepositoryIdentity | null>(null)
+  const [repositoryIdentityBusy, setRepositoryIdentityBusy] = useState(false)
   const [repositoryBusy, setRepositoryBusy] = useState(false)
   const [repositoryError, setRepositoryError] = useState('')
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
@@ -729,7 +733,12 @@ export function App() {
     setRepositoryBusy(true)
     setRepositoryError('')
     try {
-      const detail = await updateRepositoryConfig(selectedSessionId, repositoryDraft)
+      const detail = await updateRepositoryConfig(selectedSessionId, {
+        ...repositoryDraft,
+        githubLogin: repositoryIdentity?.githubLogin ?? repositoryDraft.githubLogin,
+        gitUserName: repositoryIdentity?.gitUserName ?? repositoryDraft.gitUserName,
+        gitUserEmail: repositoryIdentity?.gitUserEmail ?? repositoryDraft.gitUserEmail,
+      })
       setSession(detail)
       setRepositoryDraft(detail.state.repository || {})
       setRepositoryEditorOpen(false)
@@ -745,10 +754,26 @@ export function App() {
     setRepositoryDraft((current) => ({ ...current, [key]: value }))
   }
 
+  async function refreshRepositoryIdentity(sessionId = selectedSessionId) {
+    if (!sessionId) {
+      setRepositoryIdentity(null)
+      return
+    }
+    setRepositoryIdentityBusy(true)
+    try {
+      setRepositoryIdentity(await loadRepositoryIdentity(sessionId))
+    } catch {
+      setRepositoryIdentity(null)
+    } finally {
+      setRepositoryIdentityBusy(false)
+    }
+  }
+
   function openRepositoryEditor() {
     setRepositoryDraft(session?.state.repository || {})
     setRepositoryError('')
     setRepositoryEditorOpen(true)
+    void refreshRepositoryIdentity()
   }
 
   async function handleSaveMemoryItem() {
@@ -2419,6 +2444,27 @@ export function App() {
               </button>
             </header>
             <div className="repositoryModalBody">
+              <div className="repositoryIdentityPanel">
+                <div>
+                  <span>GitHub 账号</span>
+                  <strong>
+                    {repositoryIdentityBusy
+                      ? '检测中...'
+                      : repositoryIdentity?.githubLogin || '未检测到 gh 登录'}
+                  </strong>
+                </div>
+                <div>
+                  <span>提交作者</span>
+                  <strong>
+                    {repositoryIdentityBusy
+                      ? '检测中...'
+                      : [
+                          repositoryIdentity?.gitUserName,
+                          repositoryIdentity?.gitUserEmail ? `<${repositoryIdentity.gitUserEmail}>` : '',
+                        ].filter(Boolean).join(' ') || '未配置 git user'}
+                  </strong>
+                </div>
+              </div>
               <div className="repositoryForm">
                 <label>
                   <span>仓库地址</span>

@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
@@ -9,6 +10,21 @@ import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
 const activeRuns = new Set<string>()
+const execFileAsync = promisify(execFile)
+
+async function readCommandValue(cwd: string, file: string, args: string[]): Promise<string | undefined> {
+  try {
+    const result = await execFileAsync(file, args, {
+      cwd,
+      timeout: 8000,
+      maxBuffer: 128 * 1024,
+    })
+    const value = (result.stdout ?? '').trim()
+    return value || undefined
+  } catch {
+    return undefined
+  }
+}
 
 function revealPath(filePath: string): Promise<void> {
   return new Promise((resolveReveal, reject) => {
@@ -164,6 +180,23 @@ export async function updateRepositoryConfig(sessionId: string, config: unknown)
   const orchestrator = await getOrchestrator(sessionId)
   await orchestrator.setRepositoryConfig(normalizeRepositoryConfig(config as Partial<RepositoryConfig>))
   return loadSession(sessionId)
+}
+
+export async function loadRepositoryIdentity(sessionId: string): Promise<unknown> {
+  const orchestrator = await getOrchestrator(sessionId)
+  const rootDir = orchestrator.state.allowedPaths[0] || process.cwd()
+  const [githubLogin, gitUserName, gitUserEmail] = await Promise.all([
+    readCommandValue(rootDir, 'gh', ['api', 'user', '--jq', '.login']),
+    readCommandValue(rootDir, 'git', ['config', 'user.name']),
+    readCommandValue(rootDir, 'git', ['config', 'user.email']),
+  ])
+
+  return {
+    rootDir,
+    githubLogin,
+    gitUserName,
+    gitUserEmail,
+  }
 }
 
 export async function clearPendingConfirm(sessionId: string): Promise<unknown> {

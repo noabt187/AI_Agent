@@ -114,6 +114,9 @@ export function buildWorldStateContext(state: WorldState): string {
       state.repository.prRepoUrl ? `- prRepoUrl: ${state.repository.prRepoUrl}` : '',
       state.repository.upstreamUrl ? `- upstreamUrl: ${state.repository.upstreamUrl}` : '',
       state.repository.defaultBaseBranch ? `- defaultBaseBranch: ${state.repository.defaultBaseBranch}` : '',
+      state.repository.githubLogin ? `- githubLogin: ${state.repository.githubLogin}` : '',
+      state.repository.gitUserName ? `- gitUserName: ${state.repository.gitUserName}` : '',
+      state.repository.gitUserEmail ? `- gitUserEmail: ${state.repository.gitUserEmail}` : '',
     ].filter(Boolean)
     if (repoLines.length > 0) {
       parts.push(`仓库配置:\n${repoLines.join('\n')}`)
