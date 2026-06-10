@@ -34,14 +34,18 @@
 ### 1. 克隆项目并安装依赖
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/noabt187/AI_Agent
 cd <project-dir>
 npm install
 ```
 
 ### 2. 配置 API Key
 
-创建 `config/model.json`（详见 [配置说明](#配置说明)）。
+```bash
+cp config/model.example.json config/model.json
+```
+
+编辑 `config/model.json`，填入你的 API Key（详见 [配置说明](#配置说明)）。
 
 ### 3. 启动开发环境
 
