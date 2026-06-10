@@ -400,6 +400,7 @@ export function App() {
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
   )
+  const hasSelectedSession = Boolean(selectedSessionId && selectedSessionSummary)
 
   const rawPendingConfirm = session?.state.pendingConfirm
   const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
@@ -1411,11 +1412,12 @@ export function App() {
   }, [aborting, deltaCount, running, status])
 
   const workspaceSubtitle = useMemo(() => {
+    if (!hasSelectedSession) return '先新建一个会话开始工作'
     if (viewMode === 'metrics') return '会话监控信息'
     if (viewMode === 'preview' && previewUrl) return previewUrl
     if (pendingConfirm) return `等待确认：${pendingConfirm.allowWrite ? '代码修改' : '内容'}`
     return '本地 Agent 工作台'
-  }, [pendingConfirm, previewUrl, viewMode])
+  }, [hasSelectedSession, pendingConfirm, previewUrl, viewMode])
 
   const activitySummary = useMemo(() => {
     const latest = activityItems.at(-1)?.content || (running ? '等待模型生成或选择下一步行动' : '暂无执行过程')
@@ -1489,7 +1491,7 @@ export function App() {
             >
               {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button className="iconButton" title="刷新" onClick={() => void refreshSession()}>
+            <button className="iconButton" title="刷新" disabled={!hasSelectedSession} onClick={() => void refreshSession()}>
               <RefreshCcw size={18} />
             </button>
             <button className="iconButton" title="收起侧边栏" onClick={() => setSidebarCollapsed(true)}>
@@ -1547,6 +1549,7 @@ export function App() {
                 </button>
               )
             ))}
+            {sessions.length === 0 ? <div className="sessionListEmpty">暂无会话</div> : null}
           </div>
           {sessionContextMenu ? (
             <div
@@ -1671,7 +1674,7 @@ export function App() {
       <section className="workspace">
         <header className="workspaceHeader">
           <div className="workspaceTitle">
-            <h2>{selectedSessionSummary ? displaySessionTitle(selectedSessionSummary) : '未选择会话'}</h2>
+            <h2>{selectedSessionSummary ? displaySessionTitle(selectedSessionSummary) : '暂无会话'}</h2>
             <p>{workspaceSubtitle}</p>
           </div>
 
@@ -1923,7 +1926,18 @@ export function App() {
           </div>
         ) : (
           <div className="timeline" ref={timelineRef}>
-            {timeline.length === 0 && activityItems.length === 0 && !running ? (
+            {!hasSelectedSession ? (
+              <div className="emptyState emptySessionState">
+                <div>
+                  <strong>还没有会话</strong>
+                  <span>新建会话后可以发送需求、选择目录和预览页面</span>
+                </div>
+                <button type="button" onClick={() => void handleNewSession()}>
+                  <Plus size={17} />
+                  新建会话
+                </button>
+              </div>
+            ) : timeline.length === 0 && activityItems.length === 0 && !running ? (
               <div className="emptyState">新会话已准备好</div>
             ) : (
               <>
