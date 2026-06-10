@@ -36,7 +36,9 @@ test('buildAnnotationPrompt includes element context and user comments', () => {
   assert.match(prompt, /操作目录：\/tmp\/demo/)
   assert.match(prompt, /selector: main > button:nth-of-type\(1\)/)
   assert.match(prompt, /comment: 这个按钮需要更醒目/)
-  assert.match(prompt, /请先读取相关前端源码/)
+  assert.match(prompt, /完整修改功能闭环/)
+  assert.match(prompt, /前端交互、状态管理、接口调用、后端接口\/数据逻辑/)
+  assert.match(prompt, /判断需要修改哪些层/)
 })
 
 test('listDirectories returns only child directories with absolute paths', async () => {

@@ -434,6 +434,14 @@ small {
   color: #fbf8f1;
 }
 
+.sessionListEmpty {
+  border: 1px dashed rgba(212, 197, 171, 0.22);
+  border-radius: 8px;
+  color: #8d8376;
+  padding: 12px;
+  text-align: center;
+}
+
 .sessionTitleInput {
   width: min(220px, 100%);
   border: 1px solid rgba(212, 197, 171, 0.34);
@@ -572,7 +580,7 @@ small {
 
 .modeStack {
   display: grid;
-  grid-template-columns: repeat(2, minmax(88px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1237,7 +1245,7 @@ small {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(160px, 0.34fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(160px, 0.28fr) minmax(0, 1fr);
   gap: 18px;
   align-items: center;
   border-bottom: 1px solid rgba(212, 197, 171, 0.2);
@@ -1273,7 +1281,7 @@ small {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(150px, 0.72fr) minmax(190px, 0.9fr) minmax(210px, 0.9fr) minmax(280px, 0.8fr);
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -1299,6 +1307,12 @@ small {
 }
 
 .modeControl .modeStack {
+  min-width: 0;
+}
+
+.workspaceControls button,
+.modeButton {
+  width: 100%;
   min-width: 0;
 }
 
@@ -1680,6 +1694,45 @@ small {
   min-height: 100%;
   place-items: center;
   color: #aaa194;
+}
+
+.emptySessionState {
+  gap: 16px;
+  align-content: center;
+  text-align: center;
+}
+
+.emptySessionState div {
+  display: grid;
+  gap: 6px;
+}
+
+.emptySessionState strong {
+  color: #f6f1e8;
+  font-size: 18px;
+}
+
+.emptySessionState span {
+  color: #aaa194;
+  font-size: 14px;
+}
+
+.emptySessionState button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 8px;
+  border: 1px solid rgba(216, 202, 174, 0.34);
+  border-radius: 8px;
+  background: rgba(216, 202, 174, 0.16);
+  color: #f6f1e8;
+  padding: 10px 14px;
+  font-weight: 800;
+}
+
+.emptySessionState button:hover {
+  border-color: rgba(216, 202, 174, 0.62);
+  background: rgba(216, 202, 174, 0.24);
 }
 
 .bubble {
