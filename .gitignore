@@ -28,6 +28,12 @@ config/model.json
 # Local exploratory tests
 tests/context-memory.test.ts
 
+# Deprecated docs (superseded by README.md)
+free_readme.md
+
+# External tool generated docs
+docs/superpowers/
+
 # OS files
 .DS_Store
 Thumbs.db
