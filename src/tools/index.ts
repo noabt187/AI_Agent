@@ -31,6 +31,12 @@ type ExecuteToolOptions = {
   repository?: RepositoryConfig
 }
 
+const REMOTE_SIDE_EFFECT_TOOLS = new Set([
+  'createPullRequest',
+  'forkRepository',
+  'cloneRepository',
+])
+
 function isDefaultValueToken(value: string | undefined): boolean {
   const trimmed = value?.trim().toLowerCase() ?? ''
   return !trimmed || trimmed === 'auto' || trimmed === '-'
@@ -212,6 +218,11 @@ export async function executeTool(
 ): Promise<string> {
   const tool = toolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
+
+  if (process.env.AGENT_EVAL_LOCAL_ONLY === '1' && REMOTE_SIDE_EFFECT_TOOLS.has(name)) {
+    return `错误：本地评测模式已阻断远程工具 "${name}"，未执行任何 GitHub 副作用操作。`
+  }
+
   const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
   // 写权限检查

@@ -9,6 +9,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "eval:tools": "tsx scripts/run-eval.ts --tools",
+    "eval:smoke": "tsx scripts/run-eval.ts --smoke",
+    "eval": "tsx scripts/run-eval.ts --all",
+    "eval:regrade": "tsx scripts/regrade-eval.ts",
     "orchestrator": "tsx scripts/orchestrator-chat.ts",
     "predev": "npm run dev:cleanup",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
