@@ -1,7 +1,13 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { executeTool, toolDefsToOpenAI } from '../../src/tools/index.js'
+import {
+  executeTool,
+  executeToolResult,
+  toolDefsForCapabilities,
+  toolDefsToOpenAI,
+} from '../../src/tools/index.js'
+import { resolveCommandForPlatform } from '../../src/utils/command.js'
 import type { ContractCaseResult } from '../types.js'
 
 function result(
@@ -17,6 +23,7 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-tool-contract-'))
   await mkdir(resolve(rootDir, 'src'), { recursive: true })
   await writeFile(resolve(rootDir, 'src', 'sample.txt'), 'hello agent\n', 'utf8')
+  await writeFile(resolve(rootDir, 'src', 'slug.mjs'), 'export function slugify(value) { return value }\n', 'utf8')
   const previousMode = process.env.AGENT_EVAL_LOCAL_ONLY
   process.env.AGENT_EVAL_LOCAL_ONLY = '1'
   const results: ContractCaseResult[] = []
@@ -27,7 +34,7 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
     const requiredNames = [
       'readTextFile', 'listDirectory', 'searchFiles', 'searchContent', 'writeFile', 'deleteFile',
       'verifyCode', 'createPullRequest', 'forkRepository', 'cloneRepository', 'compressContext',
-      'writeMemory', 'saveCheckpoint',
+      'writeMemory',
     ]
     results.push(result(
       'schema-registry-complete',
@@ -36,11 +43,44 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
       `registered=${[...schemaNames].sort().join(',')}`,
     ))
 
+    const readOnlyNames = new Set(toolDefsForCapabilities(new Set(['read'])).map((item) => item.function.name))
+    results.push(result(
+      'read-only-schema-hides-side-effects',
+      'schema',
+      readOnlyNames.has('readTextFile')
+        && !readOnlyNames.has('writeFile')
+        && !readOnlyNames.has('verifyCode')
+        && !schemaNames.has('saveCheckpoint'),
+      `readOnly=${[...readOnlyNames].sort().join(',')}; saveCheckpointVisible=${schemaNames.has('saveCheckpoint')}`,
+    ))
+
     const unknown = await executeTool('doesNotExist', {}, [rootDir])
     results.push(result('unknown-tool-rejected', 'argument', /未知工具|unknown tool/i.test(unknown), unknown))
 
     const read = await executeTool('readTextFile', { filePath: resolve(rootDir, 'src', 'sample.txt') }, [rootDir])
     results.push(result('read-file-executes', 'execution', read.includes('hello agent'), read))
+
+    const mjsName = await executeTool('searchFiles', { rootDir, pattern: '*slug*' }, [rootDir])
+    results.push(result('mjs-filename-search', 'execution', /slug\.mjs/.test(mjsName), mjsName))
+
+    const mjsContent = await executeTool('searchContent', { rootDir, keyword: 'slugify' }, [rootDir])
+    results.push(result('mjs-content-search', 'execution', /slug\.mjs:1/.test(mjsContent), mjsContent))
+
+    const structuredUnknown = await executeToolResult('doesNotExist', {}, [rootDir])
+    results.push(result(
+      'structured-error-code',
+      'argument',
+      structuredUnknown.ok === false && structuredUnknown.code === 'UNKNOWN_TOOL',
+      JSON.stringify(structuredUnknown),
+    ))
+
+    results.push(result(
+      'windows-node-command-shim',
+      'execution',
+      resolveCommandForPlatform('npm', 'win32') === 'npm.cmd'
+        && resolveCommandForPlatform('npx', 'win32') === 'npx.cmd',
+      `${resolveCommandForPlatform('npm', 'win32')},${resolveCommandForPlatform('npx', 'win32')}`,
+    ))
 
     const relative = await executeTool('readTextFile', { filePath: 'src/sample.txt' }, [rootDir])
     results.push(result('relative-path-rejected', 'isolation', /绝对路径|absolute/i.test(relative), relative))

@@ -2,7 +2,13 @@ import { readdir, stat, readFile } from 'node:fs/promises'
 import { resolve, extname } from 'node:path'
 
 const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'state'])
-const SUPPORTED_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.html', '.css', '.json', '.md', '.vue', '.svelte'])
+const SUPPORTED_EXT = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
+  '.html', '.css', '.json', '.md', '.vue', '.svelte',
+  '.py', '.java', '.kt', '.go', '.rs', '.sh', '.ps1',
+  '.yaml', '.yml', '.toml',
+])
+const MAX_SEARCHABLE_FILE_BYTES = 2 * 1024 * 1024
 
 export async function collectFiles(dir: string, prefix = ''): Promise<string[]> {
   let entries: string[]
@@ -26,7 +32,7 @@ export async function collectFiles(dir: string, prefix = ''): Promise<string[]> 
       results.push(...(await collectFiles(fullPath, rel)))
     } else {
       const ext = extname(entry)
-      if (SUPPORTED_EXT.has(ext)) {
+      if (SUPPORTED_EXT.has(ext) && s.size <= MAX_SEARCHABLE_FILE_BYTES) {
         results.push(rel)
       }
     }

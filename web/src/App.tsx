@@ -1257,6 +1257,17 @@ export function App() {
       setStatus('Agent 正在生成')
       return
     }
+    if (event.type === 'retry') {
+      const streamingId = streamingAssistantIdRef.current
+      if (streamingId) {
+        setTimeline((current) => current.filter((item) => item.id !== streamingId))
+      }
+      streamingAssistantIdRef.current = null
+      streamingRawTextRef.current = ''
+      streamingVisibleTextRef.current = ''
+      setStatus(`${event.reason}，正在重试 ${event.attempt}/${event.maxAttempts}`)
+      return
+    }
     if (event.type === 'output') {
       finalizeAssistantOutput(event.message)
       return

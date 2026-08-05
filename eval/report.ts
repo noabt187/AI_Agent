@@ -44,11 +44,26 @@ export async function buildSummary(
       trial.taskId === taskId && trial.repetition === repetition && trial.status === 'passed'
     )))
   ))
-  const allToolCalls = valid.flatMap((trial) => trial.toolCalls)
+  const controlNames = new Set(['request_confirmation', 'ask_user', 'finish'])
+  const allToolCalls = valid.flatMap((trial) => trial.toolCalls).filter((call) => !controlNames.has(call.name))
   const validArguments = valid.reduce((sum, trial) => sum + (trial.grade?.validArgumentCalls ?? 0), 0)
   const relevantCalls = valid.reduce((sum, trial) => sum + (trial.grade?.relevantToolCalls ?? 0), 0)
   const errorTrials = valid.filter((trial) => trial.grade?.errorOccurred)
   const recoveredTrials = errorTrials.filter((trial) => trial.grade?.recoveredFromError)
+  const verificationCalls = allToolCalls.filter((call) => call.name === 'verifyCode')
+  const verificationExecutions = verificationCalls.filter((call) => {
+    if (!call.result) return false
+    try {
+      const parsed = JSON.parse(call.result) as { code?: string }
+      return parsed.code !== 'COMMAND_NOT_FOUND'
+    } catch {
+      return !/spawn\s+\S+\s+ENOENT/i.test(call.result)
+    }
+  })
+  const checkpointFailures = allToolCalls.filter((call) => {
+    if (!call.result) return false
+    try { return (JSON.parse(call.result) as { code?: string }).code === 'CHECKPOINT_FAILED' } catch { return false }
+  })
 
   return {
     generatedAt: new Date().toISOString(),
@@ -66,6 +81,24 @@ export async function buildSummary(
     argumentValidityRate: ratio(validArguments, allToolCalls.length),
     toolSelectionPrecision: ratio(relevantCalls, allToolCalls.length),
     errorRecoveryRate: ratio(recoveredTrials.length, errorTrials.length),
+    nativeControlActionRate: ratio(
+      valid.filter((trial) => (trial.metrics.nativeControlActionCount ?? 0) > 0).length,
+      valid.length,
+    ),
+    protocolFallbackRate: ratio(
+      valid.filter((trial) => (trial.metrics.protocolFallbackCount ?? 0) > 0).length,
+      valid.length,
+    ),
+    protocolViolationRate: ratio(
+      valid.filter((trial) => (trial.metrics.protocolViolationCount ?? 0) > 0).length,
+      valid.length,
+    ),
+    providerRetryRate: ratio(
+      valid.filter((trial) => (trial.metrics.providerRetryCount ?? 0) > 0).length,
+      valid.length,
+    ),
+    verificationExecutionRate: ratio(verificationExecutions.length, verificationCalls.length),
+    checkpointFailureRate: ratio(checkpointFailures.length, allToolCalls.length),
     medianLlmCalls: median(passed.map((trial) => trial.metrics.llmCallCount)),
     medianToolCalls: median(passed.map((trial) => trial.metrics.toolCallCount)),
     medianTotalTokens: median(passed.map((trial) => trial.metrics.totalTokens)),
@@ -131,6 +164,12 @@ function markdownReport(
     metricLine('Argument Validity Rate', summary.argumentValidityRate),
     metricLine('Tool Selection Precision', summary.toolSelectionPrecision),
     metricLine('Error Recovery Rate', summary.errorRecoveryRate),
+    metricLine('Native Control Action Rate', summary.nativeControlActionRate),
+    metricLine('Protocol Fallback Rate', summary.protocolFallbackRate),
+    metricLine('Protocol Violation Rate', summary.protocolViolationRate),
+    metricLine('Provider Retry Rate', summary.providerRetryRate),
+    metricLine('Verification Execution Rate', summary.verificationExecutionRate),
+    metricLine('Checkpoint Failure Rate', summary.checkpointFailureRate),
     '',
     '## 效率',
     '',

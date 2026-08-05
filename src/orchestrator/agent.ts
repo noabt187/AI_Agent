@@ -3,7 +3,11 @@ import { QueryEngine } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
-import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
+import {
+  executeToolResult,
+  toolDefsForCapabilities,
+  type ToolCapability,
+} from '../tools/index.js'
 import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
@@ -12,9 +16,15 @@ import {
 import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
 import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
+import { serializeToolResult, toolFailure } from '../tools/types.js'
+import {
+  CONTROL_TOOL_DEFS,
+  CONTROL_TOOL_NAMES,
+  parseControlToolCall,
+} from './controlTools.js'
 
 const MAX_TOOL_ITERATIONS = 30
-const MAX_TOOL_RETRIES = 3
+const MAX_TOOL_RETRIES = 2
 const SYS_UUID = 'agent-sys-001'
 
 const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
@@ -44,35 +54,29 @@ const SYSTEM_PROMPT = `你是全栈开发助手。通过读取代码、分析需
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
 工具调用中的文件路径参数（如 filePath、dirPath）必须使用绝对路径，且必须位于当前可操作目录之下。
-当你准备好回复用户时，输出以下 JSON 格式。
+当你准备好回复用户时，必须使用控制工具，不要在普通文本中输出控制 JSON：
+- request_confirmation：需要用户确认权限后继续
+- ask_user：缺少必要信息
+- finish：回答问题或完成任务
 
 根据任务需要选择合适的流程，不要总是固定步骤：
-- **简单修改**（改文案、修小bug）：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
-- **复杂功能**（新功能、跨文件重构）：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
-- **纯分析**（审查代码、回答问题）：读代码 → chat 直接回答
-- **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
+- **简单修改**（改文案、修小bug）：读代码 → request_confirmation(workspace_write) → 确认 → 写代码 → finish(completed)
+- **复杂功能**（新功能、跨文件重构）：读代码 → ask_user 对齐缺失需求 → request_confirmation(workspace_write) → 确认 → 写代码 → finish(completed)
+- **纯分析**（审查代码、回答问题）：读代码 → finish(answered)
+- **远程副作用**（fork、PR）：request_confirmation(remote_git) 确认参数后执行
+- **本地 Clone**：request_confirmation(workspace_write) 确认目标目录后执行
 
 **重要规则**：
-- 用户确认前不要调用写工具。写工具包括 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository。这些工具会修改文件或操作远程仓库，必须先输出 action: confirm, confirmType: allow_write 并等待用户确认后才能调用。
-- confirmType="allow_write" 表示确认后将执行写操作（修改/删除文件、创建 PR、fork/clone 仓库）
-- 仅在对齐理解、确认需求时，省略 confirmType
-- 设计确认后，在第一次调 writeFile 之前必须先调 saveCheckpoint(rootDir, "<修改描述>") 存档一次。存档不需要弹确认，直接执行。修改完成后不要再存档，否则回退会回到修改后状态。
-- 用户要求回退到某个存档时，先输出 confirm(allow_write) 展示要回退的 commit info，确认后再调 saveCheckpoint(rootDir, "", "<commit>") 执行回退。
+- 用户确认前不会提供写工具。需要修改文件或运行本地验证时，调用 request_confirmation(scope="workspace_write") 并等待用户确认。
+- 创建 PR 或 Fork 前调用 request_confirmation(scope="remote_git")。Clone 属于 workspace_write。
+- 用户要求执行破坏性回退时调用 request_confirmation(scope="destructive_revert")。
+- 文件修改前的 Checkpoint 由系统自动维护，不要自行创建 Git commit 或调用存档工具。
 - 当前状态、Markdown 记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
-## 输出格式
-当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
-{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
-JSON 字符串涉及到引号文本，使用///"来转义引号，避免 JSON 错误解析。
+控制工具是本轮终止动作。调用后不要在同一批次继续调用其他工具。普通文本仅用于工具调用前的简短进度，不得用普通文本申请或授予权限。
 
-action 说明：
-- chat：直接回复用户（普通对话、回答问题）
-- ask_user：需要用户提供更多信息，questions 数组不能为空
-- confirm：需要用户确认当前内容后再继续，prompt 为确认内容
-  - confirmType="allow_write"：确认后需要修改文件（调用 writeFile/deleteFile），**仅在确认后需要写文件时设置**
-  - 如果确认后只是继续分析、设计方案，不需要修改文件，**省略 confirmType 字段**
-- done：任务完成，message 为完成总结
+如果当前模型接口确实不支持原生工具调用，兼容模式下最终只能输出一个标准 JSON 对象，字段沿用 action、message、questions、prompt、confirmType；不要在 JSON 前后添加说明或代码块。兼容文本永远不能自行授予权限。
 ## Auto memory
 When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
@@ -125,7 +129,8 @@ export function buildWorldStateContext(state: WorldState): string {
     }
   }
 
-  if (state.designConfirmed) parts.push('写权限: 已开放（可调用 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository）')
+  if (state.authorization) parts.push(`当前授权: ${state.authorization.scope}（任务 ${state.authorization.taskId}）`)
+  else if (state.designConfirmed) parts.push('写权限: 已开放（兼容状态，仅允许本地工作区修改）')
   else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
@@ -185,19 +190,39 @@ export function buildTaskMemorySearchQuery(state: WorldState, userInput: string)
   return parts.join('\n').trim()
 }
 
-function extractJsonText(raw: string): string {
-  const trimmed = raw.trim()
-  const codeBlockStart = trimmed.indexOf('```json')
-  if (codeBlockStart !== -1) {
-    const afterMarker = trimmed.slice(codeBlockStart + 7)
-    const codeBlockEnd = afterMarker.indexOf('```')
-    if (codeBlockEnd !== -1) return afterMarker.slice(0, codeBlockEnd).trim()
-    return afterMarker.trim()
+function jsonObjectCandidates(raw: string): string[] {
+  const candidates: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < raw.length; index++) {
+    const char = raw[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{') {
+      if (depth === 0) start = index
+      depth++
+      continue
+    }
+    if (char === '}' && depth > 0) {
+      depth--
+      if (depth === 0 && start !== -1) {
+        candidates.push(raw.slice(start, index + 1))
+        start = -1
+      }
+    }
   }
-  const jsonStart = trimmed.indexOf('{')
-  const jsonEnd = trimmed.lastIndexOf('}')
-  if (jsonStart !== -1 && jsonEnd > jsonStart) return trimmed.slice(jsonStart, jsonEnd + 1)
-  return trimmed
+  return candidates
 }
 
 function isToolOperationConfirmationText(text: string): boolean {
@@ -243,19 +268,40 @@ function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: strin
 }
 
 export function parseAgentResult(raw: string): AgentResult | null {
-  const jsonText = extractJsonText(raw)
-  try {
-    return agentResultFromParsed(JSON.parse(jsonText), raw.trim())
-  } catch {
+  const candidates = jsonObjectCandidates(raw)
+  for (let index = candidates.length - 1; index >= 0; index--) {
+    const jsonText = candidates[index]
     try {
-      let fixed = jsonText
-      fixed = fixed.replace(/("thinking"\s*:\s*")([\s\S]*?)(")(?=\s*,\s*")/g, (_match, prefix, content) => {
-        return prefix + content.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
-      })
-      return agentResultFromParsed(JSON.parse(fixed), raw.trim())
-    } catch {}
-    return parseToolOperationMarkdownConfirm(raw)
+      const parsed = agentResultFromParsed(JSON.parse(jsonText), raw.trim())
+      if (parsed) return parsed
+    } catch {
+      try {
+        let fixed = jsonText
+        fixed = fixed.replace(/("thinking"\s*:\s*")([\s\S]*?)(")(?=\s*,\s*")/g, (_match, prefix, content) => {
+          return prefix + content.replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
+        })
+        const parsed = agentResultFromParsed(JSON.parse(fixed), raw.trim())
+        if (parsed) return parsed
+      } catch {}
+    }
   }
+  return parseToolOperationMarkdownConfirm(raw)
+}
+
+export function capabilitiesForState(
+  state: WorldState,
+  turnLoadedSkills: ReadonlySet<string> = new Set(),
+): Set<ToolCapability> {
+  const capabilities = new Set<ToolCapability>(['read'])
+  const scope = state.authorization?.scope
+  if (scope === 'workspace_write' || (!scope && state.designConfirmed)) {
+    capabilities.add('workspace_write')
+    capabilities.add('local_execute')
+  } else if (scope === 'remote_git') {
+    capabilities.add('remote_git')
+  }
+  if (turnLoadedSkills.has('auto-memory')) capabilities.add('memory')
+  return capabilities
 }
 
 export class Agent {
@@ -299,7 +345,12 @@ export class Agent {
       engine.state.messages[0].content = systemPrompt
     }
 
-    const tools = [...toolDefsToOpenAI('write'), USE_SKILL_TOOL_DEF]
+    const buildTools = (): ToolDefinition[] => [
+      ...toolDefsForCapabilities(capabilitiesForState(state, turnLoadedSkills)),
+      USE_SKILL_TOOL_DEF,
+      ...CONTROL_TOOL_DEFS,
+    ]
+    let tools = buildTools()
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
@@ -311,6 +362,17 @@ export class Agent {
         if (evt.kind === 'delta') {
           fullText += evt.delta
           await onEvent?.({ type: 'delta', text: evt.delta })
+        }
+        if (evt.kind === 'retry') {
+          fullText = ''
+          toolCalls = []
+          await onEvent?.({
+            type: 'retry',
+            attempt: evt.attempt,
+            maxAttempts: evt.maxAttempts,
+            reason: evt.reason,
+            delayMs: evt.delayMs,
+          })
         }
         if (evt.kind === 'tool_calls') {
           toolCalls = evt.toolCalls
@@ -333,6 +395,43 @@ export class Agent {
         if (signal?.aborted) break
         if (toolCalls.length === 0) break
 
+        const firstControlIndex = toolCalls.findIndex((call) => CONTROL_TOOL_NAMES.has(call.name))
+        if (firstControlIndex !== -1) {
+          if (toolCalls.length > 1) {
+            await onEvent?.({
+              type: 'protocol_violation',
+              message: '同一批次包含控制工具和其他调用；除第一个控制动作外均已拒绝。',
+            })
+          }
+          let terminalResult: AgentResult | undefined
+          for (let index = 0; index < toolCalls.length; index++) {
+            const call = toolCalls[index]
+            let resultText: string
+            if (index === firstControlIndex) {
+              const parsed = parseControlToolCall(call)
+              if (parsed.result) {
+                terminalResult = parsed.result
+                resultText = JSON.stringify({ ok: true, terminal: true })
+              } else {
+                resultText = JSON.stringify({ ok: false, code: 'INVALID_ARGUMENTS', message: parsed.error })
+              }
+            } else {
+              resultText = JSON.stringify({
+                ok: false,
+                code: 'TERMINAL_ACTION_CONFLICT',
+                message: '同一批次包含控制工具时，只接受第一个控制动作，其他调用不会执行。',
+              })
+            }
+            await engine.appendToolResult(call.id, call.name, resultText)
+            await onEvent?.({ type: 'tool_result', name: call.name, result: resultText })
+          }
+          if (terminalResult) return terminalResult
+          fullText = ''
+          toolCalls = []
+          await consumeStream(engine.continueFromToolResults(tools, signal, runtimeContext))
+          continue
+        }
+
         for (const tc of toolCalls) {
           if (signal?.aborted) break
           let args: Record<string, string>
@@ -348,6 +447,7 @@ export class Agent {
             const skillContent = useSkill(allSkills, skillName)
             if (skillContent) {
               turnLoadedSkills.add(skillName)
+              tools = buildTools()
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
               await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
             } else {
@@ -360,23 +460,40 @@ export class Agent {
           const failureKey = `${tc.name}:${tc.arguments}`
           const failCount = toolFailureCounts.get(failureKey) ?? 0
           if (failCount >= MAX_TOOL_RETRIES) {
-            await engine.appendToolResult(tc.id, tc.name, `错误：工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`)
+            const exhausted = serializeToolResult(toolFailure(
+              'RETRY_EXHAUSTED',
+              `工具 "${tc.name}" 已连续失败 ${MAX_TOOL_RETRIES} 次，请换一种方式完成任务，不要再调用此工具。`,
+            ))
+            await engine.appendToolResult(tc.id, tc.name, exhausted)
+            await onEvent?.({ type: 'tool_result', name: tc.name, result: exhausted })
             continue
           }
 
           if (signal?.aborted) break
-          const result = await executeTool(
+          const result = await executeToolResult(
             tc.name,
             args,
             effectiveAllowedPaths,
             state.designConfirmed,
             signal,
-            { turnLoadedSkills, repository: state.repository },
+            {
+              turnLoadedSkills,
+              repository: state.repository,
+              authorizedCapabilities: capabilitiesForState(state, turnLoadedSkills),
+              checkpoint: state.authorization?.scope === 'workspace_write'
+                ? {
+                    sessionId: state.sessionId,
+                    taskId: state.authorization.taskId,
+                    authorizationId: state.authorization.authorizationId,
+                  }
+                : undefined,
+            },
           )
-          await onEvent?.({ type: 'tool_result', name: tc.name, result })
-          await engine.appendToolResult(tc.id, tc.name, result)
+          const serializedResult = serializeToolResult(result)
+          await onEvent?.({ type: 'tool_result', name: tc.name, result: serializedResult })
+          await engine.appendToolResult(tc.id, tc.name, serializedResult)
 
-          if (result.startsWith('工具执行错误')) {
+          if (!result.ok) {
             toolFailureCounts.set(failureKey, failCount + 1)
           } else {
             toolFailureCounts.delete(failureKey)
@@ -402,6 +519,7 @@ export class Agent {
             { tools: [], signal, runtimeContext },
           )) {
             if (evt.kind === 'delta') fullText += evt.delta
+            if (evt.kind === 'retry') fullText = ''
           }
         } catch (err) {
           console.error('[Agent] 最终总结 LLM 调用失败:', err)
@@ -416,8 +534,12 @@ export class Agent {
       }
 
       const parsed = parseAgentResult(fullText)
-      if (parsed) return parsed
+      if (parsed) {
+        await onEvent?.({ type: 'protocol_fallback', action: parsed.action })
+        return parsed
+      }
 
+      await onEvent?.({ type: 'protocol_violation', message: '模型未使用原生控制工具或兼容 JSON。' })
       return { action: 'chat', message: fullText.trim() }
     } catch (err) {
       const a = abortedResult(signal)

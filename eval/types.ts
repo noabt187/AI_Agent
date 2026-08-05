@@ -37,6 +37,10 @@ export type TrialMetrics = {
   averageFirstTokenMs: number
   durationMs: number
   toolCallCount: number
+  providerRetryCount: number
+  nativeControlActionCount: number
+  protocolFallbackCount: number
+  protocolViolationCount: number
 }
 
 export type GradeResult = {
@@ -93,6 +97,12 @@ export type EvalSummary = {
   argumentValidityRate: { numerator: number; denominator: number; value: number }
   toolSelectionPrecision: { numerator: number; denominator: number; value: number }
   errorRecoveryRate: { numerator: number; denominator: number; value: number }
+  nativeControlActionRate: { numerator: number; denominator: number; value: number }
+  protocolFallbackRate: { numerator: number; denominator: number; value: number }
+  protocolViolationRate: { numerator: number; denominator: number; value: number }
+  providerRetryRate: { numerator: number; denominator: number; value: number }
+  verificationExecutionRate: { numerator: number; denominator: number; value: number }
+  checkpointFailureRate: { numerator: number; denominator: number; value: number }
   medianLlmCalls: number
   medianToolCalls: number
   medianTotalTokens: number

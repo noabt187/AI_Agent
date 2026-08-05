@@ -19,7 +19,13 @@ const WRITE_TOOLS = new Set([
   'saveCheckpoint',
 ])
 
-const ERROR_PREFIX = /^(错误|工具执行错误)|\berror\b|failed|failure/i
+function isToolResultError(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as { ok?: unknown }
+    if (typeof parsed.ok === 'boolean') return !parsed.ok
+  } catch {}
+  return /^(错误|工具执行错误)|\berror\b|failed|failure/i.test(raw.trim())
+}
 
 function safeParseArguments(raw: string): { valid: boolean; parsed?: Record<string, unknown> } {
   try {
@@ -85,7 +91,7 @@ export async function runTrial(params: {
       const call = findPendingToolCall(toolCalls, event.name)
       if (call) {
         call.result = event.result
-        call.resultIsError = ERROR_PREFIX.test(event.result.trim())
+        call.resultIsError = isToolResultError(event.result)
       }
     }
   }
@@ -136,6 +142,12 @@ export async function runTrial(params: {
         averageFirstTokenMs: storedMetrics.summary.averageFirstTokenMs,
         durationMs,
         toolCallCount: toolCalls.length,
+        providerRetryCount: events.filter((event) => event.type === 'retry').length,
+        nativeControlActionCount: toolCalls.filter((call) => (
+          call.name === 'request_confirmation' || call.name === 'ask_user' || call.name === 'finish'
+        )).length,
+        protocolFallbackCount: events.filter((event) => event.type === 'protocol_fallback').length,
+        protocolViolationCount: events.filter((event) => event.type === 'protocol_violation').length,
       },
     }
 
@@ -171,6 +183,12 @@ export async function runTrial(params: {
         averageFirstTokenMs: 0,
         durationMs: Date.now() - started,
         toolCallCount: toolCalls.length,
+        providerRetryCount: events.filter((event) => event.type === 'retry').length,
+        nativeControlActionCount: toolCalls.filter((call) => (
+          call.name === 'request_confirmation' || call.name === 'ask_user' || call.name === 'finish'
+        )).length,
+        protocolFallbackCount: events.filter((event) => event.type === 'protocol_fallback').length,
+        protocolViolationCount: events.filter((event) => event.type === 'protocol_violation').length,
       },
       error: error instanceof Error ? error.message : String(error),
     }

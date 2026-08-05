@@ -1,5 +1,5 @@
 import { readdir, stat, readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { collectFiles, patternToRegex } from '../utils/fileUtils.js'
 
 export async function readTextFile(rootDir: string, relativePath: string): Promise<string> {
@@ -21,7 +21,7 @@ async function listDirectory(rootDir: string, dirPath: string): Promise<string> 
 async function searchFiles(rootDir: string, pattern: string): Promise<string> {
   const allFiles = await collectFiles(rootDir)
   const regex = patternToRegex(pattern)
-  const matched = allFiles.filter((f) => regex.test(f))
+  const matched = allFiles.filter((file) => regex.test(file.replace(/\\/g, '/')) || regex.test(basename(file)))
   if (matched.length === 0) return '没有找到匹配的文件'
   return matched.join('\n')
 }

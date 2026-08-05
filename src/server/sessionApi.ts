@@ -203,6 +203,8 @@ export async function clearPendingConfirm(sessionId: string): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
   orchestrator.state.pendingConfirm = undefined
   orchestrator.state.designConfirmed = false
+  orchestrator.state.authorization = undefined
+  orchestrator.state.activeTaskId = undefined
   await orchestrator.persist()
   return loadSession(sessionId)
 }
