@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { executeTool } from '../src/tools/index.js'
-import { resolveCommandForPlatform } from '../src/utils/command.js'
+import { commandInvocationForPlatform, resolveCommandForPlatform } from '../src/utils/command.js'
 
 test('source search includes mjs files by basename and content', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-search-mjs-'))
@@ -22,4 +22,13 @@ test('node package manager commands resolve to cmd shims only on Windows', () =>
   assert.equal(resolveCommandForPlatform('npx', 'win32'), 'npx.cmd')
   assert.equal(resolveCommandForPlatform('git', 'win32'), 'git')
   assert.equal(resolveCommandForPlatform('npm', 'linux'), 'npm')
+
+  assert.deepEqual(commandInvocationForPlatform('npm', ['test', '--', '--run'], 'win32', 'cmd.exe'), {
+    file: 'cmd.exe',
+    args: ['/d', '/s', '/c', 'npm.cmd test -- --run'],
+  })
+  assert.deepEqual(commandInvocationForPlatform('git', ['status'], 'win32', 'cmd.exe'), {
+    file: 'git',
+    args: ['status'],
+  })
 })

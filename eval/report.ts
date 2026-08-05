@@ -55,9 +55,10 @@ export async function buildSummary(
     if (!call.result) return false
     try {
       const parsed = JSON.parse(call.result) as { code?: string }
-      return parsed.code !== 'COMMAND_NOT_FOUND'
+      return (parsed.code === 'OK' || parsed.code === 'COMMAND_FAILED')
+        && !/spawn\s+\S+\s+(?:ENOENT|EINVAL)/i.test(call.result)
     } catch {
-      return !/spawn\s+\S+\s+ENOENT/i.test(call.result)
+      return !/spawn\s+\S+\s+(?:ENOENT|EINVAL)/i.test(call.result)
     }
   })
   const checkpointFailures = allToolCalls.filter((call) => {
