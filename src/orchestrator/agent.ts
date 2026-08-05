@@ -249,7 +249,7 @@ function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
 
 function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: string): AgentResult | null {
   const action = obj.action
-  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText) }
+  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText), taskComplete: true }
   if (action === 'ask_user') {
     const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
     if (questions.length === 0) return null
@@ -540,7 +540,7 @@ export class Agent {
       }
 
       await onEvent?.({ type: 'protocol_violation', message: '模型未使用原生控制工具或兼容 JSON。' })
-      return { action: 'chat', message: fullText.trim() }
+      return { action: 'chat', message: fullText.trim(), taskComplete: true }
     } catch (err) {
       const a = abortedResult(signal)
       if (a) return a

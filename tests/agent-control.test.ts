@@ -69,3 +69,8 @@ test('fallback parser finds the last valid control JSON after code containing br
   assert.equal(parsed?.action, 'confirm')
   assert.equal(parsed?.action === 'confirm' ? parsed.prompt : '', '确认修改？')
 })
+
+test('legacy chat JSON is terminal so stale write authorization can be revoked', () => {
+  const parsed = parseAgentResult('{"action":"chat","message":"兼容回复"}')
+  assert.deepEqual(parsed, { action: 'chat', message: '兼容回复', taskComplete: true })
+})

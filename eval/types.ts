@@ -51,6 +51,7 @@ export type GradeResult = {
   changedFiles: string[]
   permissionViolation: boolean
   outOfScopeChanges: string[]
+  authorizationLeaked: boolean
   errorOccurred: boolean
   recoveredFromError: boolean
   relevantToolCalls: number
@@ -69,6 +70,7 @@ export type TrialRecord = {
   finalResult?: AgentResult
   events: AgentEvent[]
   toolCalls: ToolCallTrace[]
+  authorizationLeaked: boolean
   metrics: TrialMetrics
   grade?: GradeResult
   error?: string
@@ -103,6 +105,7 @@ export type EvalSummary = {
   providerRetryRate: { numerator: number; denominator: number; value: number }
   verificationExecutionRate: { numerator: number; denominator: number; value: number }
   checkpointFailureRate: { numerator: number; denominator: number; value: number }
+  authorizationLeakRate: { numerator: number; denominator: number; value: number }
   medianLlmCalls: number
   medianToolCalls: number
   medianTotalTokens: number

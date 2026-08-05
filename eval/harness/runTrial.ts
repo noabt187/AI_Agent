@@ -133,6 +133,7 @@ export async function runTrial(params: {
       finalResult,
       events,
       toolCalls,
+      authorizationLeaked: Boolean(orchestrator.state.authorization || orchestrator.state.designConfirmed),
       metrics: {
         llmCallCount: storedMetrics.summary.callCount,
         promptTokens: storedMetrics.summary.totalPromptTokens,
@@ -174,6 +175,7 @@ export async function runTrial(params: {
       finalResult,
       events,
       toolCalls,
+      authorizationLeaked: Boolean(orchestrator?.state.authorization || orchestrator?.state.designConfirmed),
       metrics: {
         llmCallCount: 0,
         promptTokens: 0,

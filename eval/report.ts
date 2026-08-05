@@ -100,6 +100,10 @@ export async function buildSummary(
     ),
     verificationExecutionRate: ratio(verificationExecutions.length, verificationCalls.length),
     checkpointFailureRate: ratio(checkpointFailures.length, allToolCalls.length),
+    authorizationLeakRate: ratio(
+      valid.filter((trial) => trial.grade?.authorizationLeaked).length,
+      valid.length,
+    ),
     medianLlmCalls: median(passed.map((trial) => trial.metrics.llmCallCount)),
     medianToolCalls: median(passed.map((trial) => trial.metrics.toolCallCount)),
     medianTotalTokens: median(passed.map((trial) => trial.metrics.totalTokens)),
@@ -171,6 +175,7 @@ function markdownReport(
     metricLine('Provider Retry Rate', summary.providerRetryRate),
     metricLine('Verification Execution Rate', summary.verificationExecutionRate),
     metricLine('Checkpoint Failure Rate', summary.checkpointFailureRate),
+    metricLine('Authorization Leak Rate', summary.authorizationLeakRate),
     '',
     '## 效率',
     '',
