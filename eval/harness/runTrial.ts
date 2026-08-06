@@ -17,6 +17,7 @@ const WRITE_TOOLS = new Set([
   'forkRepository',
   'cloneRepository',
   'saveCheckpoint',
+  'verifyCode',
 ])
 
 function isToolResultError(raw: string): boolean {
@@ -133,7 +134,7 @@ export async function runTrial(params: {
       finalResult,
       events,
       toolCalls,
-      authorizationLeaked: Boolean(orchestrator.state.authorization || orchestrator.state.designConfirmed),
+      authorizationLeaked: Boolean(orchestrator.state.designConfirmed),
       metrics: {
         llmCallCount: storedMetrics.summary.callCount,
         promptTokens: storedMetrics.summary.totalPromptTokens,
@@ -144,11 +145,6 @@ export async function runTrial(params: {
         durationMs,
         toolCallCount: toolCalls.length,
         providerRetryCount: events.filter((event) => event.type === 'retry').length,
-        nativeControlActionCount: toolCalls.filter((call) => (
-          call.name === 'request_confirmation' || call.name === 'ask_user' || call.name === 'finish'
-        )).length,
-        protocolFallbackCount: events.filter((event) => event.type === 'protocol_fallback').length,
-        protocolViolationCount: events.filter((event) => event.type === 'protocol_violation').length,
       },
     }
 
@@ -175,7 +171,7 @@ export async function runTrial(params: {
       finalResult,
       events,
       toolCalls,
-      authorizationLeaked: Boolean(orchestrator?.state.authorization || orchestrator?.state.designConfirmed),
+      authorizationLeaked: Boolean(orchestrator?.state.designConfirmed),
       metrics: {
         llmCallCount: 0,
         promptTokens: 0,
@@ -186,11 +182,6 @@ export async function runTrial(params: {
         durationMs: Date.now() - started,
         toolCallCount: toolCalls.length,
         providerRetryCount: events.filter((event) => event.type === 'retry').length,
-        nativeControlActionCount: toolCalls.filter((call) => (
-          call.name === 'request_confirmation' || call.name === 'ask_user' || call.name === 'finish'
-        )).length,
-        protocolFallbackCount: events.filter((event) => event.type === 'protocol_fallback').length,
-        protocolViolationCount: events.filter((event) => event.type === 'protocol_violation').length,
       },
       error: error instanceof Error ? error.message : String(error),
     }

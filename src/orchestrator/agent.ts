@@ -3,11 +3,7 @@ import { QueryEngine } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
-import {
-  executeToolResult,
-  toolDefsForCapabilities,
-  type ToolCapability,
-} from '../tools/index.js'
+import { executeToolResult, toolDefsToOpenAI } from '../tools/index.js'
 import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
   extractMemoryTerms,
@@ -17,11 +13,6 @@ import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
 import { getMemorySettings } from './types.js'
 import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
 import { serializeToolResult, toolFailure } from '../tools/types.js'
-import {
-  CONTROL_TOOL_DEFS,
-  CONTROL_TOOL_NAMES,
-  parseControlToolCall,
-} from './controlTools.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 2
@@ -54,29 +45,34 @@ const SYSTEM_PROMPT = `你是全栈开发助手。通过读取代码、分析需
 
 当你需要调用工具时，使用工具调用功能（不要在文本中输出工具调用格式）。
 工具调用中的文件路径参数（如 filePath、dirPath）必须使用绝对路径，且必须位于当前可操作目录之下。
-当你准备好回复用户时，必须使用控制工具，不要在普通文本中输出控制 JSON：
-- request_confirmation：需要用户确认权限后继续
-- ask_user：缺少必要信息
-- finish：回答问题或完成任务
+当你准备好回复用户时，输出以下 JSON 格式。
 
 根据任务需要选择合适的流程，不要总是固定步骤：
-- **简单修改**（改文案、修小bug）：读代码 → request_confirmation(workspace_write) → 确认 → 写代码 → finish(completed)
-- **复杂功能**（新功能、跨文件重构）：读代码 → ask_user 对齐缺失需求 → request_confirmation(workspace_write) → 确认 → 写代码 → finish(completed)
-- **纯分析**（审查代码、回答问题）：读代码 → finish(answered)
-- **远程副作用**（fork、PR）：request_confirmation(remote_git) 确认参数后执行
-- **本地 Clone**：request_confirmation(workspace_write) 确认目标目录后执行
+- **简单修改**（改文案、修小bug）：读代码 → confirm(allow_write) 呈现具体修改 → 确认 → 写代码 → done
+- **复杂功能**（新功能、跨文件重构）：读代码 → confirm() 对齐需求 → 确认 → confirm(allow_write) 呈现任务列表 → 确认 → 写代码 → done
+- **纯分析**（审查代码、回答问题）：读代码 → chat 直接回答
+- **副作用操作**（fork、clone、PR）：confirm(allow_write) 确认参数后执行
 
 **重要规则**：
-- 用户确认前不会提供写工具。需要修改文件或运行本地验证时，调用 request_confirmation(scope="workspace_write") 并等待用户确认。
-- 创建 PR 或 Fork 前调用 request_confirmation(scope="remote_git")。Clone 属于 workspace_write。
-- 用户要求执行破坏性回退时调用 request_confirmation(scope="destructive_revert")。
-- 文件修改前的 Checkpoint 由系统自动维护，不要自行创建 Git commit 或调用存档工具。
+- 用户确认前不要调用写工具。写工具包括 writeFile、deleteFile、createPullRequest、forkRepository、cloneRepository。这些工具会修改文件或操作远程仓库，必须先输出 action: confirm, confirmType: allow_write 并等待用户确认后才能调用。
+- confirmType="allow_write" 表示确认后将执行写操作（修改/删除文件、创建 PR、fork/clone 仓库）。
+- 仅在对齐理解、确认需求时，省略 confirmType 字段。
+- 设计确认后，在第一次调用 writeFile 之前必须先调用 saveCheckpoint(rootDir, "<修改描述>") 存档一次。存档不需要弹确认，直接执行。修改完成后不要再存档，否则回退会回到修改后状态。
+- 用户要求回退到某个存档时，先输出 confirm(allow_write) 展示要回退的 commit 信息，确认后再调用 saveCheckpoint(rootDir, "", "<commit>") 执行回退。
 - 当前状态、Markdown 记忆、相关历史经验和阶段技能会作为本轮临时上下文提供；这些内容只用于本轮判断，不要把它们写入会话历史。
 - 相关历史经验不代表当前代码事实，涉及文件、接口、组件状态时必须读取当前 repo 确认。
 
-控制工具是本轮终止动作。调用后不要在同一批次继续调用其他工具。普通文本仅用于工具调用前的简短进度，不得用普通文本申请或授予权限。
+## 输出格式
+当你要回复用户时（不调用工具时），只输出 JSON，不要输出其他内容：
+{"thinking":"你的分析思路","action":"chat|ask_user|confirm|done","message":"给用户的消息","questions":["问题1"],"prompt":"确认内容","confirmType":"allow_write"}
 
-如果当前模型接口确实不支持原生工具调用，兼容模式下最终只能输出一个标准 JSON 对象，字段沿用 action、message、questions、prompt、confirmType；不要在 JSON 前后添加说明或代码块。兼容文本永远不能自行授予权限。
+action 说明：
+- chat：直接回复用户（普通对话、回答问题）
+- ask_user：需要用户提供更多信息，questions 数组不能为空
+- confirm：需要用户确认当前内容后再继续，prompt 为确认内容
+  - confirmType="allow_write"：确认后需要执行写操作，仅在确实需要写入时设置
+  - 如果确认后只是继续分析、设计方案，不需要修改文件，省略 confirmType
+- done：任务完成，message 为完成总结
 ## Auto memory
 When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
@@ -129,8 +125,7 @@ export function buildWorldStateContext(state: WorldState): string {
     }
   }
 
-  if (state.authorization) parts.push(`当前授权: ${state.authorization.scope}（任务 ${state.authorization.taskId}）`)
-  else if (state.designConfirmed) parts.push('写权限: 已开放（兼容状态，仅允许本地工作区修改）')
+  if (state.designConfirmed) parts.push('写权限: 已开放（可调用写入、验证和仓库操作工具）')
   else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
@@ -225,31 +220,9 @@ function jsonObjectCandidates(raw: string): string[] {
   return candidates
 }
 
-function isToolOperationConfirmationText(text: string): boolean {
-  return /\bpr\b|pull request|createPullRequest|提交\s*pr|创建\s*pr|发起\s*pr|PR\s*参数|PR\s*标题|PR\s*目标仓库/i.test(text)
-    || /forkRepository|cloneRepository|Fork\s*参数|Clone\s*参数|克隆\s*参数|源仓库|目标账号|目标组织|fork\s*名|clone\s*目录|本地目标目录/i.test(text)
-}
-
-function normalizeConfirmType(confirmType: 'allow_write' | undefined, text: string): 'allow_write' | undefined {
-  if (!confirmType && isToolOperationConfirmationText(text)) return 'allow_write'
-  return confirmType
-}
-
-function parseToolOperationMarkdownConfirm(raw: string): AgentResult | null {
-  const text = raw.trim()
-  if (!text || !isToolOperationConfirmationText(text)) return null
-  if (!/请确认|确认以上|确认执行|是否正确|是否以上述|是否使用/.test(text)) return null
-  return {
-    action: 'confirm',
-    confirmType: 'allow_write',
-    prompt: text,
-    message: text,
-  }
-}
-
 function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: string): AgentResult | null {
   const action = obj.action
-  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText), taskComplete: true }
+  if (action === 'chat') return { action: 'chat', message: String(obj.message || fallbackText) }
   if (action === 'ask_user') {
     const questions = Array.isArray(obj.questions) ? obj.questions.map(String) : []
     if (questions.length === 0) return null
@@ -258,10 +231,8 @@ function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: strin
   if (action === 'confirm') {
     const prompt = String(obj.prompt || '')
     const message = obj.message ? String(obj.message) : undefined
-    // 'design' is legacy alias for 'allow_write'
-    const explicit = (obj.confirmType === 'allow_write' || obj.confirmType === 'design') ? 'allow_write' : undefined
-    const ct = normalizeConfirmType(explicit, `${message ?? ''}\n${prompt}`)
-    return { action: 'confirm', prompt, message, confirmType: ct }
+    const explicit = obj.confirmType === 'allow_write' ? 'allow_write' : undefined
+    return { action: 'confirm', prompt, message, confirmType: explicit }
   }
   if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
   return null
@@ -285,23 +256,7 @@ export function parseAgentResult(raw: string): AgentResult | null {
       } catch {}
     }
   }
-  return parseToolOperationMarkdownConfirm(raw)
-}
-
-export function capabilitiesForState(
-  state: WorldState,
-  turnLoadedSkills: ReadonlySet<string> = new Set(),
-): Set<ToolCapability> {
-  const capabilities = new Set<ToolCapability>(['read'])
-  const scope = state.authorization?.scope
-  if (scope === 'workspace_write' || (!scope && state.designConfirmed)) {
-    capabilities.add('workspace_write')
-    capabilities.add('local_execute')
-  } else if (scope === 'remote_git') {
-    capabilities.add('remote_git')
-  }
-  if (turnLoadedSkills.has('auto-memory')) capabilities.add('memory')
-  return capabilities
+  return null
 }
 
 export class Agent {
@@ -345,12 +300,7 @@ export class Agent {
       engine.state.messages[0].content = systemPrompt
     }
 
-    const buildTools = (): ToolDefinition[] => [
-      ...toolDefsForCapabilities(capabilitiesForState(state, turnLoadedSkills)),
-      USE_SKILL_TOOL_DEF,
-      ...CONTROL_TOOL_DEFS,
-    ]
-    let tools = buildTools()
+    const tools: ToolDefinition[] = [...toolDefsToOpenAI('write'), USE_SKILL_TOOL_DEF]
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
@@ -395,43 +345,6 @@ export class Agent {
         if (signal?.aborted) break
         if (toolCalls.length === 0) break
 
-        const firstControlIndex = toolCalls.findIndex((call) => CONTROL_TOOL_NAMES.has(call.name))
-        if (firstControlIndex !== -1) {
-          if (toolCalls.length > 1) {
-            await onEvent?.({
-              type: 'protocol_violation',
-              message: '同一批次包含控制工具和其他调用；除第一个控制动作外均已拒绝。',
-            })
-          }
-          let terminalResult: AgentResult | undefined
-          for (let index = 0; index < toolCalls.length; index++) {
-            const call = toolCalls[index]
-            let resultText: string
-            if (index === firstControlIndex) {
-              const parsed = parseControlToolCall(call)
-              if (parsed.result) {
-                terminalResult = parsed.result
-                resultText = JSON.stringify({ ok: true, terminal: true })
-              } else {
-                resultText = JSON.stringify({ ok: false, code: 'INVALID_ARGUMENTS', message: parsed.error })
-              }
-            } else {
-              resultText = JSON.stringify({
-                ok: false,
-                code: 'TERMINAL_ACTION_CONFLICT',
-                message: '同一批次包含控制工具时，只接受第一个控制动作，其他调用不会执行。',
-              })
-            }
-            await engine.appendToolResult(call.id, call.name, resultText)
-            await onEvent?.({ type: 'tool_result', name: call.name, result: resultText })
-          }
-          if (terminalResult) return terminalResult
-          fullText = ''
-          toolCalls = []
-          await consumeStream(engine.continueFromToolResults(tools, signal, runtimeContext))
-          continue
-        }
-
         for (const tc of toolCalls) {
           if (signal?.aborted) break
           let args: Record<string, string>
@@ -447,7 +360,6 @@ export class Agent {
             const skillContent = useSkill(allSkills, skillName)
             if (skillContent) {
               turnLoadedSkills.add(skillName)
-              tools = buildTools()
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
               await onEvent?.({ type: 'tool_result', name: 'use_skill', result: skillContent })
             } else {
@@ -479,14 +391,6 @@ export class Agent {
             {
               turnLoadedSkills,
               repository: state.repository,
-              authorizedCapabilities: capabilitiesForState(state, turnLoadedSkills),
-              checkpoint: state.authorization?.scope === 'workspace_write'
-                ? {
-                    sessionId: state.sessionId,
-                    taskId: state.authorization.taskId,
-                    authorizationId: state.authorization.authorizationId,
-                  }
-                : undefined,
             },
           )
           const serializedResult = serializeToolResult(result)
@@ -534,13 +438,9 @@ export class Agent {
       }
 
       const parsed = parseAgentResult(fullText)
-      if (parsed) {
-        await onEvent?.({ type: 'protocol_fallback', action: parsed.action })
-        return parsed
-      }
+      if (parsed) return parsed
 
-      await onEvent?.({ type: 'protocol_violation', message: '模型未使用原生控制工具或兼容 JSON。' })
-      return { action: 'chat', message: fullText.trim(), taskComplete: true }
+      return { action: 'chat', message: fullText.trim() }
     } catch (err) {
       const a = abortedResult(signal)
       if (a) return a

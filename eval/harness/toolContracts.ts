@@ -2,9 +2,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
-  executeTool,
   executeToolResult,
-  toolDefsForCapabilities,
   toolDefsToOpenAI,
 } from '../../src/tools/index.js'
 import { resolveCommandForPlatform } from '../../src/utils/command.js'
@@ -34,7 +32,7 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
     const requiredNames = [
       'readTextFile', 'listDirectory', 'searchFiles', 'searchContent', 'writeFile', 'deleteFile',
       'verifyCode', 'createPullRequest', 'forkRepository', 'cloneRepository', 'compressContext',
-      'writeMemory',
+      'writeMemory', 'saveCheckpoint',
     ]
     results.push(result(
       'schema-registry-complete',
@@ -43,28 +41,29 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
       `registered=${[...schemaNames].sort().join(',')}`,
     ))
 
-    const readOnlyNames = new Set(toolDefsForCapabilities(new Set(['read'])).map((item) => item.function.name))
+    const readOnlyNames = new Set(toolDefsToOpenAI('read').map((item) => item.function.name))
     results.push(result(
       'read-only-schema-hides-side-effects',
       'schema',
       readOnlyNames.has('readTextFile')
         && !readOnlyNames.has('writeFile')
         && !readOnlyNames.has('verifyCode')
-        && !schemaNames.has('saveCheckpoint'),
+        && schemaNames.has('saveCheckpoint')
+        && !readOnlyNames.has('saveCheckpoint'),
       `readOnly=${[...readOnlyNames].sort().join(',')}; saveCheckpointVisible=${schemaNames.has('saveCheckpoint')}`,
     ))
 
-    const unknown = await executeTool('doesNotExist', {}, [rootDir])
-    results.push(result('unknown-tool-rejected', 'argument', /未知工具|unknown tool/i.test(unknown), unknown))
+    const unknown = await executeToolResult('doesNotExist', {}, [rootDir])
+    results.push(result('unknown-tool-rejected', 'argument', unknown.code === 'UNKNOWN_TOOL', unknown.message))
 
-    const read = await executeTool('readTextFile', { filePath: resolve(rootDir, 'src', 'sample.txt') }, [rootDir])
-    results.push(result('read-file-executes', 'execution', read.includes('hello agent'), read))
+    const read = await executeToolResult('readTextFile', { filePath: resolve(rootDir, 'src', 'sample.txt') }, [rootDir])
+    results.push(result('read-file-executes', 'execution', read.ok && read.message.includes('hello agent'), read.message))
 
-    const mjsName = await executeTool('searchFiles', { rootDir, pattern: '*slug*' }, [rootDir])
-    results.push(result('mjs-filename-search', 'execution', /slug\.mjs/.test(mjsName), mjsName))
+    const mjsName = await executeToolResult('searchFiles', { rootDir, pattern: '*slug*' }, [rootDir])
+    results.push(result('mjs-filename-search', 'execution', mjsName.ok && /slug\.mjs/.test(mjsName.message), mjsName.message))
 
-    const mjsContent = await executeTool('searchContent', { rootDir, keyword: 'slugify' }, [rootDir])
-    results.push(result('mjs-content-search', 'execution', /slug\.mjs:1/.test(mjsContent), mjsContent))
+    const mjsContent = await executeToolResult('searchContent', { rootDir, keyword: 'slugify' }, [rootDir])
+    results.push(result('mjs-content-search', 'execution', mjsContent.ok && /slug\.mjs:1/.test(mjsContent.message), mjsContent.message))
 
     const structuredUnknown = await executeToolResult('doesNotExist', {}, [rootDir])
     results.push(result(
@@ -82,29 +81,29 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
       `${resolveCommandForPlatform('npm', 'win32')},${resolveCommandForPlatform('npx', 'win32')}`,
     ))
 
-    const relative = await executeTool('readTextFile', { filePath: 'src/sample.txt' }, [rootDir])
-    results.push(result('relative-path-rejected', 'isolation', /绝对路径|absolute/i.test(relative), relative))
+    const relative = await executeToolResult('readTextFile', { filePath: 'src/sample.txt' }, [rootDir])
+    results.push(result('relative-path-rejected', 'isolation', relative.code === 'PATH_OUTSIDE_ALLOWED', relative.message))
 
-    const outside = await executeTool('readTextFile', { filePath: resolve(tmpdir(), 'outside.txt') }, [rootDir])
-    results.push(result('outside-path-rejected', 'isolation', /不在可操作目录|outside|允许/i.test(outside), outside))
+    const outside = await executeToolResult('readTextFile', { filePath: resolve(tmpdir(), 'outside.txt') }, [rootDir])
+    results.push(result('outside-path-rejected', 'isolation', outside.code === 'PATH_OUTSIDE_ALLOWED', outside.message))
 
-    const deniedWrite = await executeTool(
+    const deniedWrite = await executeToolResult(
       'writeFile',
       { filePath: resolve(rootDir, 'src', 'denied.txt'), content: 'blocked' },
       [rootDir],
       false,
     )
-    results.push(result('write-requires-confirmation', 'permission', /未确认|确认|permission/i.test(deniedWrite), deniedWrite))
+    results.push(result('write-requires-confirmation', 'permission', deniedWrite.code === 'PERMISSION_DENIED', deniedWrite.message))
 
-    const allowedWrite = await executeTool(
+    const allowedWrite = await executeToolResult(
       'writeFile',
       { filePath: resolve(rootDir, 'src', 'allowed.txt'), content: 'written' },
       [rootDir],
       true,
     )
-    results.push(result('authorized-write-executes', 'execution', !/错误|error/i.test(allowedWrite), allowedWrite))
+    results.push(result('authorized-write-executes', 'execution', allowedWrite.ok, allowedWrite.message))
 
-    const memoryDenied = await executeTool(
+    const memoryDenied = await executeToolResult(
       'writeMemory',
       {
         rootDir,
@@ -119,15 +118,15 @@ export async function runToolContractEval(): Promise<ContractCaseResult[]> {
       undefined,
       { turnLoadedSkills: new Set() },
     )
-    results.push(result('memory-requires-skill', 'permission', /auto-memory/.test(memoryDenied), memoryDenied))
+    results.push(result('memory-requires-skill', 'permission', memoryDenied.code === 'PERMISSION_DENIED', memoryDenied.message))
 
     for (const name of ['createPullRequest', 'forkRepository', 'cloneRepository']) {
-      const blocked = await executeTool(name, { rootDir, repoUrl: 'owner/repo' }, [rootDir], true)
+      const blocked = await executeToolResult(name, { rootDir, repoUrl: 'owner/repo' }, [rootDir], true)
       results.push(result(
         `${name}-blocked-in-local-eval`,
         'permission',
-        /本地评测模式已阻断/.test(blocked),
-        blocked,
+        blocked.code === 'REMOTE_SIDE_EFFECT_BLOCKED',
+        blocked.message,
       ))
     }
   } finally {

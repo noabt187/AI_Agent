@@ -108,12 +108,10 @@ function toolStats(toolCalls: ToolCallTrace[], expectedTools: string[]): {
   errorOccurred: boolean
   recovered: boolean
 } {
-  const controlNames = new Set(['request_confirmation', 'ask_user', 'finish'])
-  const evaluatedCalls = toolCalls.filter((call) => !controlNames.has(call.name))
-  const relevant = evaluatedCalls.filter((call) => expectedTools.includes(call.name) || call.name === 'use_skill').length
-  const valid = evaluatedCalls.filter((call) => call.argumentJsonValid).length
-  const errorIndexes = evaluatedCalls.flatMap((call, index) => call.resultIsError ? [index] : [])
-  const recovered = errorIndexes.some((index) => evaluatedCalls.slice(index + 1).some((call) => !call.resultIsError))
+  const relevant = toolCalls.filter((call) => expectedTools.includes(call.name) || call.name === 'use_skill').length
+  const valid = toolCalls.filter((call) => call.argumentJsonValid).length
+  const errorIndexes = toolCalls.flatMap((call, index) => call.resultIsError ? [index] : [])
+  const recovered = errorIndexes.some((index) => toolCalls.slice(index + 1).some((call) => !call.resultIsError))
   return { relevant, valid, errorOccurred: errorIndexes.length > 0, recovered }
 }
 

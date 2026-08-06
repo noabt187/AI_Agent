@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { parseAgentResult } from '../src/orchestrator/agent.js'
 import { useSkill, getSkillCatalog, type Skill } from '../src/skills/index.js'
 import { parseRepoUrl } from '../src/utils/gh.js'
-import { executeTool, toolDefsToOpenAI } from '../src/tools/index.js'
+import { executeToolResult, toolDefsToOpenAI } from '../src/tools/index.js'
 
 test('parseRepoUrl accepts common GitHub repository formats', () => {
   assert.deepEqual(parseRepoUrl('https://github.com/noabt187/AI_Agent.git'), {
@@ -67,7 +67,7 @@ test('createPullRequest keeps optional PR metadata in schema', () => {
   assert.ok('headOwner' in tool.function.parameters.properties)
 })
 
-test('PR confirmation without allow_write is force-upgraded to allow_write', () => {
+test('PR confirmation requires an explicit allow_write flag', () => {
   const parsed = parseAgentResult(JSON.stringify({
     thinking: '确认 PR 参数',
     action: 'confirm',
@@ -76,10 +76,10 @@ test('PR confirmation without allow_write is force-upgraded to allow_write', () 
   }))
 
   assert.equal(parsed?.action, 'confirm')
-  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, undefined)
 })
 
-test('repository operation confirmation is force-upgraded to allow_write', () => {
+test('repository operation text cannot implicitly grant write permission', () => {
   const parsed = parseAgentResult(JSON.stringify({
     thinking: '确认 fork 参数',
     action: 'confirm',
@@ -88,10 +88,10 @@ test('repository operation confirmation is force-upgraded to allow_write', () =>
   }))
 
   assert.equal(parsed?.action, 'confirm')
-  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
+  assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, undefined)
 })
 
-test('markdown repository operation confirmation is parsed as allow_write', () => {
+test('markdown repository operation confirmation cannot grant write permission', () => {
   const parsed = parseAgentResult([
     '## Clone 仓库确认',
     '',
@@ -100,6 +100,16 @@ test('markdown repository operation confirmation is parsed as allow_write', () =
     '',
     '请确认以上 clone 参数是否正确。',
   ].join('\n'))
+
+  assert.equal(parsed, null)
+})
+
+test('explicit JSON repository confirmation grants write permission', () => {
+  const parsed = parseAgentResult(JSON.stringify({
+    action: 'confirm',
+    prompt: '确认创建 PR？',
+    confirmType: 'allow_write',
+  }))
 
   assert.equal(parsed?.action, 'confirm')
   assert.equal(parsed?.action === 'confirm' ? parsed.confirmType : undefined, 'allow_write')
@@ -131,14 +141,15 @@ test('getSkillCatalog returns compact listing', () => {
 
 test('forkRepository validates required repoUrl before invoking gh', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-fork-tool-'))
-  const result = await executeTool('forkRepository', { rootDir }, [rootDir], true)
+  const result = await executeToolResult('forkRepository', { rootDir }, [rootDir], true)
 
-  assert.match(result, /缺少必需参数 "repoUrl"/)
+  assert.equal(result.code, 'INVALID_ARGUMENTS')
+  assert.match(result.message, /缺少必需参数 "repoUrl"/)
 })
 
 test('cloneRepository rejects cloneParentDir outside allowed workspace', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-fork-tool-'))
-  const result = await executeTool(
+  const result = await executeToolResult(
     'cloneRepository',
     {
       rootDir,
@@ -149,5 +160,6 @@ test('cloneRepository rejects cloneParentDir outside allowed workspace', async (
     true,
   )
 
-  assert.match(result, /绝对路径|路径越界/)
+  assert.equal(result.code, 'PATH_OUTSIDE_ALLOWED')
+  assert.match(result.message, /绝对路径|路径越界/)
 })

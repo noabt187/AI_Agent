@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { executeTool } from '../src/tools/index.js'
+import { executeToolResult } from '../src/tools/index.js'
 import { commandInvocationForPlatform, resolveCommandForPlatform } from '../src/utils/command.js'
 
 test('source search includes mjs files by basename and content', async () => {
@@ -11,10 +11,10 @@ test('source search includes mjs files by basename and content', async () => {
   await mkdir(resolve(rootDir, 'src'), { recursive: true })
   await writeFile(resolve(rootDir, 'src', 'slug.mjs'), 'export function slugify(value) { return value }\n', 'utf8')
 
-  const byName = await executeTool('searchFiles', { rootDir, pattern: '*slug*' }, [rootDir])
-  const byContent = await executeTool('searchContent', { rootDir, keyword: 'slugify' }, [rootDir])
-  assert.match(byName, /src\/slug\.mjs/)
-  assert.match(byContent, /src\/slug\.mjs:1/)
+  const byName = await executeToolResult('searchFiles', { rootDir, pattern: '*slug*' }, [rootDir])
+  const byContent = await executeToolResult('searchContent', { rootDir, keyword: 'slugify' }, [rootDir])
+  assert.match(byName.message, /src\/slug\.mjs/)
+  assert.match(byContent.message, /src\/slug\.mjs:1/)
 })
 
 test('node package manager commands resolve to cmd shims only on Windows', () => {

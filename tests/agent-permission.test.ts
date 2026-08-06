@@ -1,19 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { capabilitiesForState } from '../src/orchestrator/agent.js'
-import { normalizeMemorySettings, type WorldState } from '../src/orchestrator/types.js'
-import {
-  executeTool,
-  toolDefsForCapabilities,
-} from '../src/tools/index.js'
+import { Orchestrator } from '../src/orchestrator/orchestrator.js'
+import type { AgentResult, WorldState } from '../src/orchestrator/types.js'
+import { normalizeMemorySettings } from '../src/orchestrator/types.js'
+import { executeToolResult, toolDefsToOpenAI } from '../src/tools/index.js'
 
-function state(): WorldState {
+function state(sessionId: string): WorldState {
   return {
-    sessionId: 'permission-test',
-    allowedPaths: ['C:\\workspace'],
+    sessionId,
+    allowedPaths: [],
     memorySettings: normalizeMemorySettings(),
     completedTaskIds: [],
     failedTaskIds: [],
@@ -21,56 +19,53 @@ function state(): WorldState {
   }
 }
 
-function names(current: WorldState, skills = new Set<string>()): string[] {
-  return toolDefsForCapabilities(capabilitiesForState(current, skills))
-    .map((item) => item.function.name)
-}
+test('read schema hides every side-effect tool', () => {
+  const readNames = new Set(toolDefsToOpenAI('read').map((item) => item.function.name))
+  const allNames = new Set(toolDefsToOpenAI('write').map((item) => item.function.name))
 
-test('read-only state does not expose mutation or verification tools', () => {
-  const visible = names(state())
-  assert.ok(visible.includes('readTextFile'))
-  assert.ok(!visible.includes('writeFile'))
-  assert.ok(!visible.includes('verifyCode'))
-  assert.ok(!visible.includes('createPullRequest'))
-  assert.ok(!visible.includes('saveCheckpoint'))
+  assert.ok(readNames.has('readTextFile'))
+  for (const name of ['writeFile', 'deleteFile', 'verifyCode', 'createPullRequest', 'forkRepository', 'cloneRepository', 'saveCheckpoint']) {
+    assert.ok(!readNames.has(name), `${name} must require confirmation`)
+    assert.ok(allNames.has(name), `${name} must remain registered`)
+  }
 })
 
-test('workspace authorization exposes local write and verification only', () => {
-  const current = state()
-  current.authorization = { scope: 'workspace_write', taskId: 'task-1', authorizationId: 1 }
-  const visible = names(current)
-  assert.ok(visible.includes('writeFile'))
-  assert.ok(visible.includes('deleteFile'))
-  assert.ok(visible.includes('cloneRepository'))
-  assert.ok(visible.includes('verifyCode'))
-  assert.ok(!visible.includes('createPullRequest'))
-  assert.ok(!visible.includes('forkRepository'))
-})
-
-test('remote git authorization does not inherit workspace write access', () => {
-  const current = state()
-  current.authorization = { scope: 'remote_git', taskId: 'task-2', authorizationId: 2 }
-  const visible = names(current)
-  assert.ok(visible.includes('createPullRequest'))
-  assert.ok(visible.includes('forkRepository'))
-  assert.ok(!visible.includes('writeFile'))
-  assert.ok(!visible.includes('cloneRepository'))
-})
-
-test('memory tool appears only after auto-memory is loaded', () => {
-  assert.ok(!names(state()).includes('writeMemory'))
-  assert.ok(names(state(), new Set(['auto-memory'])).includes('writeMemory'))
-})
-
-test('execution layer rejects stale write calls even when legacy flag is true', async () => {
+test('execution gate rejects writes and command execution before confirmation', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-permission-'))
-  const result = await executeTool(
-    'writeFile',
-    { filePath: resolve(rootDir, 'blocked.txt'), content: 'blocked' },
-    [rootDir],
-    true,
-    undefined,
-    { authorizedCapabilities: new Set(['read']) },
-  )
-  assert.match(result, /workspace_write 权限/)
+  const filePath = resolve(rootDir, 'blocked.txt')
+  const write = await executeToolResult('writeFile', { filePath, content: 'blocked' }, [rootDir], false)
+  const verify = await executeToolResult('verifyCode', { rootDir, changedFiles: '' }, [rootDir], false)
+
+  assert.equal(write.code, 'PERMISSION_DENIED')
+  assert.equal(verify.code, 'PERMISSION_DENIED')
+  await assert.rejects(readFile(filePath, 'utf8'), /ENOENT/)
+})
+
+test('execution gate allows a confirmed write', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'agent-permission-'))
+  const filePath = resolve(rootDir, 'allowed.txt')
+  const write = await executeToolResult('writeFile', { filePath, content: 'allowed' }, [rootDir], true)
+
+  assert.equal(write.ok, true)
+  assert.equal(await readFile(filePath, 'utf8'), 'allowed')
+})
+
+test('chat and done both clear the current task permission', async () => {
+  const orchestrator = new Orchestrator('permission-reset', state('permission-reset'))
+  const handler = orchestrator as unknown as {
+    handleAgentResult(result: AgentResult): Promise<void>
+  }
+
+  for (const result of [
+    { action: 'chat', message: '回答完成' } as const,
+    { action: 'done', message: '修改完成' } as const,
+  ]) {
+    orchestrator.state.designConfirmed = true
+    orchestrator.state.goal = 'test goal'
+    orchestrator.state.pendingConfirm = { allowWrite: true, message: 'test' }
+    await handler.handleAgentResult(result)
+    assert.equal(orchestrator.state.designConfirmed, false)
+    assert.equal(orchestrator.state.goal, undefined)
+    assert.equal(orchestrator.state.pendingConfirm, undefined)
+  }
 })

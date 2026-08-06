@@ -1,5 +1,4 @@
 import { exec } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -211,7 +210,6 @@ export class Orchestrator {
 
     if (!this.state.goal && !this.state.confirmedRequirement) {
       this.state.goal = userInput
-      this.state.activeTaskId = randomUUID()
     }
 
     await this.runAgentTurn(userInput, onEvent)
@@ -240,7 +238,7 @@ export class Orchestrator {
     switch (result.action) {
       case 'chat':
         await this.emitOutput(result.message, onEvent)
-        if (result.taskComplete) this.clearCurrentTaskState()
+        this.clearCurrentTaskState()
         break
       case 'ask_user':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
@@ -257,15 +255,9 @@ export class Orchestrator {
         this.state.pendingConfirm = {
           allowWrite,
           message: result.message || result.prompt,
-          scope: result.confirmScope,
         }
         if (allowWrite) {
-          const scopeLabel = result.confirmScope === 'remote_git'
-            ? '远程 Git 操作权限（Fork、Push、PR）'
-            : result.confirmScope === 'destructive_revert'
-              ? '破坏性回退权限'
-              : '本地工作区写入与验证权限'
-          await this.emitOutput(`\n⚠️ 确认后 Agent 将获得${scopeLabel}，请仔细核对方案内容。`, onEvent)
+          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入和副作用操作权限，请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':
@@ -283,8 +275,6 @@ export class Orchestrator {
     this.state.failedTaskIds = []
     this.state.pendingConfirm = undefined
     this.state.designConfirmed = false
-    this.state.authorization = undefined
-    this.state.activeTaskId = undefined
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
   }
 
@@ -294,16 +284,7 @@ export class Orchestrator {
 
     if (pending.allowWrite) {
       this.state.designConfirmed = true
-      const authorizationId = (this.state.authorizationCounter ?? 0) + 1
-      const scope = pending.scope ?? 'workspace_write'
-      this.state.authorizationCounter = authorizationId
-      this.state.activeTaskId = this.state.activeTaskId ?? randomUUID()
-      this.state.authorization = {
-        scope,
-        taskId: this.state.activeTaskId,
-        authorizationId,
-      }
-      await this.emitOutput(`\n[已确认] Agent 已获得 ${scope} 权限，开始执行...`, onEvent)
+      await this.emitOutput('\n[已确认] Agent 已获得写入权限，开始执行...', onEvent)
     } else {
       this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
       await this.emitOutput('\n[已确认] 正在继续...', onEvent)

@@ -24,14 +24,6 @@ export type RepositoryConfig = {
   gitUserEmail?: string
 }
 
-export type ConfirmationScope = 'workspace_write' | 'remote_git' | 'destructive_revert'
-
-export type AuthorizationState = {
-  scope: ConfirmationScope
-  taskId: string
-  authorizationId: number
-}
-
 export function isMemoryRecallMode(value: unknown): value is MemoryRecallMode {
   return value === 'auto' || value === 'off' || value === 'on'
 }
@@ -76,39 +68,24 @@ export type WorldState = {
   designTasks?: DesignTask[]
   completedTaskIds: string[]
   failedTaskIds: string[]
-  activeTaskId?: string
-  authorizationCounter?: number
-  authorization?: AuthorizationState
 
   // Pending confirmation
-  pendingConfirm?: {
-    allowWrite: boolean
-    message: string
-    scope?: ConfirmationScope
-  }
+  pendingConfirm?: { allowWrite: boolean; message: string }
 
   // Write gate: true = user confirmed design, writes allowed
   designConfirmed?: boolean
 }
 
 export type AgentResult =
-  | { action: 'chat'; message: string; taskComplete?: boolean }
+  | { action: 'chat'; message: string }
   | { action: 'ask_user'; questions: string[]; message?: string }
-  | {
-      action: 'confirm'
-      prompt: string
-      message?: string
-      confirmType?: 'allow_write'
-      confirmScope?: ConfirmationScope
-    }
+  | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'allow_write' }
   | { action: 'done'; message: string }
 
 export type AgentEvent =
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
   | { type: 'retry'; attempt: number; maxAttempts: number; reason: string; delayMs: number }
-  | { type: 'protocol_fallback'; action: AgentResult['action'] }
-  | { type: 'protocol_violation'; message: string }
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }

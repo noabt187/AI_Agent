@@ -20,7 +20,7 @@ test('executeToolResult returns stable codes for unknown and invalid calls', asy
   assert.equal(invalid.code, 'PATH_OUTSIDE_ALLOWED')
 })
 
-test('executeToolResult distinguishes permission and checkpoint failures', async () => {
+test('executeToolResult distinguishes permission failures from successful writes', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-tool-result-'))
   const filePath = resolve(rootDir, 'file.txt')
   const denied = await executeToolResult(
@@ -28,18 +28,14 @@ test('executeToolResult distinguishes permission and checkpoint failures', async
     { filePath, content: 'x' },
     [rootDir],
     false,
-    undefined,
-    { authorizedCapabilities: new Set(['read']) },
   )
   assert.equal(denied.code, 'PERMISSION_DENIED')
 
-  const missingCheckpoint = await executeToolResult(
+  const allowed = await executeToolResult(
     'writeFile',
     { filePath, content: 'x' },
     [rootDir],
     true,
-    undefined,
-    { authorizedCapabilities: new Set(['read', 'workspace_write']) },
   )
-  assert.equal(missingCheckpoint.code, 'CHECKPOINT_FAILED')
+  assert.equal(allowed.code, 'OK')
 })

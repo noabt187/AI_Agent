@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { evalTasks } from '../eval/cases.js'
 import { runToolContractEval } from '../eval/harness/toolContracts.js'
 import { diffSnapshots, prepareTrialWorkspace, snapshotWorkspace } from '../eval/harness/workspace.js'
-import { executeTool } from '../src/tools/index.js'
+import { executeToolResult } from '../src/tools/index.js'
 
 test('local eval mode blocks all remote side-effect tools', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'agent-eval-remote-block-'))
@@ -14,8 +14,8 @@ test('local eval mode blocks all remote side-effect tools', async () => {
   process.env.AGENT_EVAL_LOCAL_ONLY = '1'
   try {
     for (const name of ['createPullRequest', 'forkRepository', 'cloneRepository']) {
-      const result = await executeTool(name, { rootDir, repoUrl: 'owner/repo' }, [rootDir], true)
-      assert.match(result, /本地评测模式已阻断/)
+      const result = await executeToolResult(name, { rootDir, repoUrl: 'owner/repo' }, [rootDir], true)
+      assert.equal(result.code, 'REMOTE_SIDE_EFFECT_BLOCKED')
     }
   } finally {
     if (previous === undefined) delete process.env.AGENT_EVAL_LOCAL_ONLY
@@ -29,7 +29,7 @@ test('trial workspace is initialized from fixture and snapshot detects only chan
   const { workspace, baseline } = await prepareTrialWorkspace(task, runsRoot, 'fixture-r1')
   assert.equal(await readFile(resolve(workspace, 'src/math.mjs'), 'utf8'), task.fixture['src/math.mjs'])
 
-  await executeTool(
+  await executeToolResult(
     'writeFile',
     { filePath: resolve(workspace, 'src/math.mjs'), content: 'export const value = 1\n' },
     [workspace],
