@@ -18,6 +18,7 @@ export type Message = {
 
 export type SDKMessage =
   | { kind: 'delta'; uuid: string; role: 'assistant'; delta: string; createdAt: number }
+  | { kind: 'retry'; attempt: number; maxAttempts: number; reason: string; delayMs: number }
   | { kind: 'message'; uuid: string; role: 'system' | 'user' | 'assistant' | 'tool'; content: string; createdAt: number; isMeta?: boolean; toolName?: string; toolCallId?: string; toolCalls?: LlmToolCall[] }
   | { kind: 'tool_calls'; toolCalls: LlmToolCall[] }
 

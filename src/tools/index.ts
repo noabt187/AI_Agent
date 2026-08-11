@@ -11,6 +11,11 @@ import { saveCheckpointTool } from './saveCheckpoint.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
+import {
+  toolFailure,
+  toolSuccess,
+  type ToolResult,
+} from './types.js'
 
 type ToolScope = 'read' | 'write' | 'memory'
 
@@ -30,6 +35,12 @@ type ExecuteToolOptions = {
   turnLoadedSkills?: Set<string>
   repository?: RepositoryConfig
 }
+
+const REMOTE_SIDE_EFFECT_TOOLS = new Set([
+  'createPullRequest',
+  'forkRepository',
+  'cloneRepository',
+])
 
 function isDefaultValueToken(value: string | undefined): boolean {
   const trimmed = value?.trim().toLowerCase() ?? ''
@@ -107,7 +118,7 @@ const toolRegistry: Record<string, ToolDef> = {
     fn: verifyCodeTool,
     description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
-    scope: 'read',
+    scope: 'write',
   },
   createPullRequest: {
     fn: createPullRequestTool,
@@ -202,25 +213,47 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
 
 // ── Execute Tool ────────────────────────────────────────────────────
 
-export async function executeTool(
+function legacyToolOutput(raw: string): ToolResult {
+  if (/^❌\s*验证未通过/.test(raw)) {
+    return toolFailure('COMMAND_FAILED', raw, false, { output: raw })
+  }
+  if (/^(错误|工具执行错误)/.test(raw.trim())) {
+    const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(raw)
+    return toolFailure(commandMissing ? 'COMMAND_NOT_FOUND' : 'TOOL_EXECUTION_FAILED', raw, false, { output: raw })
+  }
+  return toolSuccess(raw, { output: raw })
+}
+
+export async function executeToolResult(
   name: string,
   args: Record<string, string>,
   allowedPaths: string[],
   designConfirmed?: boolean,
   signal?: AbortSignal,
   options?: ExecuteToolOptions,
-): Promise<string> {
+): Promise<ToolResult> {
   const tool = toolRegistry[name]
-  if (!tool) return `错误：未知工具 "${name}"`
+  if (!tool) return toolFailure('UNKNOWN_TOOL', `未知工具 "${name}"`)
+
+  if (process.env.AGENT_EVAL_LOCAL_ONLY === '1' && REMOTE_SIDE_EFFECT_TOOLS.has(name)) {
+    return toolFailure(
+      'REMOTE_SIDE_EFFECT_BLOCKED',
+      `本地评测模式已阻断远程工具 "${name}"，未执行任何 GitHub 副作用操作。`,
+    )
+  }
+
   const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
-  // 写权限检查
+  // All file writes, command execution and remote operations share one gate.
   if (tool.scope === 'write' && !designConfirmed) {
-    return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
+    return toolFailure(
+      'PERMISSION_DENIED',
+      '当前未确认方案，请先向用户说明修改方案，等待用户确认后再执行副作用操作。',
+    )
   }
 
   if (tool.scope === 'memory' && !options?.turnLoadedSkills?.has('auto-memory')) {
-    return '错误：writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。'
+    return toolFailure('PERMISSION_DENIED', 'writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。')
   }
 
   // 校验 rootDir（如果工具有此参数）
@@ -230,30 +263,30 @@ export async function executeTool(
   const validatePathArg = (val: string | undefined, argName: string): string | null => {
     if (!val) return null
     if (!isAbsolute(val)) {
-      return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
+      return `参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
     }
     if (!isInsideAllowedPaths(val, allowedPaths)) {
-      return `错误：路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
+      return `路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
     }
     return null
   }
 
   if (rootDir) {
     const err = validatePathArg(rootDir, 'rootDir')
-    if (err) return err
+    if (err) return toolFailure('PATH_OUTSIDE_ALLOWED', err)
   }
 
   // 校验路径参数：必须是绝对路径且在可操作目录内
   for (const argName of tool.pathArgNames ?? []) {
     const err = validatePathArg(effectiveArgs[argName], argName)
-    if (err) return err
+    if (err) return toolFailure('PATH_OUTSIDE_ALLOWED', err)
   }
 
   // 必填参数校验
   const requiredArgNames = tool.requiredArgNames ?? tool.argNames
   for (const argName of requiredArgNames) {
     if (!effectiveArgs[argName] || effectiveArgs[argName].trim() === '') {
-      return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
+      return toolFailure('INVALID_ARGUMENTS', `工具 "${name}" 缺少必需参数 "${argName}"`)
     }
   }
 
@@ -263,8 +296,15 @@ export async function executeTool(
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
       .map((n) => effectiveArgs[n] ?? '')
 
-    return await tool.fn(effectiveRootDir, ...argValues)
+    return legacyToolOutput(await tool.fn(effectiveRootDir, ...argValues))
   } catch (e: unknown) {
-    return `工具执行错误：${e instanceof Error ? e.message : String(e)}`
+    const message = e instanceof Error ? e.message : String(e)
+    const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(message)
+    const timedOut = /timed?\s*out|ETIMEDOUT/i.test(message)
+    return toolFailure(
+      commandMissing ? 'COMMAND_NOT_FOUND' : timedOut ? 'TIMEOUT' : 'TOOL_EXECUTION_FAILED',
+      message,
+      timedOut,
+    )
   }
 }

@@ -85,6 +85,7 @@ export type AgentResult =
 export type AgentEvent =
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
+  | { type: 'retry'; attempt: number; maxAttempts: number; reason: string; delayMs: number }
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }

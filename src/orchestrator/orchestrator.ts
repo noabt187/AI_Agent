@@ -238,6 +238,7 @@ export class Orchestrator {
     switch (result.action) {
       case 'chat':
         await this.emitOutput(result.message, onEvent)
+        this.clearCurrentTaskState()
         break
       case 'ask_user':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
@@ -256,7 +257,7 @@ export class Orchestrator {
           message: result.message || result.prompt,
         }
         if (allowWrite) {
-          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
+          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入和副作用操作权限，请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':
@@ -283,7 +284,7 @@ export class Orchestrator {
 
     if (pending.allowWrite) {
       this.state.designConfirmed = true
-      await this.emitOutput('\n[已确认] Agent 已获得文件写入权限，开始执行...', onEvent)
+      await this.emitOutput('\n[已确认] Agent 已获得写入权限，开始执行...', onEvent)
     } else {
       this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
       await this.emitOutput('\n[已确认] 正在继续...', onEvent)
@@ -298,6 +299,7 @@ export class Orchestrator {
       await this.emitOutput(`\n当前操作目录: ${this.state.allowedPaths.join(', ')}`, onEvent)
       const input = await this.askInput('请输入新的操作目录（多个目录用逗号分隔）：')
       if (input.trim()) {
+        this.clearCurrentTaskState()
         this.state.allowedPaths = input.split(',').map((p) => p.trim()).filter(Boolean)
         await this.persist()
         await this.emitOutput(`[操作目录已更新] ${this.state.allowedPaths.join(', ')}`, onEvent)
