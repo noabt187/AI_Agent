@@ -16,6 +16,10 @@
 - **记忆系统**：记忆分层设计，分为项目记忆和全局记忆，同时记忆支持模型自动生成和用户手写注入
 - **上下文压缩**：自动检测 token 用量，超阈值时压缩上下文
 
+## DeepSeek Harness 插件
+
+仓库内提供了可独立安装的 [`dsh-frontend-feedback`](plugins/dsh-frontend-feedback/README.md) 插件。它把现有的 DOM 元素选取与评论能力接入 DeepSeek Harness Web 会话，并内置 `frontend-page-builder` Skill，支持“先构建页面，再通过可视化评注持续微调”的闭环。插件的构建、安装、安全配置和使用方法见其目录中的 README。
+
 ## 依赖环境
 
 | 依赖 | 版本要求 | 说明 |
@@ -214,10 +218,14 @@ winget install --id GitHub.cli
 gh auth login
 ```
 
-如果 `gh` 不在 PATH 中，Agent 会自动搜索以下路径：
-- `C:\Program Files\GitHub CLI\gh.exe`
+如果 `gh` 不在 PATH 中，可先验证安装路径（以 PowerShell 为例）：
+```powershell
+Get-Command gh | Format-List Source
+```
+或检查常见安装目录：
 - `%USERPROFILE%\bin\gh.exe`
 - `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe`
+- `%ProgramFiles%\GitHub CLI\gh.exe`
 
 ### npm 工作区
 
