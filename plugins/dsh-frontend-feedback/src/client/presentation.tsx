@@ -5,8 +5,10 @@ import {
   PRESENTATION_JOB_PATH,
   PRESENTATION_PLAN_PATH,
   PRESENTATION_SOURCE_PATH,
+  isPresentationRequestSettled,
   normalizePresentationJobSnapshot,
   normalizePresentationPlan,
+  presentationJobStorageKey,
 } from '../presentation.ts'
 import type {
   PresentationDocumentBrief,
@@ -25,6 +27,7 @@ interface PresentationDocumentDialogProps {
   onRequestOutline(source: PresentationSourceSummary, brief: PresentationDocumentBrief): Promise<void>
   onRequestGeneration(source: PresentationSourceSummary): Promise<void>
   onPreviewReady(url: string): void
+  onJobChange(jobId: string | null): void
 }
 
 interface SlideRailProps {
@@ -58,12 +61,14 @@ const styles: Record<string, CSSProperties> = {
   uploadBox: { gridColumn: '1 / -1', display: 'grid', gap: 10, padding: 14, border: '1px dashed #466053', borderRadius: 10, background: '#0f1512' },
   fileRow: { display: 'flex', alignItems: 'center', gap: 10 },
   fileButton: { height: 34, padding: '0 13px', border: 0, borderRadius: 8, color: '#102016', background: '#a9e2b7', cursor: 'pointer', fontWeight: 800 },
-  fileName: { minWidth: 0, overflow: 'hidden', color: '#c9d5cc', fontSize: 12, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  fileName: { minWidth: 0, flex: 1, overflow: 'hidden', color: '#c9d5cc', fontSize: 12, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  removeFile: { flex: 'none', height: 28, padding: '0 9px', border: '1px solid #5f3939', borderRadius: 7, color: '#e8aaaa', background: '#261717', cursor: 'pointer', fontSize: 11 },
   divider: { display: 'flex', alignItems: 'center', gap: 10, color: '#718079', fontSize: 10 },
   dividerLine: { height: 1, flex: 1, background: '#28362f' },
   infoBox: { padding: 12, border: '1px solid #2c3d34', borderRadius: 9, background: '#17201c', color: '#b8c8bd', fontSize: 12, lineHeight: 1.6 },
   warning: { marginTop: 7, color: '#e0bd7c', fontSize: 11 },
   error: { marginTop: 12, padding: 10, border: '1px solid #6c3737', borderRadius: 8, color: '#ffb6b6', background: '#2a1717', fontSize: 12, lineHeight: 1.5 },
+  notice: { marginTop: 12, padding: 10, border: '1px solid #3e6150', borderRadius: 8, color: '#b9ddc3', background: '#14231b', fontSize: 12, lineHeight: 1.5 },
   actions: { display: 'flex', justifyContent: 'space-between', gap: 9, marginTop: 18 },
   actionGroup: { display: 'flex', justifyContent: 'flex-end', gap: 9 },
   cancel: { height: 34, padding: '0 13px', border: '1px solid #2c3d34', borderRadius: 8, color: '#c9d5cc', background: 'transparent', cursor: 'pointer' },
@@ -91,6 +96,16 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
 async function responseJson(response: Response): Promise<unknown> {
   const value = await response.json().catch(() => null)
   if (!response.ok) {
@@ -110,13 +125,9 @@ function responseErrorMessage(value: unknown, status: number): string {
   return error.message
 }
 
-function jobStorageKey(sessionId: string): string {
-  return `dsh-pagecraft.presentation-job:${sessionId}`
-}
-
 function persistedJobId(sessionId: string): string | null {
   try {
-    return window.localStorage.getItem(jobStorageKey(sessionId))
+    return window.localStorage.getItem(presentationJobStorageKey(sessionId))
   } catch {
     return null
   }
@@ -124,8 +135,8 @@ function persistedJobId(sessionId: string): string | null {
 
 function persistJobId(sessionId: string, jobId: string | null): void {
   try {
-    if (jobId === null) window.localStorage.removeItem(jobStorageKey(sessionId))
-    else window.localStorage.setItem(jobStorageKey(sessionId), jobId)
+    if (jobId === null) window.localStorage.removeItem(presentationJobStorageKey(sessionId))
+    else window.localStorage.setItem(presentationJobStorageKey(sessionId), jobId)
   } catch {
     // Job files remain durable in the workspace even when browser storage is unavailable.
   }
@@ -186,6 +197,7 @@ export function PresentationDocumentDialog({
   onRequestOutline,
   onRequestGeneration,
   onPreviewReady,
+  onJobChange,
 }: PresentationDocumentDialogProps): ReactElement {
   const [brief, setBrief] = useState<PresentationDocumentBrief>({ ...DEFAULT_PRESENTATION_DOCUMENT_BRIEF })
   const [file, setFile] = useState<File | null>(null)
@@ -193,11 +205,16 @@ export function PresentationDocumentDialog({
   const [snapshot, setSnapshot] = useState<PresentationJobSnapshot | null>(null)
   const [plan, setPlan] = useState<PresentationPlan | null>(null)
   const [busy, setBusy] = useState(false)
+  const [sourceProcessing, setSourceProcessing] = useState(false)
+  const [sourceCancellationRequested, setSourceCancellationRequested] = useState(false)
   const [requestedPhase, setRequestedPhase] = useState<'planning' | 'generating' | null>(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const previewOpenedRef = useRef<string | null>(null)
   const planLoadedForJobRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadAbortControllerRef = useRef<AbortController | null>(null)
+  const generationSubmissionRef = useRef(false)
 
   function updateBrief<K extends keyof PresentationDocumentBrief>(key: K, value: PresentationDocumentBrief[K]): void {
     setBrief(current => ({ ...current, [key]: value }))
@@ -209,6 +226,7 @@ export function PresentationDocumentDialog({
     const next = normalizePresentationJobSnapshot(value)
     if (next === null) throw new Error('服务器返回了无法识别的演示任务状态')
     setSnapshot(next)
+    onJobChange(next.jobId)
     if (next.plan !== undefined && planLoadedForJobRef.current !== next.jobId) {
       planLoadedForJobRef.current = next.jobId
       setPlan(clonePlan(next.plan))
@@ -225,6 +243,7 @@ export function PresentationDocumentDialog({
     if (jobId === null) return
     void loadJob(jobId).catch((loadError) => {
       persistJobId(sessionId, null)
+      onJobChange(null)
       setError(`恢复上次任务失败：${describeError(loadError)}`)
     })
   }, [sessionId])
@@ -237,11 +256,17 @@ export function PresentationDocumentDialog({
     if (!active) return
     const timer = window.setInterval(() => {
       void loadJob(snapshot.jobId).then((next) => {
-        if (next.phase === 'outline_ready' || next.phase === 'ready' || next.phase === 'failed') setRequestedPhase(null)
+        if (requestedPhase !== null && isPresentationRequestSettled(requestedPhase, next.phase)) {
+          setRequestedPhase(null)
+        }
       }).catch(pollError => setError(`读取生成进度失败：${describeError(pollError)}`))
     }, 1600)
     return () => window.clearInterval(timer)
   }, [requestedPhase, snapshot?.jobId, snapshot?.phase])
+
+  useEffect(() => {
+    return () => uploadAbortControllerRef.current?.abort()
+  }, [])
 
   const sourceReady = file !== null || pastedText.trim().length > 0
   const showPlanning = snapshot !== null
@@ -255,20 +280,42 @@ export function PresentationDocumentDialog({
 
   function reset(): void {
     persistJobId(sessionId, null)
+    onJobChange(null)
     planLoadedForJobRef.current = null
     previewOpenedRef.current = null
     setSnapshot(null)
     setPlan(null)
     setFile(null)
+    if (fileInputRef.current !== null) fileInputRef.current.value = ''
     setPastedText('')
     setRequestedPhase(null)
     setError('')
+    setNotice('')
+  }
+
+  function removeSelectedFile(): void {
+    setFile(null)
+    if (fileInputRef.current !== null) fileInputRef.current.value = ''
+    setError('')
+    setNotice('')
+  }
+
+  function cancelSourceProcessing(): void {
+    if (uploadAbortControllerRef.current === null) return
+    setSourceCancellationRequested(true)
+    setNotice('正在取消文件上传和解析…')
+    uploadAbortControllerRef.current.abort()
   }
 
   async function uploadAndPlan(): Promise<void> {
     if (!sourceReady) return
+    const controller = new AbortController()
+    uploadAbortControllerRef.current = controller
     setBusy(true)
+    setSourceProcessing(true)
+    setSourceCancellationRequested(false)
     setError('')
+    setNotice('')
     try {
       const body = file ?? new Blob([pastedText.trim()], { type: 'text/markdown;charset=utf-8' })
       const filename = file?.name ?? 'pasted-content.md'
@@ -277,17 +324,28 @@ export function PresentationDocumentDialog({
         method: 'POST',
         headers: { 'content-type': file?.type || body.type || 'application/octet-stream' },
         body,
+        signal: controller.signal,
       }))
       const next = normalizePresentationJobSnapshot(value)
       if (next === null) throw new Error('服务器返回了无法识别的文档解析结果')
+      uploadAbortControllerRef.current = null
+      setSourceProcessing(false)
       persistJobId(sessionId, next.jobId)
+      onJobChange(next.jobId)
       setSnapshot(next)
       setRequestedPhase('planning')
       await onRequestOutline(next.source, brief)
     } catch (uploadError) {
       setRequestedPhase(null)
-      setError(describeError(uploadError))
+      if (controller.signal.aborted || isAbortError(uploadError)) {
+        setNotice('已取消文件上传和解析，可以调整资料后重新开始。')
+      } else {
+        setError(describeError(uploadError))
+      }
     } finally {
+      if (uploadAbortControllerRef.current === controller) uploadAbortControllerRef.current = null
+      setSourceProcessing(false)
+      setSourceCancellationRequested(false)
       setBusy(false)
     }
   }
@@ -348,13 +406,15 @@ export function PresentationDocumentDialog({
   }
 
   async function saveAndGenerate(): Promise<void> {
-    if (snapshot === null || plan === null) return
+    if (snapshot === null || plan === null || generationSubmissionRef.current) return
     const normalized = normalizePresentationPlan(plan)
     if (normalized === null) {
       setError('目录至少需要 3 页，并且标题不能为空。')
       return
     }
+    generationSubmissionRef.current = true
     setBusy(true)
+    setRequestedPhase('generating')
     setError('')
     try {
       const query = new URLSearchParams({ sessionId, jobId: snapshot.jobId })
@@ -367,12 +427,12 @@ export function PresentationDocumentDialog({
       if (saved === null) throw new Error('服务器没有正确保存目录')
       setSnapshot(saved)
       setPlan(clonePlan(normalized))
-      setRequestedPhase('generating')
       await onRequestGeneration(saved.source)
     } catch (generationError) {
       setRequestedPhase(null)
       setError(describeError(generationError))
     } finally {
+      generationSubmissionRef.current = false
       setBusy(false)
     }
   }
@@ -420,18 +480,27 @@ export function PresentationDocumentDialog({
                 const next = event.target.files?.[0] ?? null
                 setFile(next)
                 if (next !== null) setPastedText('')
+                setError('')
+                setNotice('')
               }}
             />
             <div style={styles.fileRow}>
-              <button type="button" onClick={() => fileInputRef.current?.click()} style={styles.fileButton}>选择文件</button>
-              <span style={styles.fileName}>{file?.name ?? '支持 PDF、DOCX、Markdown、TXT，最大 25 MB'}</span>
+              <button type="button" disabled={sourceProcessing} onClick={() => fileInputRef.current?.click()} style={withDisabledStyle(styles.fileButton, sourceProcessing)}>选择文件</button>
+              <span style={styles.fileName}>{file === null ? '支持 PDF、DOCX、Markdown、TXT，最大 25 MB' : `${file.name} · ${formatFileSize(file.size)}`}</span>
+              {file !== null ? (
+                <button type="button" disabled={sourceProcessing} onClick={removeSelectedFile} style={withDisabledStyle(styles.removeFile, sourceProcessing)} aria-label={`移除 ${file.name}`}>移除</button>
+              ) : null}
             </div>
             <div style={styles.divider}><span style={styles.dividerLine} /><span>或者直接粘贴文字</span><span style={styles.dividerLine} /></div>
             <textarea
               value={pastedText}
-              disabled={file !== null}
-              onChange={event => setPastedText(event.target.value)}
-              style={withDisabledStyle(styles.textarea, file !== null)}
+              disabled={file !== null || sourceProcessing}
+              onChange={(event) => {
+                setPastedText(event.target.value)
+                setError('')
+                setNotice('')
+              }}
+              style={withDisabledStyle(styles.textarea, file !== null || sourceProcessing)}
               placeholder="粘贴文章、报告、需求说明或其他资料……"
             />
           </div>
@@ -529,6 +598,13 @@ export function PresentationDocumentDialog({
 
   function renderPrimaryAction(): ReactNode {
     if (snapshot === null) {
+      if (sourceProcessing) {
+        return (
+          <button type="button" disabled={sourceCancellationRequested} onClick={cancelSourceProcessing} style={withDisabledStyle(styles.cancel, sourceCancellationRequested)}>
+            {sourceCancellationRequested ? '正在取消…' : '取消处理'}
+          </button>
+        )
+      }
       const disabled = effectiveBusy || !sourceReady
       return (
         <button type="button" disabled={disabled} onClick={() => { void uploadAndPlan() }} style={withDisabledStyle(styles.submit, disabled)}>
@@ -565,6 +641,7 @@ export function PresentationDocumentDialog({
         {renderDialogContent()}
 
         {error ? <div role="alert" style={styles.error}>{error}</div> : null}
+        {notice ? <div role="status" style={styles.notice}>{notice}</div> : null}
 
         <div style={styles.actions}>
           <div>

@@ -46,6 +46,7 @@ export interface CreatePresentationSourceOptions {
   maxTextCharacters?: number
   now?: Date
   jobId?: string
+  signal?: AbortSignal
 }
 
 interface ExtractedPdfPage {
@@ -83,6 +84,14 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function cancellationError(options?: ErrorOptions): PresentationDocumentError {
+  return new PresentationDocumentError('已取消文件上传或解析', 499, 'PRESENTATION_SOURCE_CANCELLED', options)
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw cancellationError({ cause: signal.reason })
+}
+
 function assertDocumentSignature(extension: string, bytes: Buffer): void {
   if (extension === '.pdf' && bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
     throw new PresentationDocumentError('文件扩展名是 PDF，但内容不是有效的 PDF 文件', 415, 'DOCUMENT_SIGNATURE_MISMATCH')
@@ -95,10 +104,19 @@ function assertDocumentSignature(extension: string, bytes: Buffer): void {
   }
 }
 
-async function extractPdf(bytes: Buffer): Promise<ExtractedPresentationDocument> {
-  const parser = new PDFParse({ data: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) })
+async function extractPdf(bytes: Buffer, signal?: AbortSignal): Promise<ExtractedPresentationDocument> {
+  throwIfCancelled(signal)
+  const parser = new PDFParse({ data: Uint8Array.from(bytes) })
+  let abortDestroyPromise: Promise<void> | null = null
+
+  function handleAbort(): void {
+    abortDestroyPromise = parser.destroy().catch(() => {})
+  }
+
+  signal?.addEventListener('abort', handleAbort, { once: true })
   try {
     const result = await parser.getText()
+    throwIfCancelled(signal)
     const resultPages = (result as { pages?: unknown }).pages
     const pages: ExtractedPdfPage[] = Array.isArray(resultPages) ? resultPages : []
     const pageText = pages
@@ -117,11 +135,14 @@ async function extractPdf(bytes: Buffer): Promise<ExtractedPresentationDocument>
     if (pages.length > 0) extracted.pageCount = pages.length
     return extracted
   } catch (error) {
+    if (signal?.aborted === true) throw cancellationError({ cause: error })
     if (error instanceof PresentationDocumentError) throw error
     const message = describeError(error)
     const detail = /password/i.test(message) ? 'PDF 已加密，请先解除密码后重新上传' : `PDF 解析失败：${message}`
     throw new PresentationDocumentError(detail, 422, 'PDF_PARSE_FAILED', { cause: error })
   } finally {
+    signal?.removeEventListener('abort', handleAbort)
+    await abortDestroyPromise
     await parser.destroy().catch(() => {})
   }
 }
@@ -132,9 +153,11 @@ function formatPdfPage(page: ExtractedPdfPage, index: number): string {
   return `## PDF 第 ${page.num ?? index + 1} 页\n\n${content}`
 }
 
-async function extractDocx(bytes: Buffer): Promise<ExtractedPresentationDocument> {
+async function extractDocx(bytes: Buffer, signal?: AbortSignal): Promise<ExtractedPresentationDocument> {
+  throwIfCancelled(signal)
   try {
     const result = await mammoth.extractRawText({ buffer: bytes })
+    throwIfCancelled(signal)
     const text = normalizeExtractedText(result.value)
     if (text.length === 0) {
       throw new PresentationDocumentError('Word 文档中没有提取到文字', 422, 'DOCX_TEXT_NOT_FOUND')
@@ -145,6 +168,7 @@ async function extractDocx(bytes: Buffer): Promise<ExtractedPresentationDocument
       warnings: result.messages.map(message => message.message).filter(Boolean).slice(0, 20),
     }
   } catch (error) {
+    if (signal?.aborted === true) throw cancellationError({ cause: error })
     if (error instanceof PresentationDocumentError) throw error
     throw new PresentationDocumentError(
       `Word 文档解析失败：${describeError(error)}`,
@@ -155,7 +179,12 @@ async function extractDocx(bytes: Buffer): Promise<ExtractedPresentationDocument
   }
 }
 
-function extractTextDocument(extension: string, bytes: Buffer): ExtractedPresentationDocument {
+function extractTextDocument(
+  extension: string,
+  bytes: Buffer,
+  signal?: AbortSignal,
+): ExtractedPresentationDocument {
+  throwIfCancelled(signal)
   try {
     return {
       extension,
@@ -170,14 +199,15 @@ function extractTextDocument(extension: string, bytes: Buffer): ExtractedPresent
 async function extractDocumentByExtension(
   extension: string,
   bytes: Buffer,
+  signal?: AbortSignal,
 ): Promise<ExtractedPresentationDocument> {
   switch (extension) {
     case '.pdf':
-      return extractPdf(bytes)
+      return extractPdf(bytes, signal)
     case '.docx':
-      return extractDocx(bytes)
+      return extractDocx(bytes, signal)
     default:
-      return extractTextDocument(extension, bytes)
+      return extractTextDocument(extension, bytes, signal)
   }
 }
 
@@ -185,13 +215,16 @@ export async function extractPresentationDocument(
   fileName: string,
   bytes: Buffer,
   maxTextCharacters = DEFAULT_MAX_EXTRACTED_TEXT_CHARACTERS,
+  signal?: AbortSignal,
 ): Promise<ExtractedPresentationDocument> {
+  throwIfCancelled(signal)
   const safeName = safeOriginalName(fileName)
   const extension = supportedExtension(safeName)
   if (bytes.length === 0) throw new PresentationDocumentError('上传的文件是空文件')
   assertDocumentSignature(extension, bytes)
 
-  const extracted = await extractDocumentByExtension(extension, bytes)
+  const extracted = await extractDocumentByExtension(extension, bytes, signal)
+  throwIfCancelled(signal)
 
   if (extracted.text.length === 0) throw new PresentationDocumentError('文件中没有可用于生成演示文稿的文字', 422, 'DOCUMENT_TEXT_NOT_FOUND')
   if (extracted.text.length > maxTextCharacters) {
@@ -209,7 +242,7 @@ function presentationRoot(cwd: string): string {
   return resolve(cwd, '.pagecraft', 'presentations')
 }
 
-function presentationJobDirectory(cwd: string, jobId: string): string {
+export function resolvePresentationJobDirectory(cwd: string, jobId: string): string {
   if (!isPresentationJobId(jobId)) throw new PresentationDocumentError('演示任务 ID 无效')
   const root = presentationRoot(cwd)
   const directory = resolve(root, jobId)
@@ -254,11 +287,13 @@ export async function createPresentationSource(
   bytes: Buffer,
   options: CreatePresentationSourceOptions = {},
 ): Promise<PresentationJobSnapshot> {
+  throwIfCancelled(options.signal)
   const originalName = safeOriginalName(fileName)
-  const extracted = await extractPresentationDocument(fileName, bytes, options.maxTextCharacters)
+  const extracted = await extractPresentationDocument(fileName, bytes, options.maxTextCharacters, options.signal)
+  throwIfCancelled(options.signal)
   const now = options.now ?? new Date()
   const jobId = options.jobId ?? `presentation-${now.getTime().toString(36)}-${randomUUID().slice(0, 8)}`
-  const directory = presentationJobDirectory(cwd, jobId)
+  const directory = resolvePresentationJobDirectory(cwd, jobId)
   const originalPath = join(directory, `original${extracted.extension === '.markdown' ? '.md' : extracted.extension}`)
   const sourcePath = join(directory, 'source.md')
   const sourceJsonPath = join(directory, 'source.json')
@@ -266,8 +301,13 @@ export async function createPresentationSource(
   const deckPath = join(directory, 'deck.json')
   const statusPath = join(directory, 'status.json')
   await mkdir(directory, { recursive: true })
-  await writeFile(originalPath, bytes, { flag: 'wx' })
-  await writeFile(sourcePath, sourceMarkdown(originalName, extracted), { encoding: 'utf8', flag: 'wx' })
+  throwIfCancelled(options.signal)
+  await writeFile(originalPath, bytes, { flag: 'wx', signal: options.signal })
+  await writeFile(sourcePath, sourceMarkdown(originalName, extracted), {
+    encoding: 'utf8',
+    flag: 'wx',
+    signal: options.signal,
+  })
 
   const source: PresentationSourceSummary = {
     jobId,
@@ -302,7 +342,7 @@ async function readJson(path: string): Promise<unknown> {
 }
 
 export async function readPresentationJob(cwd: string, jobId: string): Promise<PresentationJobSnapshot> {
-  const directory = presentationJobDirectory(cwd, jobId)
+  const directory = resolvePresentationJobDirectory(cwd, jobId)
   const source = await readJson(join(directory, 'source.json'))
   const status = await readJson(join(directory, 'status.json'))
   let plan: unknown
@@ -326,7 +366,7 @@ export async function savePresentationPlan(cwd: string, jobId: string, value: un
   const plan = normalizePresentationPlan(value)
   if (plan === null) throw new PresentationDocumentError('目录格式无效：至少需要 3 张标题完整、ID 唯一的幻灯片', 400, 'PLAN_INVALID')
   const current = await readPresentationJob(cwd, jobId)
-  const directory = presentationJobDirectory(cwd, jobId)
+  const directory = resolvePresentationJobDirectory(cwd, jobId)
   const updated: PresentationJobSnapshot = {
     ...current,
     phase: 'outline_ready',
@@ -343,7 +383,9 @@ export async function savePresentationPlan(cwd: string, jobId: string, value: un
 export async function readRequestBodyWithLimit(
   req: IncomingMessage,
   maxBytes = DEFAULT_MAX_DOCUMENT_BYTES,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
+  throwIfCancelled(signal)
   const declared = Number(req.headers['content-length'])
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw new PresentationDocumentError(`文件超过 ${Math.floor(maxBytes / 1024 / 1024)} MB 上传上限`, 413, 'DOCUMENT_TOO_LARGE')
@@ -351,11 +393,13 @@ export async function readRequestBodyWithLimit(
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
+    throwIfCancelled(signal)
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += bytes.length
     if (size > maxBytes) throw new PresentationDocumentError(`文件超过 ${Math.floor(maxBytes / 1024 / 1024)} MB 上传上限`, 413, 'DOCUMENT_TOO_LARGE')
     chunks.push(bytes)
   }
+  throwIfCancelled(signal)
   return Buffer.concat(chunks, size)
 }
 
