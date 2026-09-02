@@ -6,6 +6,11 @@ export type Skill = {
   content: string
 }
 
+export interface AgentSkillSource {
+  list(cwd: string): Promise<Skill[]>
+  get(name: string, cwd: string): Promise<string | null>
+}
+
 export function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
   const trimmed = raw.trim()
   if (!trimmed.startsWith('---')) return { meta: {}, body: trimmed }
@@ -30,6 +35,15 @@ export function parseFrontmatter(raw: string): { meta: Record<string, string>; b
 
 export async function loadSkills(skillsDir: string): Promise<Skill[]> {
   return loadEnabledSkills(skillsDir)
+}
+
+export function createFileAgentSkillSource(skillsDir: string): AgentSkillSource {
+  return {
+    list: async () => loadSkills(skillsDir),
+    async get(name) {
+      return useSkill(await loadSkills(skillsDir), name)
+    },
+  }
 }
 
 export function useSkill(skills: Skill[], skillName: string): string | null {

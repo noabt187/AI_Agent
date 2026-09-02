@@ -43,13 +43,21 @@ export const coreRoutesPlugin = {
   inject: ['webServer'],
   apply(ctx: Context) {
     ctx.effect(
-      () => ctx.webServer.register({ kind: 'prefix', path: '/api', handler: handleCoreRequest }),
+      () => ctx.webServer.register({
+        kind: 'prefix',
+        path: '/api',
+        handler: (req, res) => handleCoreRequest(req, res, ctx),
+      }),
       'ai-agent core API',
     )
   },
 }
 
-export async function handleCoreRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleCoreRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx?: Context,
+): Promise<void> {
   const method = req.method || 'GET'
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const { pathname } = url
@@ -85,7 +93,7 @@ export async function handleCoreRequest(req: IncomingMessage, res: ServerRespons
     }
 
     if (method === 'GET' && pathname === '/api/skills') {
-      sendJson(res, 200, { skills: await listManagedSkills() })
+      sendJson(res, 200, { skills: await managedSkills(ctx).list() })
       return
     }
 
@@ -93,7 +101,7 @@ export async function handleCoreRequest(req: IncomingMessage, res: ServerRespons
       const body = await readJson(req)
       const fileName = typeof body.fileName === 'string' ? body.fileName : ''
       const content = typeof body.content === 'string' ? body.content : ''
-      sendJson(res, 201, { skill: await uploadManagedSkill({ fileName, content }) })
+      sendJson(res, 201, { skill: await managedSkills(ctx).upload({ fileName, content }) })
       return
     }
 
@@ -102,14 +110,14 @@ export async function handleCoreRequest(req: IncomingMessage, res: ServerRespons
       const body = await readJson(req)
       if (typeof body.enabled !== 'boolean') throw new SkillRegistryError('enabled 必须是 boolean')
       const skillId = decodeURIComponent(skillEnableMatch[1])
-      sendJson(res, 200, { skill: await setManagedSkillEnabled(skillId, body.enabled) })
+      sendJson(res, 200, { skill: await managedSkills(ctx).setEnabled(skillId, body.enabled) })
       return
     }
 
     const skillDeleteMatch = pathname.match(/^\/api\/skills\/([^/]+)$/)
     if (method === 'DELETE' && skillDeleteMatch) {
       const skillId = decodeURIComponent(skillDeleteMatch[1])
-      sendJson(res, 200, await deleteManagedSkill(skillId))
+      sendJson(res, 200, await managedSkills(ctx).delete(skillId))
       return
     }
 
@@ -240,6 +248,21 @@ export async function handleCoreRequest(req: IncomingMessage, res: ServerRespons
     sendJson(res, 404, { error: 'Not found' })
   } catch (error) {
     sendJson(res, errorStatus(error), { error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+function managedSkills(ctx?: Context) {
+  const service = ctx?.get('managedSkills') as {
+    list(): ReturnType<typeof listManagedSkills>
+    upload(params: Parameters<typeof uploadManagedSkill>[0]): ReturnType<typeof uploadManagedSkill>
+    setEnabled(id: string, enabled: boolean): ReturnType<typeof setManagedSkillEnabled>
+    delete(id: string): ReturnType<typeof deleteManagedSkill>
+  } | undefined
+  return service ?? {
+    list: listManagedSkills,
+    upload: uploadManagedSkill,
+    setEnabled: setManagedSkillEnabled,
+    delete: deleteManagedSkill,
   }
 }
 

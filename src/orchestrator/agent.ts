@@ -4,7 +4,12 @@ import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
 import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
-import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
+import {
+  createFileAgentSkillSource,
+  getSkillCatalog,
+  type AgentSkillSource,
+  type Skill,
+} from '../skills/index.js'
 import {
   extractMemoryTerms,
   formatMemoryContext,
@@ -259,6 +264,8 @@ export function parseAgentResult(raw: string): AgentResult | null {
 }
 
 export class Agent {
+  constructor(private readonly skillSource: AgentSkillSource = createFileAgentSkillSource(SKILLS_DIR)) {}
+
   async run(
     sessionId: string,
     userInput: string,
@@ -272,7 +279,7 @@ export class Agent {
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
-    const allSkills = await loadSkills(SKILLS_DIR)
+    const allSkills = await this.skillSource.list(effectiveAllowedPaths[0])
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
     const memoryContext = shouldRecallTaskMemories(state, userInput)
       ? await formatMemoryContext({
@@ -345,7 +352,7 @@ export class Agent {
               await engine.appendToolResult(tc.id, 'use_skill', '错误：缺少 skillName 参数')
               continue
             }
-            const skillContent = useSkill(allSkills, skillName)
+            const skillContent = await this.skillSource.get(skillName, effectiveAllowedPaths[0])
             if (skillContent) {
               turnLoadedSkills.add(skillName)
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)

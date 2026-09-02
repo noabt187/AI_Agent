@@ -16,6 +16,7 @@ import type { EntryOptions, LoadedProfile } from './types.js'
 import coreRoutesPlugin from '../server/coreRoutes.js'
 import staticWebPlugin from '../server/staticWeb.js'
 import webServerPlugin from '../server/webServerPlugin.js'
+import managedSkillsPlugin from './services/skills.js'
 
 export type BuiltinPluginMap = Readonly<Record<string, unknown>>
 
@@ -49,6 +50,7 @@ const standardBuiltins: Record<string, unknown> = {
   'ai-agent-web-server': webServerPlugin,
   'ai-agent-core-routes': coreRoutesPlugin,
   'ai-agent-static-web': staticWebPlugin,
+  'ai-agent-managed-skills': managedSkillsPlugin,
 }
 const FIBER_STATE = {
   PENDING: 0 as FiberState.PENDING,
