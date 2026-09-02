@@ -12,7 +12,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test tests/**/*.test.ts tests/**/*.test.tsx",
+    "test:pagecraft-plugin": "node --import tsx --test tests/pagecraft-plugin.integration.test.ts tests/pagecraft-client.integration.test.tsx",
     "ai-agent": "tsx scripts/ai-agent.ts",
     "orchestrator": "tsx scripts/orchestrator-chat.ts",
     "predev": "npm run dev:cleanup",
