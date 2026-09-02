@@ -1,15 +1,12 @@
-import { resolve } from 'node:path'
 import { QueryEngine } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
-import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
 import {
-  createFileAgentSkillSource,
   getSkillCatalog,
-  type AgentSkillSource,
   type Skill,
 } from '../skills/index.js'
+import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
 import {
   extractMemoryTerms,
   formatMemoryContext,
@@ -21,8 +18,6 @@ import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 3
 const SYS_UUID = 'agent-sys-001'
-
-const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
 const USE_SKILL_TOOL_DEF: ToolDefinition = {
   type: 'function',
@@ -264,7 +259,7 @@ export function parseAgentResult(raw: string): AgentResult | null {
 }
 
 export class Agent {
-  constructor(private readonly skillSource: AgentSkillSource = createFileAgentSkillSource(SKILLS_DIR)) {}
+  constructor(private readonly runtime: AgentRuntime = legacyAgentRuntime) {}
 
   async run(
     sessionId: string,
@@ -279,7 +274,7 @@ export class Agent {
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
     const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
-    const allSkills = await this.skillSource.list(effectiveAllowedPaths[0])
+    const allSkills = await this.runtime.skills.list(effectiveAllowedPaths[0])
     const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
     const memoryContext = shouldRecallTaskMemories(state, userInput)
       ? await formatMemoryContext({
@@ -306,7 +301,7 @@ export class Agent {
       engine.state.messages[0].content = systemPrompt
     }
 
-    const tools = [...toolDefsToOpenAI('write'), USE_SKILL_TOOL_DEF]
+    const tools = [...this.runtime.tools.definitions('write'), USE_SKILL_TOOL_DEF]
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
@@ -352,7 +347,7 @@ export class Agent {
               await engine.appendToolResult(tc.id, 'use_skill', '错误：缺少 skillName 参数')
               continue
             }
-            const skillContent = await this.skillSource.get(skillName, effectiveAllowedPaths[0])
+            const skillContent = await this.runtime.skills.get(skillName, effectiveAllowedPaths[0])
             if (skillContent) {
               turnLoadedSkills.add(skillName)
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
@@ -372,14 +367,15 @@ export class Agent {
           }
 
           if (signal?.aborted) break
-          const result = await executeTool(
-            tc.name,
+          const result = await this.runtime.tools.execute({
+            name: tc.name,
             args,
-            effectiveAllowedPaths,
-            state.designConfirmed,
+            allowedPaths: effectiveAllowedPaths,
+            designConfirmed: state.designConfirmed,
             signal,
-            { turnLoadedSkills, repository: state.repository },
-          )
+            turnLoadedSkills,
+            repository: state.repository,
+          })
           await onEvent?.({ type: 'tool_result', name: tc.name, result })
           await engine.appendToolResult(tc.id, tc.name, result)
 

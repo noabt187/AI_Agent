@@ -12,11 +12,11 @@ import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
 
-type ToolScope = 'read' | 'write' | 'memory'
+export type ToolScope = 'read' | 'write' | 'memory'
 
-type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
+export type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
-type ToolDef = {
+export type ToolDef = {
   fn: ToolFn
   description: string
   argNames: string[]
@@ -26,7 +26,7 @@ type ToolDef = {
   argDescriptions?: Record<string, string>
 }
 
-type ExecuteToolOptions = {
+export type ExecuteToolOptions = {
   turnLoadedSkills?: Set<string>
   repository?: RepositoryConfig
 }
@@ -62,7 +62,7 @@ function applyRepositoryDefaults(
 
 // ── Registry ────────────────────────────────────────────────────────
 
-const toolRegistry: Record<string, ToolDef> = {
+export const builtinToolRegistry: Readonly<Record<string, ToolDef>> = {
   readTextFile: {
     fn: readTextFile,
     description: '读取指定绝对路径的文本文件内容',
@@ -171,7 +171,14 @@ const toolRegistry: Record<string, ToolDef> = {
 // ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
-  return Object.entries(toolRegistry)
+  return toolEntriesToOpenAI(Object.entries(builtinToolRegistry), scope)
+}
+
+export function toolEntriesToOpenAI(
+  entries: ReadonlyArray<readonly [string, ToolDef]>,
+  scope: ToolScope,
+): ToolDefinition[] {
+  return entries
     .filter(([, def]) => {
       const allowedScopes: ToolScope[] = scope === 'read' ? ['read'] : ['read', 'write', 'memory']
       return allowedScopes.includes(def.scope)
@@ -210,8 +217,20 @@ export async function executeTool(
   signal?: AbortSignal,
   options?: ExecuteToolOptions,
 ): Promise<string> {
-  const tool = toolRegistry[name]
+  const tool = builtinToolRegistry[name]
   if (!tool) return `错误：未知工具 "${name}"`
+  return executeToolDefinition(tool, name, args, allowedPaths, designConfirmed, signal, options)
+}
+
+export async function executeToolDefinition(
+  tool: ToolDef,
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<string> {
   const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
   // 写权限检查

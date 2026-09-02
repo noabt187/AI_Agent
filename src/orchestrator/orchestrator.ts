@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentEventHandler, WorldState } from './types.js'
 import { Agent, isPureConfirmationInput } from './agent.js'
+import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
 import { createMetricRecorder, formatStats } from '../context/monitor.js'
@@ -36,11 +37,11 @@ export class Orchestrator {
   state: WorldState
   private askConfirm?: AskConfirmFn
   private askInput?: AskInputFn
-  private agent = new Agent()
+  private agent: Agent
   private abortController?: AbortController
   private metricRecorder: (metric: import('../llm/monitoredClient.js').LlmCallMetric) => void
 
-  constructor(sessionId: string, initialState?: WorldState) {
+  constructor(sessionId: string, initialState?: WorldState, runtime: AgentRuntime = legacyAgentRuntime) {
     this.state = initialState ?? {
       sessionId,
       allowedPaths: [],
@@ -50,10 +51,11 @@ export class Orchestrator {
     }
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.state.repository = normalizeRepositoryConfig(this.state.repository)
+    this.agent = new Agent(runtime)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
-  static async load(sessionId: string): Promise<Orchestrator> {
+  static async load(sessionId: string, runtime: AgentRuntime = legacyAgentRuntime): Promise<Orchestrator> {
     const persisted = await loadOrchestratorState<WorldState>(sessionId)
     if (persisted) {
       persisted.allowedPaths = persisted.allowedPaths || []
@@ -69,7 +71,7 @@ export class Orchestrator {
       repository: normalizeRepositoryConfig(),
       completedTaskIds: [],
       failedTaskIds: [],
-    })
+    }, runtime)
   }
 
   setAskConfirm(fn: AskConfirmFn) { this.askConfirm = fn }

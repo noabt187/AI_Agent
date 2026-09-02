@@ -17,6 +17,7 @@ import coreRoutesPlugin from '../server/coreRoutes.js'
 import staticWebPlugin from '../server/staticWeb.js'
 import webServerPlugin from '../server/webServerPlugin.js'
 import managedSkillsPlugin from './services/skills.js'
+import toolRegistryPlugin from './services/tools.js'
 
 export type BuiltinPluginMap = Readonly<Record<string, unknown>>
 
@@ -51,6 +52,7 @@ const standardBuiltins: Record<string, unknown> = {
   'ai-agent-core-routes': coreRoutesPlugin,
   'ai-agent-static-web': staticWebPlugin,
   'ai-agent-managed-skills': managedSkillsPlugin,
+  'ai-agent-tools': toolRegistryPlugin,
 }
 const FIBER_STATE = {
   PENDING: 0 as FiberState.PENDING,
