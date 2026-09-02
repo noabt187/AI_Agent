@@ -18,6 +18,9 @@ import staticWebPlugin from '../server/staticWeb.js'
 import webServerPlugin from '../server/webServerPlugin.js'
 import managedSkillsPlugin from './services/skills.js'
 import toolRegistryPlugin from './services/tools.js'
+import sessionStorePlugin from './services/sessions.js'
+import { createCordisAgentRuntime } from '../orchestrator/runtime.js'
+import { configureSessionRuntime, createSessionPromptQueue } from '../server/sessionApi.js'
 
 export type BuiltinPluginMap = Readonly<Record<string, unknown>>
 
@@ -53,6 +56,7 @@ const standardBuiltins: Record<string, unknown> = {
   'ai-agent-static-web': staticWebPlugin,
   'ai-agent-managed-skills': managedSkillsPlugin,
   'ai-agent-tools': toolRegistryPlugin,
+  'ai-agent-sessions': sessionStorePlugin,
 }
 const FIBER_STATE = {
   PENDING: 0 as FiberState.PENDING,
@@ -120,7 +124,18 @@ export async function startAiAgentProfile(
     baseUrl: pathToFileURL(join(prepared.profile.dir, 'package.json')).href,
     builtins: options.builtins,
   })
-  return { ...host, profile: prepared.profile }
+  const disposeRuntime = configureSessionRuntime(createCordisAgentRuntime(host.ctx), createSessionPromptQueue())
+  let disposed = false
+  return {
+    ...host,
+    profile: prepared.profile,
+    async dispose() {
+      if (disposed) return
+      disposed = true
+      disposeRuntime()
+      await host.dispose()
+    },
+  }
 }
 
 function assertEntriesActivated(ctx: Context): void {

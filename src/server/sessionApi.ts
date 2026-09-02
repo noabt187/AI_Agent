@@ -3,14 +3,81 @@ import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
+import { legacyAgentRuntime, type AgentRuntime } from '../orchestrator/runtime.js'
+import { SessionPromptQueue, type PromptJob } from './promptQueue.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
+const liveCreatedAt = new Map<string, number>()
 const activeRuns = new Set<string>()
 const execFileAsync = promisify(execFile)
+let agentRuntime: AgentRuntime = legacyAgentRuntime
+let promptQueue = createSessionPromptQueue()
+
+export type LiveSessionEvent = {
+  type: 'loaded'
+  sessionId: string
+  orchestrator: Orchestrator
+  createdAt: number
+} | {
+  type: 'deleted'
+  sessionId: string
+}
+
+const liveSessionListeners = new Set<(event: LiveSessionEvent) => void>()
+
+export function observeLiveSessions(listener: (event: LiveSessionEvent) => void): () => void {
+  liveSessionListeners.add(listener)
+  for (const [sessionId, orchestrator] of orchestrators) {
+    listener({
+      type: 'loaded',
+      sessionId,
+      orchestrator,
+      createdAt: liveCreatedAt.get(sessionId) ?? Date.now(),
+    })
+  }
+  return () => { liveSessionListeners.delete(listener) }
+}
+
+export function peekOrchestrator(sessionId: string): Orchestrator | undefined {
+  return orchestrators.get(sessionId)
+}
+
+export function createSessionPromptQueue(): SessionPromptQueue {
+  return new SessionPromptQueue(
+    async (job: PromptJob) => {
+      const orchestrator = await getOrchestrator(job.sessionId)
+      markSessionRunning(job.sessionId)
+      try {
+        await orchestrator.handleUserInput(job.prompt, job.onEvent)
+      } finally {
+        markSessionIdle(job.sessionId)
+      }
+    },
+    sessionId => { orchestrators.get(sessionId)?.abort() },
+  )
+}
+
+export function configureSessionRuntime(runtime: AgentRuntime, queue: SessionPromptQueue): () => void {
+  const previousRuntime = agentRuntime
+  const previousQueue = promptQueue
+  agentRuntime = runtime
+  promptQueue = queue
+  let configured = true
+  return () => {
+    if (!configured) return
+    configured = false
+    agentRuntime = previousRuntime
+    promptQueue = previousQueue
+  }
+}
+
+export function enqueueSessionPrompt(job: PromptJob): Promise<void> {
+  return promptQueue.enqueue(job)
+}
 
 async function readCommandValue(cwd: string, file: string, args: string[]): Promise<string | undefined> {
   try {
@@ -57,12 +124,21 @@ export async function getOrchestrator(sessionId: string): Promise<Orchestrator> 
       await stat(resolve(stateDir, sessionId))
     } catch {
       orchestrators.delete(sessionId)
+      liveCreatedAt.delete(sessionId)
+      emitLiveSession({ type: 'deleted', sessionId })
     }
     if (orchestrators.has(sessionId)) return existing
   }
 
-  const orchestrator = await Orchestrator.load(sessionId)
+  const orchestrator = await Orchestrator.load(sessionId, agentRuntime)
   orchestrators.set(sessionId, orchestrator)
+  let createdAt = Date.now()
+  try {
+    const info = await stat(resolve(stateDir, sessionId))
+    createdAt = info.birthtimeMs || info.ctimeMs || info.mtimeMs
+  } catch {}
+  liveCreatedAt.set(sessionId, createdAt)
+  emitLiveSession({ type: 'loaded', sessionId, orchestrator, createdAt })
   return orchestrator
 }
 
@@ -249,12 +325,18 @@ export async function revealMemoryItem(sessionId: string, layer: unknown, name: 
 }
 
 export async function abortSession(sessionId: string): Promise<void> {
-  const orchestrator = await getOrchestrator(sessionId)
-  orchestrator.abort()
+  await promptQueue.abort(sessionId)
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
+  await promptQueue.delete(sessionId)
   activeRuns.delete(sessionId)
   orchestrators.delete(sessionId)
+  liveCreatedAt.delete(sessionId)
+  emitLiveSession({ type: 'deleted', sessionId })
   await rm(resolve(stateDir, sessionId), { recursive: true, force: true })
+}
+
+function emitLiveSession(event: LiveSessionEvent): void {
+  for (const listener of liveSessionListeners) listener(event)
 }

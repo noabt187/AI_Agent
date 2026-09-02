@@ -7,15 +7,12 @@ import {
   clearPendingConfirm,
   createSession,
   deleteSession,
-  getOrchestrator,
-  isSessionRunning,
+  enqueueSessionPrompt,
   listSessions,
   loadRepositoryIdentity,
   loadSessionExport,
   loadSessionMemory,
   loadSession,
-  markSessionIdle,
-  markSessionRunning,
   removeMemoryItem,
   revealMemoryItem,
   updateAllowedPaths,
@@ -277,22 +274,20 @@ function errorStatus(error: unknown): number {
 }
 
 async function handleStream(sessionId: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (isSessionRunning(sessionId)) {
-    sendJson(res, 409, { error: '当前会话已有任务正在运行' })
-    return
-  }
   const body = await readJson(req)
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
   if (!prompt) {
     sendJson(res, 400, { error: 'prompt 不能为空' })
     return
   }
-  const orchestrator = await getOrchestrator(sessionId)
-  markSessionRunning(sessionId)
   startJsonStream(res)
-  writeStreamEvent(res, { type: 'start', sessionId })
   try {
-    await orchestrator.handleUserInput(prompt, async event => { writeStreamEvent(res, event) })
+    await enqueueSessionPrompt({
+      sessionId,
+      prompt,
+      onStart: () => { writeStreamEvent(res, { type: 'start', sessionId }) },
+      onEvent: async event => { writeStreamEvent(res, event) },
+    })
     writeStreamEvent(res, { type: 'done', sessionId })
   } catch (error) {
     writeStreamEvent(res, {
@@ -300,7 +295,6 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
       message: error instanceof Error ? error.message : String(error),
     })
   } finally {
-    markSessionIdle(sessionId)
     res.end()
   }
 }
