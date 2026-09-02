@@ -1,0 +1,12 @@
+- insert:
+    - id: web-server
+      name: '@deepseek-ai/dsh-host-webserver'
+      config:
+        host: !!js process.env.HOST === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'
+        port: !!js Number(process.env.PORT ?? 3000)
+
+    - id: client-modules
+      name: '@ai-agent/client-modules'
+
+    - id: static-web
+      name: '@ai-agent/static-web'

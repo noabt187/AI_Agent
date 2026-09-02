@@ -96,8 +96,8 @@ Add these production dependencies and regenerate the root lockfile with `npm ins
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/cordis-plugin-include": "1.0.6",
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
-    "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.5",
-    "@deepseek-ai/dsh-skill": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-skill": "0.1.0-rc.6",
     "js-yaml": "4.2.0"
   },
   "devDependencies": {
@@ -109,6 +109,8 @@ Add these production dependencies and regenerate the root lockfile with `npm ins
 Run: `npm install --package-lock-only`
 
 Expected: `package-lock.json` records the exact direct versions above.
+
+The compatibility contract remains the checked-out DSH `0.1.0-rc.5` API. The two service packages use the first published npm release satisfying PageCraft's declared `>=0.1.0-rc.5 <0.2.0` peer range because npm never published those two packages at exactly `0.1.0-rc.5`.
 
 - [ ] **Step 2: Write profile behavior tests**
 
