@@ -316,6 +316,7 @@ export async function streamPrompt(
   sessionId: string,
   prompt: string,
   onEvent: (event: StreamEvent) => void,
+  onAccepted?: () => void,
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
     method: 'POST',
@@ -331,6 +332,7 @@ export async function streamPrompt(
     } catch {}
     throw new Error(message)
   }
+  onAccepted?.()
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -351,3 +353,5 @@ export async function streamPrompt(
     }
   }
 }
+
+export const consumePromptStream = streamPrompt

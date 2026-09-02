@@ -49,7 +49,7 @@ import {
   pickDirectory,
   revealMemoryItem,
   saveMemoryItem,
-  streamPrompt,
+  consumePromptStream,
   updateMemorySettings,
   updateRepositoryConfig,
   updateAllowedPaths,
@@ -72,6 +72,9 @@ import {
 } from './api'
 import { buildAnnotationPrompt, type ElementComment } from './annotationPrompt'
 import { messageContent } from './messageContent'
+import { SlotOutlet } from './plugins/SlotOutlet'
+import type { BrowserPluginRuntime } from './plugins/runtime'
+import type { PromptResult } from './plugins/types'
 
 type TimelineItem = {
   id: string
@@ -322,7 +325,11 @@ function detectPlanOptions(content: string): PlanOption[] {
   return uniquePlanOptions(matches).slice(0, 8)
 }
 
-export function App() {
+export interface AppProps {
+  pluginRuntime: BrowserPluginRuntime
+}
+
+export function App({ pluginRuntime }: AppProps) {
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -335,6 +342,11 @@ export function App() {
   const abortingRef = useRef(false)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
+  const pendingStreamsRef = useRef(0)
+  const runningRef = useRef(false)
+  const submitPromptRef = useRef<(text: string, source: 'composer' | 'plugin') => Promise<PromptResult>>(
+    async () => ({ ok: false, error: { message: 'AI Agent is still starting' } }),
+  )
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [session, setSession] = useState<SessionDetail | null>(null)
@@ -395,6 +407,7 @@ export function App() {
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
   const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
+  runningRef.current = running
 
   const selectedSessionSummary = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -453,14 +466,20 @@ export function App() {
     setSelectedSessionId(nextId)
   }
 
-  async function refreshSession(sessionId = selectedSessionId, options: { updateTimeline?: boolean } = {}) {
+  async function refreshSession(
+    sessionId = selectedSessionId,
+    options: { updateTimeline?: boolean; syncRunning?: boolean } = {},
+  ) {
     if (!sessionId) return
     const updateTimeline = options.updateTimeline ?? true
     const detail = await loadSession(sessionId)
     setSession(detail)
     if (updateTimeline) setTimeline(toTimeline(detail.messages))
-    setRunning(detail.running)
-    setStatus(detail.running ? modelThinkingStatus : '就绪')
+    if (options.syncRunning ?? true) {
+      runningRef.current = detail.running
+      setRunning(detail.running)
+      setStatus(detail.running ? modelThinkingStatus : '就绪')
+    }
   }
 
   useEffect(() => {
@@ -484,6 +503,18 @@ export function App() {
     setActivityExpanded(false)
     setRepositoryError('')
   }, [selectedSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId) return
+    return pluginRuntime.sessions.bind(selectedSessionId, {
+      getRunning: () => runningRef.current,
+      prompt: text => submitPromptRef.current(text, 'plugin'),
+    })
+  }, [pluginRuntime, selectedSessionId])
+
+  useEffect(() => {
+    if (selectedSessionId) pluginRuntime.sessions.notifyRunningChanged(selectedSessionId)
+  }, [pluginRuntime, running, selectedSessionId])
 
   useEffect(() => {
     setRepositoryDraft(session?.state.repository || {})
@@ -1240,6 +1271,10 @@ export function App() {
 
   function handleStreamEvent(event: StreamEvent) {
     if (event.type === 'start') {
+      streamingAssistantIdRef.current = null
+      streamingRawTextRef.current = ''
+      streamingVisibleTextRef.current = ''
+      setDeltaCount(0)
       setStatus(modelThinkingStatus)
       return
     }
@@ -1283,29 +1318,62 @@ export function App() {
     if (event.type === 'done') {
       setActivityItems([])
       setActivityExpanded(false)
-      setStatus('就绪')
+      setStatus(pendingStreamsRef.current > 1 ? '下一条请求排队中' : '就绪')
       setAborting(false)
     }
   }
 
-  async function sendPrompt(value: string) {
+  async function submitPrompt(value: string, source: 'composer' | 'plugin'): Promise<PromptResult> {
     const text = value.trim()
-    if (!text || !selectedSessionId || running) return
-    setPrompt('')
-    setDeltaCount(0)
-    streamingAssistantIdRef.current = null
-    streamingRawTextRef.current = ''
-    streamingVisibleTextRef.current = ''
+    const sessionId = selectedSessionIdRef.current || selectedSessionId
+    if (!text) return { ok: false, error: { message: 'Prompt is empty' } }
+    if (!sessionId) return { ok: false, error: { message: 'No active session' } }
+    if (source === 'composer' && runningRef.current) {
+      return { ok: false, error: { message: 'The active session is already running' } }
+    }
+    if (source === 'composer') setPrompt('')
+    return new Promise<PromptResult>((resolve) => {
+      void consumeSubmittedPrompt(sessionId, text, resolve)
+    })
+  }
+
+  async function consumeSubmittedPrompt(
+    sessionId: string,
+    text: string,
+    resolveAcceptance: (result: PromptResult) => void,
+  ): Promise<void> {
+    let accepted = false
+    pendingStreamsRef.current += 1
     setStatus(modelThinkingStatus)
+    runningRef.current = true
     setRunning(true)
     setActivityItems([])
     setActivityExpanded(false)
-    appendItem({ role: 'user', content: text })
+    if (selectedSessionIdRef.current === sessionId) appendItem({ role: 'user', content: text })
     try {
-      await streamPrompt(selectedSessionId, text, handleStreamEvent)
-      await refreshSession(selectedSessionId, { updateTimeline: !abortingRef.current })
-      await refreshSessions(selectedSessionId)
+      await consumePromptStream(
+        sessionId,
+        text,
+        event => {
+          if (selectedSessionIdRef.current === sessionId) handleStreamEvent(event)
+        },
+        () => {
+          accepted = true
+          resolveAcceptance({ ok: true })
+        },
+      )
+      if (selectedSessionIdRef.current === sessionId) {
+        await refreshSession(sessionId, { updateTimeline: !abortingRef.current, syncRunning: false })
+        await refreshSessions(sessionId)
+      }
     } catch (err) {
+      if (!accepted) {
+        resolveAcceptance({
+          ok: false,
+          error: { message: err instanceof Error ? err.message : String(err) },
+        })
+      }
+      if (selectedSessionIdRef.current !== sessionId) return
       if (abortingRef.current) {
         showAbortNotice()
       } else {
@@ -1313,10 +1381,22 @@ export function App() {
         setStatus('出错')
       }
     } finally {
-      setAborting(false)
-      setRunning(false)
+      pendingStreamsRef.current = Math.max(0, pendingStreamsRef.current - 1)
+      if (selectedSessionIdRef.current === sessionId) {
+        setAborting(false)
+        if (pendingStreamsRef.current === 0) {
+          runningRef.current = false
+          setRunning(false)
+        }
+      }
     }
   }
+
+  async function sendPrompt(value: string): Promise<void> {
+    await submitPrompt(value, 'composer')
+  }
+
+  submitPromptRef.current = submitPrompt
 
   async function handleAbort() {
     if (!selectedSessionId || !running || abortingRef.current) return
@@ -2124,6 +2204,14 @@ export function App() {
             void sendPrompt(prompt)
           }}
         >
+          <div className="composerPluginActions">
+            <SlotOutlet
+              runtime={pluginRuntime}
+              name="conversation.input.left"
+              sessionId={selectedSessionId}
+              owner={{}}
+            />
+          </div>
           <textarea
             ref={promptTextareaRef}
             value={prompt}

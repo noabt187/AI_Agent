@@ -9,6 +9,7 @@ export function startJsonStream(res: ServerResponse): void {
     Connection: 'keep-alive',
     'Content-Type': 'application/x-ndjson; charset=utf-8',
   })
+  res.flushHeaders()
 }
 
 export function writeStreamEvent(res: ServerResponse, event: unknown): void {

@@ -2088,6 +2088,17 @@ small {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
+.composerPluginActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.composerPluginActions:empty {
+  display: none;
+}
+
 .composer textarea:focus,
 .urlInput:focus,
 .confirmBar textarea:focus,
