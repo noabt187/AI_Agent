@@ -13,6 +13,9 @@ import {
   resolveAgentHome,
 } from './profile.js'
 import type { EntryOptions, LoadedProfile } from './types.js'
+import coreRoutesPlugin from '../server/coreRoutes.js'
+import staticWebPlugin from '../server/staticWeb.js'
+import webServerPlugin from '../server/webServerPlugin.js'
 
 export type BuiltinPluginMap = Readonly<Record<string, unknown>>
 
@@ -42,7 +45,11 @@ export interface PreparedProfile {
 
 export const INSTALL_ANCHOR = fileURLToPath(new URL('../../package.json', import.meta.url))
 
-const standardBuiltins: Record<string, unknown> = Object.create(null)
+const standardBuiltins: Record<string, unknown> = {
+  'ai-agent-web-server': webServerPlugin,
+  'ai-agent-core-routes': coreRoutesPlugin,
+  'ai-agent-static-web': staticWebPlugin,
+}
 const FIBER_STATE = {
   PENDING: 0 as FiberState.PENDING,
   ACTIVE: 2 as FiberState.ACTIVE,
