@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "ai-agent": "dist/scripts/ai-agent.js"
+  },
   "workspaces": [
     "web",
     "bundles/*"
@@ -10,6 +13,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "ai-agent": "tsx scripts/ai-agent.ts",
     "orchestrator": "tsx scripts/orchestrator-chat.ts",
     "predev": "npm run dev:cleanup",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
