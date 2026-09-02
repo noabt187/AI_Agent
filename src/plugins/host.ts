@@ -1,5 +1,6 @@
 import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { isAbsolute, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import type { FiberState } from '@deepseek-ai/cordis'
@@ -19,6 +20,7 @@ import webServerPlugin from '../server/webServerPlugin.js'
 import managedSkillsPlugin from './services/skills.js'
 import toolRegistryPlugin from './services/tools.js'
 import sessionStorePlugin from './services/sessions.js'
+import clientModulesPlugin, { type ClientModuleRegistry } from './clientModules.js'
 import { createCordisAgentRuntime } from '../orchestrator/runtime.js'
 import { configureSessionRuntime, createSessionPromptQueue } from '../server/sessionApi.js'
 
@@ -57,6 +59,7 @@ const standardBuiltins: Record<string, unknown> = {
   'ai-agent-managed-skills': managedSkillsPlugin,
   'ai-agent-tools': toolRegistryPlugin,
   'ai-agent-sessions': sessionStorePlugin,
+  'ai-agent-client-modules': clientModulesPlugin,
 }
 const FIBER_STATE = {
   PENDING: 0 as FiberState.PENDING,
@@ -79,6 +82,7 @@ export async function bootPluginHost(options: PluginHostOptions): Promise<Plugin
   let disposed = false
   try {
     await ctx.plugin(Loader, { baseUrl: options.baseUrl })
+    installPortableModuleLoader(ctx)
     const builtins = { ...standardBuiltins, ...(options.builtins ?? {}) }
     for (const [name, plugin] of Object.entries(builtins)) {
       ctx.loader.builtins[builtinKey(name)] = plugin
@@ -86,6 +90,8 @@ export async function bootPluginHost(options: PluginHostOptions): Promise<Plugin
     await ctx.loader.root.update(structuredClone(options.entries) as EntryOptions[])
     await ctx.loader.await()
     assertEntriesActivated(ctx)
+    const clientModules = ctx.get('clientModules', false) as ClientModuleRegistry | undefined
+    clientModules?.refresh([...ctx.loader.entries()])
   } catch (error) {
     await ctx.fiber.dispose()
     throw error
@@ -160,4 +166,34 @@ function assertEntriesActivated(ctx: Context): void {
 
 function builtinKey(name: string): string {
   return name.startsWith('cordis:') ? name.slice('cordis:'.length) : name
+}
+
+/**
+ * Cordis normally delegates to Node's internal ESM loader so bare plugin names
+ * resolve from the profile package. Some launchers (notably tsx and future Node
+ * versions with a changed internal API) cannot expose that loader. Keep the
+ * same parent-URL semantics with public Node APIs in that case.
+ */
+function installPortableModuleLoader(ctx: Context): void {
+  if (ctx.loader.internal !== undefined) return
+  ctx.loader.internal = {
+    async import(specifier: string, parentUrl: string) {
+      if (isAbsolute(specifier)) return import(pathToFileURL(specifier).href)
+      if (specifier.startsWith('.') || specifier.startsWith('file:')) {
+        return import(new URL(specifier, parentUrl).href)
+      }
+      if (specifier.startsWith('node:')) return import(specifier)
+      let resolved: string
+      try {
+        resolved = createRequire(parentUrl).resolve(specifier)
+      } catch (profileError) {
+        try {
+          resolved = createRequire(INSTALL_ANCHOR).resolve(specifier)
+        } catch {
+          throw profileError
+        }
+      }
+      return import(pathToFileURL(resolved).href)
+    },
+  } as NonNullable<typeof ctx.loader.internal>
 }
