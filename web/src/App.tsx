@@ -6,7 +6,6 @@ import {
   Check,
   Copy,
   Download,
-  Eye,
   FileUp,
   FolderOpen,
   Gauge,
@@ -70,7 +69,6 @@ import {
   type SessionSummary,
   type StreamEvent,
 } from './api'
-import { buildAnnotationPrompt, type ElementComment } from './annotationPrompt'
 import { messageContent } from './messageContent'
 import { SlotOutlet } from './plugins/SlotOutlet'
 import type { BrowserPluginRuntime } from './plugins/runtime'
@@ -99,8 +97,7 @@ type PlanOption = {
   value?: string
 }
 
-type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
-type ViewMode = 'chat' | 'preview' | 'metrics'
+type ViewMode = 'chat' | 'metrics'
 type MetricsViewMode = 'detail' | 'trend' | 'anomaly' | 'composition'
 type ThemeMode = 'dark' | 'light'
 type NegativeFeedbackDraft = {
@@ -330,7 +327,6 @@ export interface AppProps {
 }
 
 export function App({ pluginRuntime }: AppProps) {
-  const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const streamingAssistantIdRef = useRef<string | null>(null)
@@ -357,9 +353,6 @@ export function App({ pluginRuntime }: AppProps) {
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
   const [directoryError, setDirectoryError] = useState('')
-  const [previewDraftUrl, setPreviewDraftUrl] = useState('http://localhost:4000')
-  const [previewUrl, setPreviewUrl] = useState('')
-  const [previewEditorOpen, setPreviewEditorOpen] = useState(false)
   const [repositoryEditorOpen, setRepositoryEditorOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metricsViewMode, setMetricsViewMode] = useState<MetricsViewMode>('detail')
@@ -380,10 +373,6 @@ export function App({ pluginRuntime }: AppProps) {
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
   const [selectedPlanKey, setSelectedPlanKey] = useState('')
-  const [annotateActive, setAnnotateActive] = useState(false)
-  const [selectedElement, setSelectedElement] = useState<AnnotatedElement | null>(null)
-  const [elementComment, setElementComment] = useState('')
-  const [elementComments, setElementComments] = useState<ElementComment[]>([])
   const [running, setRunning] = useState(false)
   const [aborting, setAbortingState] = useState(false)
   const [status, setStatus] = useState('未连接')
@@ -574,23 +563,6 @@ export function App({ pluginRuntime }: AppProps) {
   }, [viewMode, selectedSessionId])
 
   useEffect(() => {
-    function handleMessage(event: MessageEvent) {
-      if (!event.data) return
-      if (event.data.type === 'agent-element-selected') {
-        setSelectedElement(event.data.payload as AnnotatedElement)
-        setElementComment('')
-        return
-      }
-      if (event.data.type === 'agent-annotator-active-changed') {
-        setAnnotateActive(Boolean(event.data.active))
-      }
-    }
-
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [])
-
-  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -600,14 +572,6 @@ export function App({ pluginRuntime }: AppProps) {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   })
-
-  function postAnnotatorState(active = annotateActive) {
-    previewFrameRef.current?.contentWindow?.postMessage({ type: 'agent-annotator-set-active', active }, '*')
-  }
-
-  useEffect(() => {
-    postAnnotatorState(annotateActive)
-  }, [annotateActive, previewUrl])
 
   async function handleNewSession() {
     const sessionId = await createSession()
@@ -981,54 +945,6 @@ export function App({ pluginRuntime }: AppProps) {
     setDirectoryPickerOpen(false)
     setDirectoryError('')
     setStatus('目录已更新')
-  }
-
-  function handleOpenPreview() {
-    const nextUrl = previewDraftUrl.trim()
-    if (!nextUrl) return
-    setPreviewUrl(nextUrl)
-    setViewMode('preview')
-    setAnnotateActive(false)
-    setSelectedElement(null)
-  }
-
-  function openPreviewEditor() {
-    setPreviewDraftUrl(previewUrl || previewDraftUrl || 'http://localhost:4000')
-    setPreviewEditorOpen(true)
-  }
-
-  function savePreviewAddress() {
-    handleOpenPreview()
-    setPreviewEditorOpen(false)
-  }
-
-  function handleAddComment() {
-    if (!selectedElement || !elementComment.trim()) return
-    setElementComments((current) => [
-      ...current,
-      {
-        ...selectedElement,
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        comment: elementComment.trim(),
-      },
-    ])
-    setSelectedElement(null)
-    setElementComment('')
-  }
-
-  function handleRemoveComment(id: string) {
-    setElementComments((current) => current.filter((item) => item.id !== id))
-  }
-
-  async function handleSendComments() {
-    if (elementComments.length === 0) return
-    const commentPrompt = buildAnnotationPrompt(elementComments, operationRoot)
-    setElementComments([])
-    setSelectedElement(null)
-    setElementComment('')
-    setAnnotateActive(false)
-    setViewMode('chat')
-    await sendPrompt(commentPrompt)
   }
 
   function appendItem(item: Omit<TimelineItem, 'id'>) {
@@ -1492,10 +1408,9 @@ export function App({ pluginRuntime }: AppProps) {
 
   const workspaceSubtitle = useMemo(() => {
     if (viewMode === 'metrics') return '会话监控信息'
-    if (viewMode === 'preview' && previewUrl) return previewUrl
     if (pendingConfirm) return `等待确认：${pendingConfirm.allowWrite ? '代码修改' : '内容'}`
     return '本地 Agent 工作台'
-  }, [pendingConfirm, previewUrl, viewMode])
+  }, [pendingConfirm, viewMode])
 
   const activitySummary = useMemo(() => {
     const latest = activityItems.at(-1)?.content || (running ? '等待模型生成或选择下一步行动' : '暂无执行过程')
@@ -1775,13 +1690,6 @@ export function App({ pluginRuntime }: AppProps) {
               </button>
             </div>
 
-            <div className="controlGroup previewControl">
-              <button className="openPreviewButton" onClick={openPreviewEditor}>
-                <Eye size={17} />
-                编辑预览地址
-              </button>
-            </div>
-
             <div className="controlGroup modeControl">
               <div className="modeStack">
                 <button className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'} onClick={() => setViewMode('chat')}>
@@ -1987,20 +1895,6 @@ export function App({ pluginRuntime }: AppProps) {
               </>
             )}
           </div>
-        ) : viewMode === 'preview' ? (
-          <div className="previewStage">
-            {previewUrl ? (
-              <iframe
-                ref={previewFrameRef}
-                className="previewFrame"
-                title="前端预览"
-                src={`/api/preview?url=${encodeURIComponent(previewUrl)}`}
-                onLoad={() => postAnnotatorState()}
-              />
-            ) : (
-              <div className="emptyState">输入地址后打开预览</div>
-            )}
-          </div>
         ) : (
           <div className="timeline" ref={timelineRef}>
             {timeline.length === 0 && activityItems.length === 0 && !running ? (
@@ -2073,61 +1967,6 @@ export function App({ pluginRuntime }: AppProps) {
             )}
           </div>
         )}
-
-        {selectedElement || elementComments.length > 0 ? (
-          <div className="elementCommentDock">
-            {selectedElement ? (
-              <div className="commentComposerRow">
-                <div className="selectedElementMeta">
-                  <strong>{selectedElement.tagName}</strong>
-                  <span>{selectedElement.text || selectedElement.selector}</span>
-                </div>
-                <textarea
-                  value={elementComment}
-                  onChange={(event) => setElementComment(event.target.value)}
-                  placeholder="写下你想改哪里"
-                />
-                <div className="dockActions">
-                  <button onClick={() => setSelectedElement(null)}>
-                    <X size={16} />
-                    关闭
-                  </button>
-                  <button disabled={!elementComment.trim()} onClick={handleAddComment}>
-                    <CheckCircle2 size={16} />
-                    添加评论
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {elementComments.length > 0 ? (
-              <div className="commentQueueRow">
-                <div className="commentQueueHeader">
-                  <span>评论</span>
-                  <strong>{elementComments.length}</strong>
-                </div>
-                <div className="commentList">
-                  {elementComments.map((item) => (
-                    <article className="commentItem" key={item.id}>
-                      <div>
-                        <strong>{item.tagName}</strong>
-                        <span>{item.text || item.selector}</span>
-                      </div>
-                      <p>{item.comment}</p>
-                      <button className="miniIconButton" title="删除评论" onClick={() => handleRemoveComment(item.id)}>
-                        <Trash2 size={15} />
-                      </button>
-                    </article>
-                  ))}
-                </div>
-                <button className="sendCommentsButton" disabled={running} onClick={() => void handleSendComments()}>
-                  <MessageSquare size={17} />
-                  发送给 Agent
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
 
         {pendingConfirm ? (
           <div className="confirmBar">
@@ -2484,37 +2323,6 @@ export function App({ pluginRuntime }: AppProps) {
                 </button>
               </div>
             ) : null}
-          </section>
-        </div>
-      ) : null}
-
-      {previewEditorOpen ? (
-        <div className="modalBackdrop">
-          <section className="previewAddressModal" aria-label="编辑预览地址">
-            <header>
-              <div>
-                <h3>编辑预览地址</h3>
-                <p>输入正在运行的前端页面地址</p>
-              </div>
-              <button className="miniIconButton static" title="关闭" onClick={() => setPreviewEditorOpen(false)}>
-                <X size={17} />
-              </button>
-            </header>
-            <div className="previewAddressBody">
-              <input
-                className="urlInput large"
-                value={previewDraftUrl}
-                onChange={(event) => setPreviewDraftUrl(event.target.value)}
-                placeholder="http://localhost:4000"
-                autoFocus
-              />
-              <div className="dockActions">
-                <button onClick={() => setPreviewEditorOpen(false)}>取消</button>
-                <button disabled={!previewDraftUrl.trim()} onClick={savePreviewAddress}>
-                  打开预览
-                </button>
-              </div>
-            </div>
           </section>
         </div>
       ) : null}

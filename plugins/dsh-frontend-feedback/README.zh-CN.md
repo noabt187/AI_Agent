@@ -186,3 +186,15 @@ pnpm dsh web
 - 修改前后视觉对比与评注历史。
 - 为支持图片理解的模型附加可选区域截图。
 - 演示文稿模板、母版布局及 PPTX/PDF 导出。
+
+## 安装到 AI Agent
+
+同一份插件包可直接安装到本仓库的 DSH 兼容 AI Agent 宿主，无需适配层或单独构建。本地开发时执行：
+
+```powershell
+npm run ai-agent -- plugin --profile web add "link:D:\project\AI_Agent\plugins\dsh-frontend-feedback"
+npm run ai-agent -- plugin --profile web list
+npm run ai-agent -- --profile web
+```
+
+启动前可用 `--dump-config` 检查组合后的 Cordis 条目。已发布的包可通过同一个 `plugin --profile web` 命令按 npm 包名安装或更新。与 DeepSeek Harness 一样，AI Agent 会将插件视为可信的本地 Node 与浏览器代码。

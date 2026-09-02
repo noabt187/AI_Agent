@@ -303,10 +303,8 @@ small {
 
 .sessionList,
 .memoryList,
-.commentList,
 .timeline,
 .metricsView,
-.previewStage,
 .directoryList,
 .composer textarea,
 .memoryComposer textarea {
@@ -316,10 +314,8 @@ small {
 
 .sessionList::-webkit-scrollbar,
 .memoryList::-webkit-scrollbar,
-.commentList::-webkit-scrollbar,
 .timeline::-webkit-scrollbar,
 .metricsView::-webkit-scrollbar,
-.previewStage::-webkit-scrollbar,
 .directoryList::-webkit-scrollbar,
 .composer textarea::-webkit-scrollbar,
 .memoryComposer textarea::-webkit-scrollbar {
@@ -329,10 +325,8 @@ small {
 
 .sessionList::-webkit-scrollbar-track,
 .memoryList::-webkit-scrollbar-track,
-.commentList::-webkit-scrollbar-track,
 .timeline::-webkit-scrollbar-track,
 .metricsView::-webkit-scrollbar-track,
-.previewStage::-webkit-scrollbar-track,
 .directoryList::-webkit-scrollbar-track,
 .composer textarea::-webkit-scrollbar-track,
 .memoryComposer textarea::-webkit-scrollbar-track {
@@ -343,10 +337,8 @@ small {
 
 .sessionList::-webkit-scrollbar-thumb,
 .memoryList::-webkit-scrollbar-thumb,
-.commentList::-webkit-scrollbar-thumb,
 .timeline::-webkit-scrollbar-thumb,
 .metricsView::-webkit-scrollbar-thumb,
-.previewStage::-webkit-scrollbar-thumb,
 .directoryList::-webkit-scrollbar-thumb,
 .composer textarea::-webkit-scrollbar-thumb,
 .memoryComposer textarea::-webkit-scrollbar-thumb {
@@ -358,10 +350,8 @@ small {
 
 .sessionList::-webkit-scrollbar-thumb:hover,
 .memoryList::-webkit-scrollbar-thumb:hover,
-.commentList::-webkit-scrollbar-thumb:hover,
 .timeline::-webkit-scrollbar-thumb:hover,
 .metricsView::-webkit-scrollbar-thumb:hover,
-.previewStage::-webkit-scrollbar-thumb:hover,
 .directoryList::-webkit-scrollbar-thumb:hover,
 .composer textarea::-webkit-scrollbar-thumb:hover,
 .memoryComposer textarea::-webkit-scrollbar-thumb:hover {
@@ -526,24 +516,8 @@ small {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
 }
 
-.openPreviewButton {
-  display: inline-flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid rgba(212, 197, 171, 0.24);
-  border-radius: 8px;
-  background: rgba(43, 39, 32, 0.72);
-  color: #f3efe7;
-  font-weight: 760;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03), 0 10px 24px rgba(0, 0, 0, 0.14);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
-}
-
 .choosePathButton:hover,
-.openRepositoryButton:hover,
-.openPreviewButton:hover {
+.openRepositoryButton:hover {
   border-color: rgba(216, 202, 174, 0.52);
   background: rgba(55, 49, 39, 0.9);
   box-shadow: 0 0 22px rgba(216, 202, 174, 0.14);
@@ -554,20 +528,6 @@ small {
   cursor: not-allowed;
   opacity: 0.5;
   transform: none;
-}
-
-.urlInput {
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 11px;
-  color: #302d27;
-  background: #fbfaf7;
-}
-
-.urlInput.large {
-  min-height: 44px;
-  font-size: 16px;
 }
 
 .modeStack {
@@ -932,54 +892,6 @@ small {
   overflow: auto;
 }
 
-.commentsPanel {
-  min-height: 150px;
-}
-
-.commentList {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  gap: 8px;
-  overflow: auto;
-}
-
-.commentItem {
-  position: relative;
-  border: 1px solid rgba(212, 197, 171, 0.18);
-  border-radius: 8px;
-  background: rgba(33, 31, 27, 0.58);
-  padding: 10px 34px 10px 10px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-.commentItem div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.commentItem strong {
-  color: #d8caae;
-  font-size: 13px;
-}
-
-.commentItem span,
-.commentItem p {
-  color: #b8aea0;
-  font-size: 13px;
-}
-
-.commentItem span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commentItem p {
-  margin-top: 6px;
-}
-
 .miniIconButton {
   position: absolute;
   top: 7px;
@@ -1002,25 +914,6 @@ small {
 .miniIconButton.static {
   position: static;
   flex: 0 0 auto;
-}
-
-.sendCommentsButton {
-  display: inline-flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid rgba(216, 202, 174, 0.52);
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(138, 119, 93, 0.95), rgba(63, 128, 102, 0.95));
-  color: #ffffff;
-  font-weight: 760;
-  box-shadow: 0 0 26px rgba(216, 202, 174, 0.18);
-}
-
-.sendCommentsButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
 }
 
 .skillPanelSummary,
@@ -1273,7 +1166,7 @@ small {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(150px, 0.72fr) minmax(190px, 0.9fr) minmax(210px, 0.9fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(150px, 0.72fr) minmax(190px, 0.9fr) minmax(280px, 0.8fr);
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -1308,7 +1201,6 @@ small {
   gap: 10px;
 }
 
-.annotateButton,
 .sendButton,
 .confirmBar button {
   display: inline-flex;
@@ -1322,13 +1214,6 @@ small {
   min-height: 40px;
   padding: 0 14px;
   font-weight: 700;
-}
-
-.annotateButton.active {
-  border-color: rgba(216, 202, 174, 0.78);
-  background: linear-gradient(180deg, rgba(138, 119, 93, 0.96), rgba(145, 130, 104, 0.9));
-  color: #ffffff;
-  box-shadow: 0 0 22px rgba(216, 202, 174, 0.22);
 }
 
 .sendButton:disabled {
@@ -1652,29 +1537,6 @@ small {
   color: #7e776c;
 }
 
-.previewStage {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 18% 8%, rgba(145, 130, 104, 0.16), transparent 28%),
-    radial-gradient(circle at 88% 18%, rgba(232, 222, 201, 0.12), transparent 28%),
-    linear-gradient(rgba(255, 255, 255, 0.16) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.16) 1px, transparent 1px),
-    #211f1b;
-  background-size: auto, auto, 28px 28px, 28px 28px, auto;
-}
-
-.previewFrame {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #ffffff;
-}
-
 .emptyState {
   display: grid;
   min-height: 100%;
@@ -1940,74 +1802,6 @@ small {
   font-weight: 700;
 }
 
-.elementCommentDock {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  border-top: 1px solid rgba(212, 197, 171, 0.2);
-  background: linear-gradient(180deg, rgba(43, 39, 32, 0.96), rgba(33, 31, 27, 0.94));
-  padding: 12px 22px;
-}
-
-.commentComposerRow {
-  display: grid;
-  grid-template-columns: minmax(160px, 260px) minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.commentQueueRow {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.commentQueueHeader {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  color: #d8caae;
-  font-weight: 800;
-}
-
-.commentQueueHeader strong {
-  color: #aaa194;
-  font-size: 13px;
-}
-
-.selectedElementMeta {
-  min-width: 0;
-}
-
-.selectedElementMeta strong {
-  display: block;
-  color: #d8caae;
-  font-size: 13px;
-}
-
-.selectedElementMeta span {
-  display: block;
-  overflow: hidden;
-  color: #aaa194;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.elementCommentDock textarea {
-  min-height: 46px;
-  max-height: 94px;
-  resize: vertical;
-  border: 1px solid rgba(212, 197, 171, 0.24);
-  border-radius: 8px;
-  background: rgba(33, 31, 27, 0.78);
-  color: #f3efe7;
-  padding: 10px 12px;
-}
-
 .dockActions {
   display: inline-flex;
   gap: 8px;
@@ -2100,9 +1894,7 @@ small {
 }
 
 .composer textarea:focus,
-.urlInput:focus,
-.confirmBar textarea:focus,
-.elementCommentDock textarea:focus {
+.confirmBar textarea:focus {
   outline: none;
   border-color: var(--accent-border);
   background: rgba(43, 39, 32, 0.96);
@@ -2151,7 +1943,6 @@ small {
   box-shadow: 0 24px 70px rgba(57, 49, 38, 0.22);
 }
 
-.previewAddressModal,
 .repositoryModal {
   display: grid;
   width: min(560px, 100%);
@@ -2175,7 +1966,6 @@ small {
   color: #f3efe7;
 }
 
-.previewAddressModal header,
 .repositoryModal header {
   display: flex;
   align-items: flex-start;
@@ -2194,7 +1984,6 @@ small {
   padding: 16px 18px;
 }
 
-.previewAddressModal h3,
 .repositoryModal h3 {
   margin: 0;
   color: #22211d;
@@ -2207,7 +1996,6 @@ small {
   font-size: 18px;
 }
 
-.previewAddressModal p,
 .repositoryModal p {
   margin-top: 4px;
   font-size: 13px;
@@ -2219,7 +2007,6 @@ small {
   font-size: 13px;
 }
 
-.previewAddressBody,
 .repositoryModalBody {
   display: grid;
   gap: 14px;
@@ -2294,19 +2081,6 @@ small {
   border-color: rgba(216, 202, 174, 0.64);
   background: linear-gradient(180deg, rgba(138, 119, 93, 0.96), rgba(145, 130, 104, 0.9));
   color: #ffffff;
-}
-
-.previewAddressModal .urlInput {
-  border-color: #e4ddd0;
-  background: #ffffff;
-  color: #22211d;
-}
-
-.previewAddressModal .urlInput:focus {
-  border-color: var(--accent-border);
-  background: #ffffff;
-  color: #22211d;
-  box-shadow: 0 0 0 3px rgba(145, 130, 104, 0.14);
 }
 
 .directoryModal header {
@@ -2470,9 +2244,7 @@ small {
 .themeLight .skillManagerMain span,
 .themeLight .skillManagerMeta code,
 .themeLight .activityList,
-.themeLight .commentItem span,
-.themeLight .commentItem p,
-.themeLight .selectedElementMeta span {
+.themeLight .activityList {
   color: #75817f;
 }
 
@@ -2487,7 +2259,6 @@ small {
 .themeLight .collapsedRail .iconButton,
 .themeLight .choosePathButton,
 .themeLight .openRepositoryButton,
-.themeLight .openPreviewButton,
 .themeLight .modeButton,
 .themeLight .skillPanelActions button,
 .themeLight .confirmActions button,
@@ -2505,7 +2276,6 @@ small {
 .themeLight .collapsedRail .iconButton:hover,
 .themeLight .choosePathButton:hover,
 .themeLight .openRepositoryButton:hover,
-.themeLight .openPreviewButton:hover,
 .themeLight .modeButton:hover:not(:disabled),
 .themeLight .feedbackReasonGrid button:hover,
 .themeLight .feedbackReasonGrid button.selected {
@@ -2534,7 +2304,6 @@ small {
 
 .themeLight .workspaceHeader,
 .themeLight .composer,
-.themeLight .elementCommentDock,
 .themeLight .confirmBar {
   border-color: rgba(213, 222, 225, 0.78);
   background: rgba(255, 255, 255, 0.8);
@@ -2542,8 +2311,7 @@ small {
 }
 
 .themeLight .timeline,
-.themeLight .metricsView,
-.themeLight .previewStage {
+.themeLight .metricsView {
   background:
     radial-gradient(circle at 28% 0%, rgba(221, 235, 240, 0.32), transparent 30%),
     radial-gradient(circle at 92% 84%, rgba(255, 255, 255, 0.52), transparent 32%),
@@ -2594,7 +2362,6 @@ small {
 }
 
 .themeLight .sessionItem,
-.themeLight .commentItem,
 .themeLight .activityPanel,
 .themeLight .metricsSummary article,
 .themeLight .metricsTableWrap,
@@ -2622,8 +2389,6 @@ small {
 .themeLight .metricsSummary strong,
 .themeLight .metricsTable td,
 .themeLight .skillManagerMain strong,
-.themeLight .selectedElementMeta strong,
-.themeLight .commentItem strong,
 .themeLight .activitySummary em {
   color: #302d27;
   text-shadow: none;
@@ -2633,7 +2398,6 @@ small {
 .themeLight .memoryComposer textarea,
 .themeLight .repositoryForm input,
 .themeLight .composer textarea,
-.themeLight .elementCommentDock textarea,
 .themeLight .feedbackBody textarea,
 .themeLight .confirmBar textarea {
   border-color: rgba(213, 222, 225, 0.86);
@@ -2763,10 +2527,8 @@ small {
 }
 
 .themeLight .composer textarea:focus,
-.themeLight .urlInput:focus,
 .themeLight .repositoryForm input:focus,
 .themeLight .confirmBar textarea:focus,
-.themeLight .elementCommentDock textarea:focus,
 .themeLight .feedbackBody textarea:focus,
 .themeLight .sessionTitleInput:focus {
   border-color: #b9c9ce;
@@ -2775,8 +2537,6 @@ small {
 }
 
 .themeLight .modeButton.active,
-.themeLight .annotateButton.active,
-.themeLight .sendCommentsButton,
 .themeLight .sendButton,
 .themeLight .dockActions button:last-child,
 .themeLight .confirmActions button.primary,
@@ -2832,10 +2592,8 @@ small {
 
 .themeLight .sessionList,
 .themeLight .memoryList,
-.themeLight .commentList,
 .themeLight .timeline,
 .themeLight .metricsView,
-.themeLight .previewStage,
 .themeLight .directoryList,
 .themeLight .composer textarea,
 .themeLight .memoryComposer textarea {
@@ -2844,10 +2602,8 @@ small {
 
 .themeLight .sessionList::-webkit-scrollbar-track,
 .themeLight .memoryList::-webkit-scrollbar-track,
-.themeLight .commentList::-webkit-scrollbar-track,
 .themeLight .timeline::-webkit-scrollbar-track,
 .themeLight .metricsView::-webkit-scrollbar-track,
-.themeLight .previewStage::-webkit-scrollbar-track,
 .themeLight .directoryList::-webkit-scrollbar-track,
 .themeLight .composer textarea::-webkit-scrollbar-track,
 .themeLight .memoryComposer textarea::-webkit-scrollbar-track {
@@ -2857,10 +2613,8 @@ small {
 
 .themeLight .sessionList::-webkit-scrollbar-thumb,
 .themeLight .memoryList::-webkit-scrollbar-thumb,
-.themeLight .commentList::-webkit-scrollbar-thumb,
 .themeLight .timeline::-webkit-scrollbar-thumb,
 .themeLight .metricsView::-webkit-scrollbar-thumb,
-.themeLight .previewStage::-webkit-scrollbar-thumb,
 .themeLight .directoryList::-webkit-scrollbar-thumb,
 .themeLight .composer textarea::-webkit-scrollbar-thumb,
 .themeLight .memoryComposer textarea::-webkit-scrollbar-thumb {
@@ -2871,10 +2625,8 @@ small {
 
 .themeLight .sessionList::-webkit-scrollbar-thumb:hover,
 .themeLight .memoryList::-webkit-scrollbar-thumb:hover,
-.themeLight .commentList::-webkit-scrollbar-thumb:hover,
 .themeLight .timeline::-webkit-scrollbar-thumb:hover,
 .themeLight .metricsView::-webkit-scrollbar-thumb:hover,
-.themeLight .previewStage::-webkit-scrollbar-thumb:hover,
 .themeLight .directoryList::-webkit-scrollbar-thumb:hover,
 .themeLight .composer textarea::-webkit-scrollbar-thumb:hover,
 .themeLight .memoryComposer textarea::-webkit-scrollbar-thumb:hover {
@@ -2940,13 +2692,7 @@ small {
     flex-direction: column;
   }
 
-  .commentComposerRow,
-  .commentQueueRow {
-    grid-template-columns: 1fr;
-  }
-
-  .dockActions,
-  .sendCommentsButton {
+  .dockActions {
     justify-self: stretch;
   }
 

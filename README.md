@@ -11,14 +11,37 @@
 - **代码验证**：两层验证机制（静态分析：npm run build 、 npm run test 等校验 + API 契约检查）
 - **GitHub 集成**：支持 Fork、Clone、Commit、Push、Create PR 的完整 Git 工作流
 - **流式输出**：基于 SSE 的实时流式响应，前端实时展示 Agent 思考过程
-- **Web 控制台**：现代化 Web UI，支持会话管理、记忆管理、skill管理
-- **可视化元素评论**：在项目预览页面中，可直接点击页面元素定位组件，通过评论描述修改意图，Agent 自动根据元素选择器、DOM 路径和评论文本精准定位源码并完成修改
+- **Web 控制台**：现代化 Web UI，支持会话管理、记忆管理、Skill 管理
+- **DSH 插件架构**：基于 Cordis 的 profile/bundle/plugin 组合，插件可注册路由、Skill、Tool、会话能力和浏览器 Slot
+- **PageCraft 可视化评注**：通过同一份 `dsh-frontend-feedback` 插件包提供页面预览、DOM/区域评注、源码工作区和演示文稿工作流
 - **记忆系统**：记忆分层设计，分为项目记忆和全局记忆，同时记忆支持模型自动生成和用户手写注入
 - **上下文压缩**：自动检测 token 用量，超阈值时压缩上下文
 
-## DeepSeek Harness 插件
+## DSH 兼容插件架构
 
-仓库内提供了可独立安装的 [`dsh-frontend-feedback`](plugins/dsh-frontend-feedback/README.md) 插件。它把现有的 DOM 元素选取与评论能力接入 DeepSeek Harness Web 会话，并内置 `frontend-page-builder` Skill，支持“先构建页面，再通过可视化评注持续微调”的闭环。插件的构建、安装、安全配置和使用方法见其目录中的 README。
+AI Agent 现在使用与 DeepSeek Harness 同风格的 Cordis 插件宿主。一个 profile 由 bundle 的 `cordis.patch.yml` 与用户覆写层组成；安装包的 `dsh.bundle.patch` 会自动加入 profile，`dsh.client` 产物会由宿主生成清单并在浏览器中激活。
+
+仓库内的 [`dsh-frontend-feedback`](plugins/dsh-frontend-feedback/README.md) 就是同一份 PageCraft 包：它既能安装到 DeepSeek Harness，也能原样安装到本 AI Agent，不需要 AI Agent 专用分支或适配代码。
+
+### 命令行安装 PageCraft
+
+本地开发使用 `link:`，修改 PageCraft 后无需重新发布：
+
+```powershell
+npm run ai-agent -- plugin --profile web add "link:D:\project\AI_Agent\plugins\dsh-frontend-feedback"
+npm run ai-agent -- plugin --profile web list
+npm run ai-agent -- --profile web --dump-config
+```
+
+如果 PageCraft 已发布到 npm，可直接按包名和版本安装：
+
+```powershell
+npm run ai-agent -- plugin --profile web add dsh-frontend-feedback@0.3.0
+npm run ai-agent -- plugin --profile web update dsh-frontend-feedback
+npm run ai-agent -- plugin --profile web remove dsh-frontend-feedback
+```
+
+插件被视为可信本地代码：安装脚本和 Node/浏览器代码可以执行，并可在授权工作目录上注册路由、Skill 与 Tool。请只安装你信任的包。profile 默认位于 `~/.ai-agent/profiles/<name>`，可用 `AI_AGENT_HOME` 改变根目录。
 
 ## 依赖环境
 
@@ -26,6 +49,7 @@
 |------|---------|------|
 | Node.js | ≥ 22.x | 运行环境 |
 | npm | ≥ 9.x | 包管理 |
+| pnpm | ≥ 9.x | profile 插件安装与更新 |
 | Git | ≥ 2.x | 版本控制（Clone / PR / Commit / Fork 功能需要） |
 | GitHub CLI (`gh`) | ≥ 2.x | GitHub 集成（Fork / PR 功能需要，需登录 `gh auth login`） |
 
@@ -51,7 +75,11 @@ cp config/model.example.json config/model.json
 
 编辑 `config/model.json`，填入你的 API Key（详见 [配置说明](#配置说明)）。
 
-### 3. 启动开发环境
+### 3. 安装 PageCraft（可选）
+
+执行上面的 `plugin --profile web add ...` 命令。不安装 PageCraft 时，对话、记忆、监控、仓库和 Skill 管理仍可正常使用。
+
+### 4. 启动开发环境
 
 ```bash
 # 同时启动后端服务和前端开发服务器
@@ -63,13 +91,17 @@ npm run dev
 
 在浏览器打开 `http://localhost:5173`，即可开始使用。
 
-### 4. 命令行模式（可选）
+### 5. 命令行模式（可选）
 
 ```bash
 npm run orchestrator
 ```
 
-进入交互式命令行模式，直接输入需求与 Agent 对话。按 `ESC` 终止当前操作，输入 `/exit` 退出。
+进入交互式命令行模式，直接输入需求与 Agent 对话。按 `ESC` 终止当前操作，输入 `/exit` 退出。如需直接启动指定 profile 的 Web 宿主：
+
+```powershell
+npm run ai-agent -- --profile web
+```
 
 ## 目录结构
 
@@ -101,11 +133,18 @@ project_code/
 │   │   └── types.ts                # 世界状态类型
 │   ├── server/                     # Web 后端
 │   │   ├── server.ts               # HTTP 服务入口
+│   │   ├── coreRoutes.ts           # 内置 API 的 Cordis 路由插件
 │   │   ├── sessionApi.ts           # 会话管理 API
+│   │   ├── promptQueue.ts          # 按会话隔离的 FIFO 输入队列
 │   │   ├── stream.ts               # SSE 流式输出
-│   │   ├── preview.ts              # 前端预览代理
 │   │   ├── fileBrowser.ts          # 文件系统浏览 API
 │   │   └── metrics.ts              # 指标统计 API
+│   ├── plugins/                    # DSH 兼容插件宿主
+│   │   ├── profile.ts              # profile/bundle 组合
+│   │   ├── manager.ts              # pnpm 命令行管理
+│   │   ├── host.ts                 # Cordis Loader 启动与生命周期
+│   │   ├── clientModules.ts        # dsh.client 清单与产物分发
+│   │   └── services/               # Skill、Tool、Session 宿主服务
 │   ├── skills/                     # Agent 技能库（Markdown 格式）
 │   │   ├── index.ts                # 技能加载器
 │   │   ├── registry.ts             # 技能注册
@@ -141,15 +180,18 @@ project_code/
 │   │   ├── App.tsx                 # 主应用组件（会话管理、流式交互、确认栏）
 │   │   ├── api.ts                  # 后端 API 客户端
 │   │   ├── messageContent.ts       # 消息内容渲染
-│   │   ├── annotationPrompt.ts     # 前端元素评论
+│   │   ├── plugins/                # 浏览器模块、Slot、Session 兼容层
 │   │   ├── styles.css              # 全局样式
 │   │   └── main.tsx                # 入口
 │   ├── index.html
 │   ├── package.json
 │   └── tsconfig.json
 ├── scripts/                        # 辅助脚本
+│   ├── ai-agent.ts                 # profile 启动与插件命令行
 │   ├── orchestrator-chat.ts        # 命令行 Agent 入口
 │   └── cleanup-dev-ports.mjs       # 开发端口清理
+├── bundles/                        # 内置 DSH profile bundle
+├── plugins/                        # 本地插件（包含 PageCraft）
 ├── state/                          # [运行时] 会话状态持久化目录
 ├── package.json                    # 根 package.json（npm workspace）
 └── tsconfig.json                   # TypeScript 配置
@@ -277,17 +319,21 @@ npm run build         # 编译 TypeScript
 npm run dev           # 启动开发环境（后端 + 前端）
 npm run dev:server    # 仅启动后端
 npm run dev:web       # 仅启动前端
+npm run ai-agent -- plugin --profile web list  # 查看 profile 插件
+npm run test:pagecraft-plugin                 # PageCraft 真实包兼容门
 npm run orchestrator  # 启动命令行 Agent
 ```
 
 ## 架构概览
 
 ```
-用户输入 → Web 控制台 (React SSE) → Server HTTP API
-       → Orchestrator (状态管理 + 记忆 + 压缩)
+用户输入 → Web 控制台 (React + 浏览器 Cordis)
+       → dsh.client 模块系统 → Slots / Browser Sessions → PageCraft
+       → Cordis WebServer → 内置 API + 插件路由
+       → Orchestrator (状态管理 + 记忆 + 压缩 + 会话 FIFO)
          → Agent (system prompt + 工具调用循环)
            → QueryEngine (LLM 调用 + 重试 + 流式输出)
              → LLM Client (OpenAI / Anthropic)
-           → Tools (9 个工具 + 权限检查)
-           → Skills (6 个技能)
+           → Cordis Tool Registry (内置 + 插件 + 权限检查)
+           → Cordis Skill Registry (内置 + 插件)
 ```

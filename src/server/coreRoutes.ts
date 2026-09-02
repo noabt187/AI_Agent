@@ -21,7 +21,6 @@ import {
   updateRepositoryConfig,
 } from './sessionApi.js'
 import { startJsonStream, writeStreamEvent } from './stream.js'
-import { assertPreviewUrl, buildPreviewHtml } from './preview.js'
 import { listDirectories, pickDirectory } from './fileBrowser.js'
 import { loadMetricsFromStateDir } from './metrics.js'
 import {
@@ -67,11 +66,6 @@ export async function handleCoreRequest(
   try {
     if (method === 'GET' && pathname === '/api/health') {
       sendJson(res, 200, { ok: true })
-      return
-    }
-
-    if (method === 'GET' && pathname === '/api/preview') {
-      await handlePreview(url, res)
       return
     }
 
@@ -297,37 +291,6 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
   } finally {
     res.end()
   }
-}
-
-async function handlePreview(url: URL, res: ServerResponse): Promise<void> {
-  const rawTarget = url.searchParams.get('url') || ''
-  if (!rawTarget) {
-    sendJson(res, 400, { error: 'url 不能为空' })
-    return
-  }
-  let target: URL
-  try {
-    target = assertPreviewUrl(rawTarget)
-  } catch (error) {
-    sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
-    return
-  }
-  const upstream = await fetch(target)
-  const contentType = upstream.headers.get('content-type') || ''
-  if (!upstream.ok) {
-    sendJson(res, upstream.status, { error: `预览页面请求失败：HTTP ${upstream.status}` })
-    return
-  }
-  if (!contentType.includes('text/html')) {
-    sendJson(res, 415, { error: '预览代理第一版只支持 HTML 页面' })
-    return
-  }
-  res.writeHead(200, {
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-cache',
-    'Content-Type': 'text/html; charset=utf-8',
-  })
-  res.end(buildPreviewHtml(await upstream.text(), target.toString()))
 }
 
 export default coreRoutesPlugin

@@ -186,3 +186,15 @@ Run `npm run build` after source changes and refresh Harness. `npm run check` bu
 - Before/after visual comparison and annotation history.
 - Optional cropped visual context for models that support images.
 - Presentation templates, master layouts, and PPTX/PDF export.
+
+## AI Agent CLI installation
+
+The same package can be installed into this repository's DSH-compatible AI Agent host without an adapter or a separate build. For local development:
+
+```powershell
+npm run ai-agent -- plugin --profile web add "link:D:\project\AI_Agent\plugins\dsh-frontend-feedback"
+npm run ai-agent -- plugin --profile web list
+npm run ai-agent -- --profile web
+```
+
+Use `--dump-config` to inspect the composed Cordis entries before startup. Published packages can be installed or updated by npm name through the same `plugin --profile web` command. AI Agent treats plugins as trusted local Node and browser code, just as DeepSeek Harness does.

@@ -69,6 +69,7 @@ test('an exact PageCraft route wins before the built-in /api prefix', async () =
   ])
   assert.equal(await (await fetch(host.url('/api/frontend-feedback/probe'))).text(), 'pagecraft')
   assert.deepEqual(await (await fetch(host.url('/api/health'))).json(), { ok: true })
+  assert.equal((await fetch(host.url('/api/preview'))).status, 404)
   await host.dispose()
 })
 
