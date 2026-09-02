@@ -3,13 +3,13 @@
       name: '@deepseek-ai/dsh-skill'
 
     - id: managed-skills
-      name: '@ai-agent/managed-skills'
+      name: cordis:ai-agent-managed-skills
 
     - id: tools
-      name: '@ai-agent/tools'
+      name: cordis:ai-agent-tools
 
     - id: sessions
-      name: '@ai-agent/sessions'
+      name: cordis:ai-agent-sessions
 
     - id: core-routes
-      name: '@ai-agent/core-routes'
+      name: cordis:ai-agent-core-routes

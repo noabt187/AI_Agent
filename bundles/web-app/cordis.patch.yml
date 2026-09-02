@@ -6,7 +6,7 @@
         port: !!js Number(process.env.PORT ?? 3000)
 
     - id: client-modules
-      name: '@ai-agent/client-modules'
+      name: cordis:ai-agent-client-modules
 
     - id: static-web
-      name: '@ai-agent/static-web'
+      name: cordis:ai-agent-static-web

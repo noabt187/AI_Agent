@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url'
 import { runPluginCommand } from '../src/plugins/manager.js'
+import { prepareAiAgentProfile, startAiAgentProfile } from '../src/plugins/host.js'
 
 const USAGE = `Usage:
   ai-agent plugin --profile <name> <pnpm-args...>
@@ -28,8 +29,22 @@ export async function main(
     io.stderr.write(`${parsed.error ?? 'ai-agent: unknown argument'}\n${USAGE}`)
     return 2
   }
-  io.stderr.write('ai-agent: profile startup is not available until the Cordis host is installed\n')
-  return 1
+  if (parsed.rest.includes('--dump-config')) {
+    io.stdout.write(prepareAiAgentProfile(parsed.profile).yaml)
+    return 0
+  }
+  const host = await startAiAgentProfile(parsed.profile)
+  const shutdown = async (signal: NodeJS.Signals) => {
+    process.off('SIGINT', onSigint)
+    process.off('SIGTERM', onSigterm)
+    await host.dispose()
+    io.stderr.write(`ai-agent: stopped after ${signal}\n`)
+  }
+  const onSigint = () => { void shutdown('SIGINT') }
+  const onSigterm = () => { void shutdown('SIGTERM') }
+  process.once('SIGINT', onSigint)
+  process.once('SIGTERM', onSigterm)
+  return 0
 }
 
 function parseProfile(argv: readonly string[]): { profile: string; rest: string[]; error?: string } {
