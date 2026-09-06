@@ -1452,6 +1452,13 @@ var assetStyles = {
   inspectorActions: { display: "flex", flexDirection: "column", gap: 8, marginTop: "auto" }
 };
 
+// src/client/presentation-asset-mode.ts
+function resolvePresentationAssetMode(summary, legacyJobId) {
+  if (summary.available && summary.manifest !== void 0) return "project";
+  if (!summary.available && legacyJobId !== null) return "legacy";
+  return "unavailable";
+}
+
 // node_modules/@marijn/find-cluster-break/src/index.js
 var rangeFrom = [];
 var rangeTo = [];
@@ -33813,6 +33820,8 @@ function FrontendFeedbackPanel({
     const stored = readStoredValue(presentationJobStorageKey(sessionId));
     return isPresentationJobId(stored) ? stored : null;
   });
+  const [presentationWorkspace, setPresentationWorkspace] = (0, import_react6.useState)(null);
+  const [presentationAssetMode, setPresentationAssetMode] = (0, import_react6.useState)("checking");
   const [assetManifest, setAssetManifest] = (0, import_react6.useState)(emptyPresentationAssetManifest);
   const [showAssetLibrary, setShowAssetLibrary] = (0, import_react6.useState)(false);
   const [showProjectAssetLibrary, setShowProjectAssetLibrary] = (0, import_react6.useState)(false);
@@ -33829,10 +33838,34 @@ function FrontendFeedbackPanel({
     persistFeedbackDraft(storageId, { selection: selection2, areaOperation, comment: comment2, queued });
   }, [areaOperation, comment2, queued, selection2, storageId]);
   (0, import_react6.useEffect)(() => {
-    if (presentationJobId === null) {
+    if (workspaceMode !== "presentation") {
+      setPresentationWorkspace(null);
+      setPresentationAssetMode("unavailable");
+      return;
+    }
+    let cancelled = false;
+    setPresentationAssetMode("checking");
+    void readApiJson(fetch(
+      `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+      { cache: "no-store" }
+    )).then((summary) => {
+      if (cancelled) return;
+      setPresentationWorkspace(summary);
+      setPresentationAssetMode(resolvePresentationAssetMode(summary, presentationJobId));
+    }).catch((error) => {
+      if (cancelled) return;
+      setPresentationWorkspace(null);
+      setPresentationAssetMode("unavailable");
+      setStatus(`\u65E0\u6CD5\u786E\u8BA4 PPT \u9879\u76EE\u56FE\u7247\u76EE\u5F55\uFF1A${describeError2(error)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [presentationJobId, sessionId, workspaceMode]);
+  (0, import_react6.useEffect)(() => {
+    if (presentationAssetMode !== "legacy" || presentationJobId === null) {
       setAssetManifest(emptyPresentationAssetManifest());
       setShowAssetLibrary(false);
-      setSelectedImageSlot(null);
       return;
     }
     let cancelled = false;
@@ -33844,9 +33877,9 @@ function FrontendFeedbackPanel({
     return () => {
       cancelled = true;
     };
-  }, [presentationJobId, sessionId]);
+  }, [presentationAssetMode, presentationJobId, sessionId]);
   const postAssetBindings = (0, import_react6.useCallback)((manifest) => {
-    if (workspaceMode !== "presentation" || presentationJobId === null) return;
+    if (workspaceMode !== "presentation" || presentationAssetMode !== "legacy" || presentationJobId === null) return;
     iframeRef.current?.contentWindow?.postMessage({
       type: "dsh-pagecraft-asset-bindings",
       bindings: manifest.bindings.map((binding) => ({
@@ -33854,7 +33887,7 @@ function FrontendFeedbackPanel({
         url: presentationAssetUrl(sessionId, presentationJobId, binding.assetId)
       }))
     }, "*");
-  }, [presentationJobId, sessionId, workspaceMode]);
+  }, [presentationAssetMode, presentationJobId, sessionId, workspaceMode]);
   (0, import_react6.useEffect)(() => {
     postAssetBindings(assetManifest);
   }, [assetManifest, postAssetBindings]);
@@ -33918,17 +33951,20 @@ function FrontendFeedbackPanel({
           { cache: "no-store" }
         ));
         if (request !== imageSlotRequestRef.current) return;
-        if (summary.available) {
+        setPresentationWorkspace(summary);
+        const nextMode = resolvePresentationAssetMode(summary, presentationJobId);
+        setPresentationAssetMode(nextMode);
+        if (nextMode === "project") {
           setShowProjectAssetLibrary(true);
           setStatus("\u5DF2\u6253\u5F00\u56FE\u7247\u69FD\u4F4D\u3002\u9009\u62E9\u56FE\u7247\u540E\u4F1A\u76F4\u63A5\u5199\u56DE PPT \u9879\u76EE\u6E90\u7801\u3002");
           return;
         }
       } catch (error) {
         if (request !== imageSlotRequestRef.current) return;
-        if (presentationJobId === null) {
-          setStatus(`\u65E0\u6CD5\u6253\u5F00\u9879\u76EE\u56FE\u7247\uFF1A${describeError2(error)}`);
-          return;
-        }
+        setPresentationWorkspace(null);
+        setPresentationAssetMode("unavailable");
+        setStatus(`\u65E0\u6CD5\u786E\u8BA4\u9879\u76EE\u56FE\u7247\u76EE\u5F55\uFF1A${describeError2(error)}\u3002\u4E3A\u907F\u514D\u65E7\u56FE\u7247\u8986\u76D6\u65B0\u56FE\u7247\uFF0C\u672A\u542F\u7528\u517C\u5BB9\u6A21\u5F0F\u3002`);
+        return;
       }
       if (presentationJobId !== null) {
         setShowAssetLibrary(true);

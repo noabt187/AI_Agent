@@ -45,6 +45,8 @@ import {
   loadPresentationAssets,
   presentationAssetUrl,
 } from './assets.tsx'
+import { resolvePresentationAssetMode } from './presentation-asset-mode.ts'
+import type { PresentationAssetMode } from './presentation-asset-mode.ts'
 import { WorkspaceExplorer } from './source-workspace.tsx'
 import { ProjectAssetLibraryDialog } from './project-assets.tsx'
 
@@ -253,6 +255,8 @@ function FrontendFeedbackPanel({
     const stored = readStoredValue(presentationJobStorageKey(sessionId))
     return isPresentationJobId(stored) ? stored : null
   })
+  const [presentationWorkspace, setPresentationWorkspace] = useState<PresentationWorkspaceSummary | null>(null)
+  const [presentationAssetMode, setPresentationAssetMode] = useState<PresentationAssetMode | 'checking'>('checking')
   const [assetManifest, setAssetManifest] = useState<PresentationAssetManifest>(emptyPresentationAssetManifest)
   const [showAssetLibrary, setShowAssetLibrary] = useState(false)
   const [showProjectAssetLibrary, setShowProjectAssetLibrary] = useState(false)
@@ -272,10 +276,33 @@ function FrontendFeedbackPanel({
   }, [areaOperation, comment, queued, selection, storageId])
 
   useEffect(() => {
-    if (presentationJobId === null) {
+    if (workspaceMode !== 'presentation') {
+      setPresentationWorkspace(null)
+      setPresentationAssetMode('unavailable')
+      return
+    }
+    let cancelled = false
+    setPresentationAssetMode('checking')
+    void readApiJson<PresentationWorkspaceSummary>(fetch(
+      `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+      { cache: 'no-store' },
+    )).then((summary) => {
+      if (cancelled) return
+      setPresentationWorkspace(summary)
+      setPresentationAssetMode(resolvePresentationAssetMode(summary, presentationJobId))
+    }).catch((error) => {
+      if (cancelled) return
+      setPresentationWorkspace(null)
+      setPresentationAssetMode('unavailable')
+      setStatus(`无法确认 PPT 项目图片目录：${describeError(error)}`)
+    })
+    return () => { cancelled = true }
+  }, [presentationJobId, sessionId, workspaceMode])
+
+  useEffect(() => {
+    if (presentationAssetMode !== 'legacy' || presentationJobId === null) {
       setAssetManifest(emptyPresentationAssetManifest())
       setShowAssetLibrary(false)
-      setSelectedImageSlot(null)
       return
     }
     let cancelled = false
@@ -285,10 +312,10 @@ function FrontendFeedbackPanel({
       if (!cancelled) setStatus(`读取图片素材库失败：${describeError(assetError)}`)
     })
     return () => { cancelled = true }
-  }, [presentationJobId, sessionId])
+  }, [presentationAssetMode, presentationJobId, sessionId])
 
   const postAssetBindings = useCallback((manifest: PresentationAssetManifest) => {
-    if (workspaceMode !== 'presentation' || presentationJobId === null) return
+    if (workspaceMode !== 'presentation' || presentationAssetMode !== 'legacy' || presentationJobId === null) return
     iframeRef.current?.contentWindow?.postMessage({
       type: 'dsh-pagecraft-asset-bindings',
       bindings: manifest.bindings.map(binding => ({
@@ -296,7 +323,7 @@ function FrontendFeedbackPanel({
         url: presentationAssetUrl(sessionId, presentationJobId, binding.assetId),
       })),
     }, '*')
-  }, [presentationJobId, sessionId, workspaceMode])
+  }, [presentationAssetMode, presentationJobId, sessionId, workspaceMode])
 
   useEffect(() => {
     postAssetBindings(assetManifest)
@@ -369,17 +396,20 @@ function FrontendFeedbackPanel({
           { cache: 'no-store' },
         ))
         if (request !== imageSlotRequestRef.current) return
-        if (summary.available) {
+        setPresentationWorkspace(summary)
+        const nextMode = resolvePresentationAssetMode(summary, presentationJobId)
+        setPresentationAssetMode(nextMode)
+        if (nextMode === 'project') {
           setShowProjectAssetLibrary(true)
           setStatus('已打开图片槽位。选择图片后会直接写回 PPT 项目源码。')
           return
         }
       } catch (error) {
         if (request !== imageSlotRequestRef.current) return
-        if (presentationJobId === null) {
-          setStatus(`无法打开项目图片：${describeError(error)}`)
-          return
-        }
+        setPresentationWorkspace(null)
+        setPresentationAssetMode('unavailable')
+        setStatus(`无法确认项目图片目录：${describeError(error)}。为避免旧图片覆盖新图片，未启用兼容模式。`)
+        return
       }
 
       if (presentationJobId !== null) {
