@@ -36,8 +36,10 @@
   },
   "devDependencies": {
     "@types/js-yaml": "4.0.9",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.19.19",
     "concurrently": "^9.1.0",
+    "jsdom": "29.1.1",
     "tsx": "^4.19.2"
   }
 }

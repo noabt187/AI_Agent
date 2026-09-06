@@ -590,17 +590,6 @@ export function App({ pluginRuntime }: AppProps) {
     }
   }, [viewMode, selectedSessionId])
 
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        void handleAbort()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  })
-
   async function handleNewSession() {
     const sessionId = await createSession()
     await refreshSessions(sessionId)
