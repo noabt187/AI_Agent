@@ -1,0 +1,9 @@
+- insert:
+    - id: web-server
+      name: cordis:ai-agent-web-server
+
+    - id: client-modules
+      name: cordis:ai-agent-client-modules
+
+    - id: static-web
+      name: cordis:ai-agent-static-web

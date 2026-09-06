@@ -10,6 +10,8 @@ export type ToolResultCode =
   | 'REMOTE_SIDE_EFFECT_BLOCKED'
   | 'TOOL_EXECUTION_FAILED'
   | 'RETRY_EXHAUSTED'
+  | 'ABORTED'
+  | 'OUTPUT_LIMIT'
 
 export type ToolResult = {
   ok: boolean
@@ -38,4 +40,21 @@ export function toolFailure(
 
 export function serializeToolResult(result: ToolResult): string {
   return JSON.stringify(result)
+}
+
+/** Legacy/plugin tools keep their text contract; the execution layer owns status. */
+export function toolResultFromLegacyOutput(raw: string): ToolResult {
+  if (/^❌\s*验证未通过/.test(raw.trim())) {
+    return toolFailure('COMMAND_FAILED', raw, false, { output: raw })
+  }
+  if (/^(错误|工具执行错误)/.test(raw.trim())) {
+    const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(raw)
+    return toolFailure(commandMissing ? 'COMMAND_NOT_FOUND' : 'TOOL_EXECUTION_FAILED', raw, false, { output: raw })
+  }
+  return toolSuccess(raw, { output: raw })
+}
+
+export function toolResultToLegacyOutput(result: ToolResult): string {
+  return result.ok || /^(错误|工具执行错误|❌)/.test(result.message.trim())
+    ? result.message : `错误：${result.message}`
 }

@@ -6,7 +6,6 @@ import {
   Check,
   Copy,
   Download,
-  Eye,
   FileUp,
   FolderOpen,
   Gauge,
@@ -46,17 +45,15 @@ import {
   loadSession,
   loadSessionMemory,
   loadSessionMetrics,
-  pickDirectory,
   revealMemoryItem,
   saveMemoryItem,
-  streamPrompt,
+  consumePromptStream,
   updateMemorySettings,
   updateRepositoryConfig,
   updateAllowedPaths,
   updateSkillEnabled,
   updateSessionTitle,
   uploadSkill,
-  type Message,
   type DirectoryListing,
   type ManagedSkill,
   type MemoryLayerId,
@@ -69,9 +66,15 @@ import {
   type SessionDetail,
   type SessionSummary,
   type StreamEvent,
+  type TaskInputControl,
 } from './api'
-import { buildAnnotationPrompt, type ElementComment } from './annotationPrompt'
-import { messageContent } from './messageContent'
+import { browserDraftStore } from './sessionDrafts'
+import { SessionRuntime, recoverSession } from './sessionRuntime'
+import { readSelectedSession, saveSelectedSession, selectExistingSession } from './sessionSelection'
+import { readThemeMode, saveThemeMode, type ThemeMode } from './theme'
+import { SlotOutlet } from './plugins/SlotOutlet'
+import type { BrowserPluginRuntime } from './plugins/runtime'
+import type { PromptResult } from './plugins/types'
 
 type TimelineItem = {
   id: string
@@ -85,21 +88,9 @@ type ActivityItem = {
   sessionId: string
 }
 
-type PendingConfirm = {
-  allowWrite: boolean
-  message: string
-}
 
-type PlanOption = {
-  key: string
-  label: string
-  value?: string
-}
-
-type AnnotatedElement = Omit<ElementComment, 'id' | 'comment'>
-type ViewMode = 'chat' | 'preview' | 'metrics'
+type ViewMode = 'chat' | 'metrics'
 type MetricsViewMode = 'detail' | 'trend' | 'anomaly' | 'composition'
-type ThemeMode = 'dark' | 'light'
 type NegativeFeedbackDraft = {
   itemId: string
   content: string
@@ -128,40 +119,8 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 const modelThinkingStatus = '模型思考中'
-const abortDisplayMessage = '操作已取消'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
-const themeStorageKey = 'agent-console-theme'
-const dismissedConfirmStoragePrefix = 'agent-console-dismissed-confirm:'
-
-function getInitialThemeMode(): ThemeMode {
-  if (typeof window === 'undefined') return 'dark'
-  return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
-}
-
-function toTimeline(messages: Message[]): TimelineItem[] {
-  const items = messages
-    .filter((message) => !message.isMeta && message.role !== 'system' && message.role !== 'tool')
-    .map((message) => {
-      const content = messageContent(message).trim()
-      return {
-        id: message.uuid,
-        role: (message.role === 'user' ? 'user' : 'assistant') as TimelineItem['role'],
-        content,
-      }
-    })
-    .filter((item) => item.content.length > 0)
-
-  return items.reduce<TimelineItem[]>((merged, item) => {
-    const previous = merged.at(-1)
-    if (previous?.role === 'assistant' && item.role === 'assistant') {
-      previous.content = `${previous.content}\n\n${item.content}`
-      return merged
-    }
-    merged.push(item)
-    return merged
-  }, [])
-}
 
 function formatTime(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -234,120 +193,45 @@ function formatToolResult(name: string, result: string): string {
   return `${name} 完成`
 }
 
-function isWindowsClient(): boolean {
-  return navigator.platform.toLowerCase().includes('win') || navigator.userAgent.includes('Windows')
+
+export interface AppProps {
+  pluginRuntime: BrowserPluginRuntime
 }
 
-function inferPendingConfirm(timeline: TimelineItem[], running: boolean): PendingConfirm | undefined {
-  if (running) return undefined
-  const latestVisible = [...timeline].reverse().find((item) => item.role === 'assistant' || item.role === 'user')
-  if (latestVisible?.role !== 'assistant') return undefined
-  const latestAssistant = latestVisible
-  if (!latestAssistant) return undefined
-  const content = latestAssistant.content.trim()
-  if (!content || /任务完成|已完成|验证通过/.test(content)) return undefined
-
-  const hasAllowWriteWarning = content.includes(allowWriteConfirmWarning)
-    || /获得文件写入权限|增\/删\/改/.test(content)
-  const waitingForChoice = /请选择|选择.*方案|选择.*选项|A\/B\/C|A\/B\/C\/D|A\/B\/C\/D\/E/.test(content)
-  const waitingForConfirm = hasAllowWriteWarning
-    || waitingForChoice
-    || /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
-    || (/确认/.test(content) && /是否|吗|？|\?/.test(content))
-  if (!waitingForConfirm) return undefined
-
-  return {
-    allowWrite: hasAllowWriteWarning || /方案|设计|任务顺序|待执行/.test(content),
-    message: content,
-  }
-}
-
-function pendingConfirmKey(sessionId: string, confirm: PendingConfirm): string {
-  return [sessionId, confirm.allowWrite ? 'write' : 'read', confirm.message].join('\n')
-}
-
-function loadDismissedPendingConfirmKey(sessionId: string): string {
-  if (typeof window === 'undefined' || !sessionId) return ''
-  return window.localStorage.getItem(`${dismissedConfirmStoragePrefix}${sessionId}`) || ''
-}
-
-function saveDismissedPendingConfirmKey(sessionId: string, key: string): void {
-  if (typeof window === 'undefined' || !sessionId) return
-  window.localStorage.setItem(`${dismissedConfirmStoragePrefix}${sessionId}`, key)
-}
-
-function uniquePlanOptions(options: PlanOption[]): PlanOption[] {
-  const seen = new Set<string>()
-  return options.filter((option) => {
-    if (seen.has(option.key)) return false
-    seen.add(option.key)
-    return true
-  })
-}
-
-function detectPlanOptions(content: string): PlanOption[] {
-  const matches: PlanOption[] = []
-  const optionLetters = 'ABCDEFGH'
-
-  for (const line of content.split('\n')) {
-    const tableMatch = line.match(/^\s*\|\s*([A-Ha-h])\s*\|\s*(.+?)\s*\|/)
-    if (!tableMatch) continue
-    const key = tableMatch[1].toUpperCase()
-    const value = tableMatch[2].replace(/^["“”]+|["“”]+$/g, '').trim()
-    matches.push({
-      key,
-      label: key,
-      value,
-    })
-  }
-
-  const patterns = [
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([A-Ha-h]))(?:[：:、\s.)）-]|$)/g,
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([一二三四五六七八]))(?:[：:、\s.)）-]|$)/g,
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:([A-Ha-h])\s*[.)）]\s*)(?=\S)/g,
-  ]
-
-  for (const pattern of patterns) {
-    for (const match of content.matchAll(pattern)) {
-      const raw = match[2] || match[1]
-      const normalized = raw.trim().toUpperCase()
-      const key = optionLetters.includes(normalized) ? normalized : raw.trim()
-      matches.push({
-        key,
-        label: optionLetters.includes(key) ? `方案 ${key}` : `方案${key}`,
-      })
-    }
-  }
-
-  return uniquePlanOptions(matches).slice(0, 8)
-}
-
-export function App() {
-  const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
+export function App({ pluginRuntime }: AppProps) {
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const streamingAssistantIdRef = useRef<string | null>(null)
-  const streamingRawTextRef = useRef('')
-  const streamingVisibleTextRef = useRef('')
   const selectedSessionIdRef = useRef('')
+  const [sessionRuntime] = useState(() => new SessionRuntime())
+  const recoveryControllers = useRef(new Map<string, AbortController>())
+  const sessionListRequest = useRef(0)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
-  const abortingRef = useRef(false)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
+  const submitPromptRef = useRef<(text: string, source: 'composer' | 'plugin', owner?: string) => Promise<PromptResult>>(
+    async () => ({ ok: false, error: { message: 'AI Agent is still starting' } }),
+  )
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
   const [activityItems, setActivityItems] = useState<ActivityItem[]>([])
   const [activityExpanded, setActivityExpanded] = useState(false)
-  const [prompt, setPrompt] = useState('')
+  const [draftStore] = useState(browserDraftStore)
+  const [, redrawDraft] = useState(0)
+  const prompt = selectedSessionId ? draftStore.get(selectedSessionId).text : ''
+  function setPrompt(text: string) {
+    if (selectedSessionId) draftStore.set(selectedSessionId, text)
+    redrawDraft(n => n + 1)
+  }
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
   const [directoryError, setDirectoryError] = useState('')
-  const [previewDraftUrl, setPreviewDraftUrl] = useState('http://localhost:4000')
-  const [previewUrl, setPreviewUrl] = useState('')
-  const [previewEditorOpen, setPreviewEditorOpen] = useState(false)
+  const [directoryPathInput, setDirectoryPathInput] = useState('')
+  const [directoryBusy, setDirectoryBusy] = useState(false)
+  const directoryRequest = useRef(0)
+  const directoryOwner = useRef('')
   const [repositoryEditorOpen, setRepositoryEditorOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metricsViewMode, setMetricsViewMode] = useState<MetricsViewMode>('detail')
@@ -367,11 +251,8 @@ export function App() {
   const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
+  const [controlError, setControlError] = useState<{ owner: string; message: string } | null>(null)
   const [selectedPlanKey, setSelectedPlanKey] = useState('')
-  const [annotateActive, setAnnotateActive] = useState(false)
-  const [selectedElement, setSelectedElement] = useState<AnnotatedElement | null>(null)
-  const [elementComment, setElementComment] = useState('')
-  const [elementComments, setElementComments] = useState<ElementComment[]>([])
   const [running, setRunning] = useState(false)
   const [aborting, setAbortingState] = useState(false)
   const [status, setStatus] = useState('未连接')
@@ -388,13 +269,8 @@ export function App() {
   const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
 
-  function setAborting(value: boolean) {
-    abortingRef.current = value
-    setAbortingState(value)
-  }
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
-  const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
-  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode())
 
   const selectedSessionSummary = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -402,17 +278,15 @@ export function App() {
   )
   const hasSelectedSession = Boolean(selectedSessionId && selectedSessionSummary)
 
-  const rawPendingConfirm = session?.state.pendingConfirm
+  const rawPendingConfirm = session?.state.task?.phase === 'awaiting_confirmation' ? session.state.task.pendingConfirmation : undefined
   const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
-    ? pendingConfirmKey(selectedSessionId, rawPendingConfirm)
+    ? `${selectedSessionId}:${rawPendingConfirm.taskId}:${rawPendingConfirm.taskRevision}:${rawPendingConfirm.id}`
     : ''
-  const pendingConfirm = activePendingConfirmKey && activePendingConfirmKey === dismissedPendingConfirmKey
-    ? undefined
-    : rawPendingConfirm
+  const pendingConfirm = rawPendingConfirm
   const pendingPlanOptions = useMemo(() => (
-    pendingConfirm ? detectPlanOptions(pendingConfirm.message) : []
+    pendingConfirm?.selections?.map((value, index) => ({ key: String(index), label: value, value })) ?? []
   ), [pendingConfirm])
-  const hasPlanChoices = pendingPlanOptions.length > 1
+  const hasPlanChoices = pendingPlanOptions.length > 0
   const selectedPlan = pendingPlanOptions.find((option) => option.key === selectedPlanKey)
   const operationRoot = session?.state.allowedPaths[0] || ''
   const repository = session?.state.repository || {}
@@ -425,66 +299,122 @@ export function App() {
     ? skills.find((skill) => skill.id === skillContextMenu.skillId) || null
     : null
 
-  function clearPendingConfirmLocal(options: { dismiss?: boolean } = {}) {
-    if (options.dismiss && selectedSessionId && pendingConfirm) {
-      const key = pendingConfirmKey(selectedSessionId, pendingConfirm)
-      saveDismissedPendingConfirmKey(selectedSessionId, key)
-      setDismissedPendingConfirmKey(key)
-    }
-    setSession((current) => current
-      ? {
-          ...current,
-          state: {
-            ...current.state,
-            pendingConfirm: undefined,
-          },
-        }
-      : current)
-    setConfirmEditorOpen(false)
-    setConfirmDraft('')
-    setSelectedPlanKey('')
-  }
 
   async function refreshSessions(preferredId?: string | null) {
+    const request = ++sessionListRequest.current
+    const owner = selectedSessionIdRef.current
     const nextSessions = await listSessions()
+    if (request !== sessionListRequest.current) return
     setSessions(nextSessions)
-    const nextId = preferredId === undefined
-      ? selectedSessionId || nextSessions[0]?.id || ''
-      : preferredId || nextSessions[0]?.id || ''
+    const preferred = owner !== selectedSessionIdRef.current
+      ? selectedSessionIdRef.current
+      : preferredId ?? (selectedSessionIdRef.current || readSelectedSession(window.sessionStorage))
+    const nextId = selectExistingSession(nextSessions.map(item => item.id), preferred)
     setSelectedSessionId(nextId)
   }
 
-  async function refreshSession(sessionId = selectedSessionId, options: { updateTimeline?: boolean } = {}) {
+  function syncRuntimeView(sessionId: string) {
+    pluginRuntime.sessions.notifyRunningChanged(sessionId)
+    if (selectedSessionIdRef.current !== sessionId) return
+    const view = sessionRuntime.view(sessionId)
+    setTimeline(view.timeline)
+    setActivityItems(view.activities)
+    setRunning(sessionRuntime.isRunning(sessionId))
+    setAbortingState(view.aborting)
+    setDeltaCount(view.deltaCount)
+    setStatus(view.status)
+  }
+
+  async function refreshSession(sessionId = selectedSessionId) {
     if (!sessionId) return
-    const updateTimeline = options.updateTimeline ?? true
+    const token = sessionRuntime.snapshotToken(sessionId)
     const detail = await loadSession(sessionId)
+    if (sessionId !== selectedSessionIdRef.current) return
+    if (!sessionRuntime.snapshot(sessionId, token, detail)) return
     setSession(detail)
-    if (updateTimeline) setTimeline(toTimeline(detail.messages))
-    setRunning(detail.running)
-    setStatus(detail.running ? modelThinkingStatus : '就绪')
+    syncRuntimeView(sessionId)
+  }
+
+  function stopRecovery(owner: string) {
+    recoveryControllers.current.get(owner)?.abort()
+    recoveryControllers.current.delete(owner)
+  }
+
+  function startRecovery(owner: string) {
+    stopRecovery(owner)
+    if (!owner || owner !== selectedSessionIdRef.current) return
+    const controller = new AbortController()
+    recoveryControllers.current.set(owner, controller)
+    void recoverSession({
+      signal: controller.signal,
+      load: async () => {
+        const token = sessionRuntime.snapshotToken(owner)
+        const detail = await loadSession(owner, controller.signal)
+        return { detail, token, running: detail.running && !sessionRuntime.hasStreams(owner) }
+      },
+      apply: ({ detail, token }) => {
+        if (owner !== selectedSessionIdRef.current) return
+        if (sessionRuntime.snapshot(owner, token, detail)) {
+          setSession(detail)
+          syncRuntimeView(owner)
+        }
+      },
+      onError: () => {
+        sessionRuntime.error(owner, '连接中断，正在重试同步…')
+        syncRuntimeView(owner)
+      },
+    }).finally(() => {
+      if (recoveryControllers.current.get(owner) === controller) recoveryControllers.current.delete(owner)
+    })
   }
 
   useEffect(() => {
-    void refreshSessions()
+    void refreshSessions().catch(() => setStatus('无法读取会话列表，请刷新重试'))
     void refreshSkills()
+    return () => {
+      selectedSessionIdRef.current = ''
+      for (const controller of recoveryControllers.current.values()) controller.abort()
+      recoveryControllers.current.clear()
+    }
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(themeStorageKey, themeMode)
+    saveThemeMode(themeMode)
   }, [themeMode])
 
   useEffect(() => {
     setSelectedPlanKey('')
+    setConfirmEditorOpen(false)
+    setConfirmDraft('')
   }, [activePendingConfirmKey])
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId
-    if (selectedSessionId) void refreshSession(selectedSessionId)
-    setDismissedPendingConfirmKey(loadDismissedPendingConfirmKey(selectedSessionId))
-    setActivityItems([])
+    closeDirectoryPicker()
+    setSession(null)
+    if (selectedSessionId) {
+      saveSelectedSession(selectedSessionId, window.sessionStorage)
+      syncRuntimeView(selectedSessionId)
+      startRecovery(selectedSessionId)
+    } else {
+      setTimeline([]); setActivityItems([]); setRunning(false); setAbortingState(false); setStatus('就绪')
+    }
     setActivityExpanded(false)
     setRepositoryError('')
+    return () => stopRecovery(selectedSessionId)
   }, [selectedSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId) return
+    return pluginRuntime.sessions.bind(selectedSessionId, {
+      getRunning: () => sessionRuntime.isRunning(selectedSessionId),
+      prompt: text => submitPromptRef.current(text, 'plugin', selectedSessionId),
+    })
+  }, [pluginRuntime, selectedSessionId])
+
+  useEffect(() => {
+    if (selectedSessionId) pluginRuntime.sessions.notifyRunningChanged(selectedSessionId)
+  }, [pluginRuntime, running, selectedSessionId])
 
   useEffect(() => {
     setRepositoryDraft(session?.state.repository || {})
@@ -542,42 +472,6 @@ export function App() {
       void refreshMetrics(selectedSessionId)
     }
   }, [viewMode, selectedSessionId])
-
-  useEffect(() => {
-    function handleMessage(event: MessageEvent) {
-      if (!event.data) return
-      if (event.data.type === 'agent-element-selected') {
-        setSelectedElement(event.data.payload as AnnotatedElement)
-        setElementComment('')
-        return
-      }
-      if (event.data.type === 'agent-annotator-active-changed') {
-        setAnnotateActive(Boolean(event.data.active))
-      }
-    }
-
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [])
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        void handleAbort()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  })
-
-  function postAnnotatorState(active = annotateActive) {
-    previewFrameRef.current?.contentWindow?.postMessage({ type: 'agent-annotator-set-active', active }, '*')
-  }
-
-  useEffect(() => {
-    postAnnotatorState(annotateActive)
-  }, [annotateActive, previewUrl])
 
   async function handleNewSession() {
     const sessionId = await createSession()
@@ -707,8 +601,11 @@ export function App() {
     if (!sessionId) return
     setMemoryError('')
     try {
-      setSessionMemory(await loadSessionMemory(sessionId))
+      const memory = await loadSessionMemory(sessionId)
+      if (sessionId !== selectedSessionIdRef.current) return
+      setSessionMemory(memory)
     } catch (err) {
+      if (sessionId !== selectedSessionIdRef.current) return
       setSessionMemory(null)
       setMemoryError(err instanceof Error ? err.message : String(err))
     }
@@ -908,29 +805,38 @@ export function App() {
     return operationRoot || undefined
   }
 
-  async function openDirectoryPicker(startPath?: string, options: { roots?: boolean } = {}) {
+  async function openDirectoryPicker(startPath?: string, options: { roots?: boolean; home?: boolean } = {}) {
+    const owner = selectedSessionIdRef.current
+    if (!owner) return
+    directoryOwner.current = owner
+    const request = ++directoryRequest.current
     setDirectoryPickerOpen(true)
     setDirectoryError('')
+    setDirectoryBusy(true)
     try {
-      const listing = await listDirectories(options.roots ? undefined : startPath || getDirectoryStartPath(), options)
+      const listing = await listDirectories(options.roots || options.home ? undefined : startPath || getDirectoryStartPath(), options)
+      if (request !== directoryRequest.current || selectedSessionIdRef.current !== owner) return
       setDirectoryListing(listing)
+      setDirectoryPathInput(listing.isRootListing ? '' : listing.path)
     } catch (err) {
+      if (request !== directoryRequest.current || selectedSessionIdRef.current !== owner) return
       setDirectoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (request === directoryRequest.current) setDirectoryBusy(false)
     }
   }
 
+  function closeDirectoryPicker() {
+    directoryRequest.current += 1
+    directoryOwner.current = ''
+    setDirectoryPickerOpen(false)
+    setDirectoryBusy(false)
+    setDirectoryListing(null)
+    setDirectoryError('')
+  }
+
   async function handlePickDirectory() {
-    const startPath = getDirectoryStartPath()
-    if (isWindowsClient()) {
-      try {
-        const result = await pickDirectory(startPath)
-        if (result.path) {
-          await chooseDirectory(result.path)
-          return
-        }
-      } catch {}
-    }
-    await openDirectoryPicker(startPath)
+    await openDirectoryPicker(getDirectoryStartPath())
   }
 
   function openDirectoryParent() {
@@ -944,218 +850,24 @@ export function App() {
   }
 
   async function chooseDirectory(path: string) {
-    if (!selectedSessionId) return
-    const detail = await updateAllowedPaths(selectedSessionId, [path])
-    setSession(detail)
-    await refreshMemory(selectedSessionId)
-    setDirectoryPickerOpen(false)
-    setDirectoryError('')
-    setStatus('目录已更新')
-  }
-
-  function handleOpenPreview() {
-    const nextUrl = previewDraftUrl.trim()
-    if (!nextUrl) return
-    setPreviewUrl(nextUrl)
-    setViewMode('preview')
-    setAnnotateActive(false)
-    setSelectedElement(null)
-  }
-
-  function openPreviewEditor() {
-    setPreviewDraftUrl(previewUrl || previewDraftUrl || 'http://localhost:4000')
-    setPreviewEditorOpen(true)
-  }
-
-  function savePreviewAddress() {
-    handleOpenPreview()
-    setPreviewEditorOpen(false)
-  }
-
-  function handleAddComment() {
-    if (!selectedElement || !elementComment.trim()) return
-    setElementComments((current) => [
-      ...current,
-      {
-        ...selectedElement,
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        comment: elementComment.trim(),
-      },
-    ])
-    setSelectedElement(null)
-    setElementComment('')
-  }
-
-  function handleRemoveComment(id: string) {
-    setElementComments((current) => current.filter((item) => item.id !== id))
-  }
-
-  async function handleSendComments() {
-    if (elementComments.length === 0) return
-    const commentPrompt = buildAnnotationPrompt(elementComments, operationRoot)
-    setElementComments([])
-    setSelectedElement(null)
-    setElementComment('')
-    setAnnotateActive(false)
-    setViewMode('chat')
-    await sendPrompt(commentPrompt)
-  }
-
-  function appendItem(item: Omit<TimelineItem, 'id'>) {
-    setTimeline((current) => {
-      const previous = current.at(-1)
-      if (previous?.role === 'assistant' && item.role === 'assistant') {
-        return [
-          ...current.slice(0, -1),
-          {
-            ...previous,
-            content: `${previous.content}\n\n${item.content}`,
-          },
-        ]
-      }
-      return [
-        ...current,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          ...item,
-        },
-      ]
-    })
-  }
-
-  function appendAssistantDelta(text: string) {
-    if (!text) return
-    setTimeline((current) => {
-      const streamingId = streamingAssistantIdRef.current
-      if (streamingId) {
-        return current.map((item) => (
-          item.id === streamingId
-            ? { ...item, content: `${item.content}${text}` }
-            : item
-        ))
-      }
-
-      const previous = current.at(-1)
-      if (previous?.role === 'assistant') {
-        streamingAssistantIdRef.current = previous.id
-        return [
-          ...current.slice(0, -1),
-          { ...previous, content: `${previous.content}${text}` },
-        ]
-      }
-
-      const id = `stream-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      streamingAssistantIdRef.current = id
-      return [
-        ...current,
-        {
-          id,
-          role: 'assistant',
-          content: text,
-        },
-      ]
-    })
-  }
-
-  function finalizeAssistantOutput(message: string) {
-    const streamingId = streamingAssistantIdRef.current
-    streamingAssistantIdRef.current = null
-    streamingRawTextRef.current = ''
-    streamingVisibleTextRef.current = ''
-
-    if (!streamingId) {
-      appendItem({ role: 'assistant', content: message })
-      return
+    const owner = directoryOwner.current
+    if (!owner || owner !== selectedSessionIdRef.current || directoryBusy || directoryError) return
+    const request = ++directoryRequest.current
+    setDirectoryBusy(true)
+    try {
+      const detail = await updateAllowedPaths(owner, [path])
+      if (request !== directoryRequest.current || owner !== selectedSessionIdRef.current) return
+      setSession(detail)
+      closeDirectoryPicker()
+      setStatus('目录已更新')
+      await refreshMemory(owner)
+    } catch (err) {
+      if (request === directoryRequest.current) setDirectoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (request === directoryRequest.current) setDirectoryBusy(false)
     }
-
-    setTimeline((current) => current.map((item) => (
-      item.id === streamingId
-        ? { ...item, content: message }
-        : item
-    )))
   }
 
-  function readPartialJsonStringField(raw: string, fieldName: string): string | null {
-    const marker = `"${fieldName}"`
-    const keyIndex = raw.indexOf(marker)
-    if (keyIndex === -1) return null
-
-    const colonIndex = raw.indexOf(':', keyIndex + marker.length)
-    if (colonIndex === -1) return null
-
-    let quoteIndex = colonIndex + 1
-    while (quoteIndex < raw.length && /\s/.test(raw[quoteIndex])) quoteIndex += 1
-    if (raw[quoteIndex] !== '"') return null
-
-    let value = ''
-    let escaped = false
-    for (let index = quoteIndex + 1; index < raw.length; index += 1) {
-      const char = raw[index]
-      if (escaped) {
-        if (char === 'n') value += '\n'
-        else if (char === 'r') value += '\r'
-        else if (char === 't') value += '\t'
-        else if (char === '"' || char === '\\' || char === '/') value += char
-        else if (char === 'u' && index + 4 < raw.length) {
-          const hex = raw.slice(index + 1, index + 5)
-          const codePoint = Number.parseInt(hex, 16)
-          value += Number.isNaN(codePoint) ? `\\u${hex}` : String.fromCharCode(codePoint)
-          index += 4
-        } else {
-          value += char
-        }
-        escaped = false
-        continue
-      }
-      if (char === '\\') {
-        escaped = true
-        continue
-      }
-      if (char === '"') return value
-      value += char
-    }
-
-    return value
-  }
-
-  function visibleStreamingText(raw: string): string {
-    const trimmedStart = raw.trimStart()
-    if (!trimmedStart.startsWith('{')) return raw
-    return readPartialJsonStringField(raw, 'message')
-      ?? readPartialJsonStringField(raw, 'prompt')
-      ?? ''
-  }
-
-  function appendActivity(content: string) {
-    const activitySessionId = selectedSessionId
-    if (!activitySessionId || activitySessionId !== selectedSessionIdRef.current) return
-    setActivityItems((current) => [
-      ...current,
-      {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        sessionId: activitySessionId,
-        content,
-      },
-    ])
-  }
-
-  function showAbortNotice() {
-    setActivityItems([])
-    setActivityExpanded(false)
-    setStatus(abortDisplayMessage)
-    setTimeline((current) => {
-      const lastUserIndex = current.map((item) => item.role).lastIndexOf('user')
-      const base = lastUserIndex >= 0 ? current.slice(0, lastUserIndex + 1) : current
-      return [
-        ...base,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role: 'assistant',
-          content: abortDisplayMessage,
-        },
-      ]
-    })
-  }
 
   async function handleCopyResponse(itemId: string, content: string) {
     try {
@@ -1239,143 +951,135 @@ export function App() {
     void sendPrompt(previousPrompt)
   }
 
-  function handleStreamEvent(event: StreamEvent) {
-    if (event.type === 'start') {
-      setStatus(modelThinkingStatus)
-      return
+  function handleStreamEvent(sessionId: string, requestId: string, event: StreamEvent) {
+    if (event.type === 'task' && sessionId === selectedSessionIdRef.current) {
+      setSession(current => current?.id === sessionId ? { ...current, state: { ...current.state, task: event.task } } : current)
     }
-    if (abortingRef.current) return
-    if (event.type === 'delta') {
-      streamingRawTextRef.current += event.text
-      const visibleText = visibleStreamingText(streamingRawTextRef.current)
-      const previousVisibleText = streamingVisibleTextRef.current
-      if (visibleText.length > previousVisibleText.length && visibleText.startsWith(previousVisibleText)) {
-        appendAssistantDelta(visibleText.slice(previousVisibleText.length))
-        streamingVisibleTextRef.current = visibleText
-      }
-      setDeltaCount((count) => count + 1)
-      setStatus('Agent 正在生成')
-      return
+    const activity = event.type === 'tool_call'
+      ? formatToolCall(event.name, event.arguments)
+      : event.type === 'tool_result' ? formatToolResult(event.name, event.result) : undefined
+    sessionRuntime.event(sessionId, requestId, event, activity || undefined)
+    syncRuntimeView(sessionId)
+  }
+
+  async function submitPrompt(value: string, source: 'composer' | 'plugin', owner?: string, control?: TaskInputControl): Promise<PromptResult> {
+    const text = value.trim()
+    const sessionId = owner || selectedSessionIdRef.current
+    if (!text) return { ok: false, error: { message: 'Prompt is empty' } }
+    if (!sessionId) return { ok: false, error: { message: 'No active session' } }
+    if (source === 'composer' && session?.id !== sessionId) {
+      return { ok: false, error: { message: '会话仍在同步，请稍后重试' } }
     }
-    if (event.type === 'retry') {
-      const streamingId = streamingAssistantIdRef.current
-      if (streamingId) {
-        setTimeline((current) => current.filter((item) => item.id !== streamingId))
-      }
-      streamingAssistantIdRef.current = null
-      streamingRawTextRef.current = ''
-      streamingVisibleTextRef.current = ''
-      setStatus(`${event.reason}，正在重试 ${event.attempt}/${event.maxAttempts}`)
-      return
+    if (source === 'composer' && sessionRuntime.isRunning(sessionId)) {
+      return { ok: false, error: { message: 'The active session is already running' } }
     }
-    if (event.type === 'output') {
-      finalizeAssistantOutput(event.message)
-      return
-    }
-    if (event.type === 'aborted') {
-      showAbortNotice()
-      return
-    }
-    if (event.type === 'tool_call') {
-      setStatus('正在执行')
-      appendActivity(formatToolCall(event.name, event.arguments))
-      return
-    }
-    if (event.type === 'tool_result') {
-      setStatus('正在执行')
-      const summary = formatToolResult(event.name, event.result)
-      if (summary) appendActivity(summary)
-      return
-    }
-    if (event.type === 'error') {
-      appendItem({ role: 'error', content: event.message })
-      setStatus('出错')
-      return
-    }
-    if (event.type === 'done') {
-      setActivityItems([])
-      setActivityExpanded(false)
-      setStatus('就绪')
-      setAborting(false)
+    const draftRevision = source === 'composer' ? draftStore.get(sessionId).revision : undefined
+    return new Promise<PromptResult>((resolve) => {
+      void consumeSubmittedPrompt(sessionId, text, result => {
+        if (result.ok && draftRevision !== undefined) {
+          draftStore.accept(sessionId, draftRevision)
+          redrawDraft(n => n + 1)
+        }
+        resolve(result)
+      }, control)
+    })
+  }
+
+  async function consumeSubmittedPrompt(
+    sessionId: string,
+    text: string,
+    resolveAcceptance: (result: PromptResult) => void,
+    control?: TaskInputControl,
+  ): Promise<void> {
+    const requestId = crypto.randomUUID()
+    let accepted = false
+    let recover = false
+    stopRecovery(sessionId)
+    sessionRuntime.begin(sessionId, requestId, text)
+    syncRuntimeView(sessionId)
+    try {
+      await consumePromptStream(
+        sessionId, text,
+        event => handleStreamEvent(sessionId, requestId, event),
+        () => { accepted = true; resolveAcceptance({ ok: true }) },
+        control,
+      )
+      // EOF alone is not evidence that the server run is terminal.
+      recover = true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (!accepted) resolveAcceptance({ ok: false, error: { message } })
+      recover = accepted
+      sessionRuntime.event(sessionId, requestId, { type: 'error', message })
+    } finally {
+      sessionRuntime.end(sessionId, requestId, recover)
+      syncRuntimeView(sessionId)
+      startRecovery(sessionId)
+      void refreshSessions().catch(() => {})
     }
   }
 
-  async function sendPrompt(value: string) {
-    const text = value.trim()
-    if (!text || !selectedSessionId || running) return
-    setPrompt('')
-    setDeltaCount(0)
-    streamingAssistantIdRef.current = null
-    streamingRawTextRef.current = ''
-    streamingVisibleTextRef.current = ''
-    setStatus(modelThinkingStatus)
-    setRunning(true)
-    setActivityItems([])
-    setActivityExpanded(false)
-    appendItem({ role: 'user', content: text })
-    try {
-      await streamPrompt(selectedSessionId, text, handleStreamEvent)
-      await refreshSession(selectedSessionId, { updateTimeline: !abortingRef.current })
-      await refreshSessions(selectedSessionId)
-    } catch (err) {
-      if (abortingRef.current) {
-        showAbortNotice()
-      } else {
-        appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
-        setStatus('出错')
-      }
-    } finally {
-      setAborting(false)
-      setRunning(false)
+  async function sendPrompt(value: string, control?: TaskInputControl): Promise<void> {
+    const owner = selectedSessionIdRef.current
+    if (control) setControlError(null)
+    const result = await submitPrompt(value, 'composer', owner, control)
+    if (owner === selectedSessionIdRef.current && !result.ok) {
+      const message = result.error?.message || '请求未被接受'
+      setStatus(message)
+      if (control) setControlError({ owner, message })
     }
   }
+
+  submitPromptRef.current = submitPrompt
 
   async function handleAbort() {
-    if (!selectedSessionId || !running || abortingRef.current) return
-    setAborting(true)
-    setStatus('正在中断')
-    setActivityItems([])
-    setActivityExpanded(false)
+    const owner = selectedSessionIdRef.current
+    if (!owner || !sessionRuntime.isRunning(owner) || sessionRuntime.view(owner).aborting) return
+    sessionRuntime.aborting(owner, true)
+    syncRuntimeView(owner)
     try {
-      await abortSession(selectedSessionId)
-      showAbortNotice()
+      await abortSession(owner)
+      startRecovery(owner)
     } catch (err) {
-      appendActivity(`[中断失败] ${err instanceof Error ? err.message : String(err)}`)
-      setStatus('中断失败')
-      setAborting(false)
+      sessionRuntime.aborting(owner, false)
+      sessionRuntime.error(owner, `中断失败：${err instanceof Error ? err.message : String(err)}`)
+      syncRuntimeView(owner)
     }
   }
 
   function handleConfirmAction() {
-    const selectedPlanText = selectedPlan
-      ? selectedPlan.value
-        ? `我选择 ${selectedPlan.label}：${selectedPlan.value}，确认执行。`
-        : `我选择${selectedPlan.label}，确认执行。`
-      : '确认'
-    clearPendingConfirmLocal()
-    void sendPrompt(selectedPlanText)
+    if (!pendingConfirm) return
+    void sendPrompt('确认', { kind: 'confirm', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id, ...(selectedPlan ? { selection: selectedPlan.value } : {}) })
   }
 
   async function handleCancelConfirm() {
-    clearPendingConfirmLocal({ dismiss: true })
-    if (!selectedSessionId) return
+    const owner = selectedSessionIdRef.current
+    if (!owner || !pendingConfirm) return
+    setControlError(null)
+    const token = sessionRuntime.snapshotToken(owner)
     try {
-      const detail = await clearPendingConfirm(selectedSessionId)
-      setSession(detail)
-      setStatus('已取消确认')
+      const detail = await clearPendingConfirm(owner, { taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
+      if (owner === selectedSessionIdRef.current && sessionRuntime.snapshot(owner, token, detail)) {
+        setSession(detail)
+        setConfirmEditorOpen(false)
+        setStatus('已取消确认，任务已暂停')
+      }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : '取消确认失败')
+      if (owner === selectedSessionIdRef.current) {
+        const message = err instanceof Error ? err.message : '取消确认失败'
+        setStatus(message)
+        setControlError({ owner, message })
+      }
     }
   }
 
   function handleComparePlans() {
     if (!pendingConfirm) return
-    clearPendingConfirmLocal()
     void sendPrompt([
       '请对比这些候选方案，简要说明各自优缺点、适用场景和推荐选择。',
-      `候选方案内容是：\n${pendingConfirm.message}`,
+      `候选方案内容是：\n${pendingConfirm.prompt}`,
       '先不要执行。',
-    ].join('\n\n'))
+    ].join('\n\n'), { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
   }
 
   function handleEditConfirm() {
@@ -1391,7 +1095,7 @@ export function App() {
     if (pendingConfirm.allowWrite) {
       return [
         '用户正在修改待确认的方案（含写权限）。',
-        `原待确认内容是：\n${pendingConfirm.message}`,
+        `原待确认内容是：\n${pendingConfirm.prompt}`,
         selectedPlanLine,
         `用户修改意见是：\n${feedback}`,
         '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
@@ -1401,7 +1105,7 @@ export function App() {
 
     return [
       '用户正在修改待确认的内容。',
-      `原待确认内容是：\n${pendingConfirm.message}`,
+      `原待确认内容是：\n${pendingConfirm.prompt}`,
       selectedPlanLine,
       `用户修改意见是：\n${feedback}`,
       '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
@@ -1412,8 +1116,7 @@ export function App() {
   function handleSubmitConfirmEdit() {
     if (!pendingConfirm || !confirmDraft.trim()) return
     const editPrompt = buildConfirmEditPrompt(confirmDraft.trim())
-    clearPendingConfirmLocal()
-    void sendPrompt(editPrompt)
+    void sendPrompt(editPrompt, { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
   }
 
   const statusLabel = useMemo(() => {
@@ -1425,10 +1128,9 @@ export function App() {
   const workspaceSubtitle = useMemo(() => {
     if (!hasSelectedSession) return '先新建一个会话开始工作'
     if (viewMode === 'metrics') return '会话监控信息'
-    if (viewMode === 'preview' && previewUrl) return previewUrl
     if (pendingConfirm) return `等待确认：${pendingConfirm.allowWrite ? '代码修改' : '内容'}`
     return '本地 Agent 工作台'
-  }, [hasSelectedSession, pendingConfirm, previewUrl, viewMode])
+  }, [hasSelectedSession, pendingConfirm, viewMode])
 
   const activitySummary = useMemo(() => {
     const latest = activityItems.at(-1)?.content || (running ? '等待模型生成或选择下一步行动' : '暂无执行过程')
@@ -1489,9 +1191,12 @@ export function App() {
     <main className={appShellClassName}>
       <aside className="sidebar">
         <section className="brandBlock">
-          <div>
-            <h1>Agent Console</h1>
-            <p>{statusLabel}</p>
+          <div className="brandIdentity">
+            <span className="inkMark" aria-hidden="true" />
+            <div>
+              <h1>Agent</h1>
+              <p>智能工作台</p>
+            </div>
           </div>
           <div className="brandActions">
             <button
@@ -1502,7 +1207,7 @@ export function App() {
             >
               {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button className="iconButton" title="刷新" disabled={!hasSelectedSession} onClick={() => void refreshSession()}>
+            <button className="iconButton" title="刷新" disabled={!hasSelectedSession} onClick={() => startRecovery(selectedSessionId)}>
               <RefreshCcw size={18} />
             </button>
             <button className="iconButton" title="收起侧边栏" onClick={() => setSidebarCollapsed(true)}>
@@ -1511,12 +1216,14 @@ export function App() {
           </div>
         </section>
 
-        <section className="panel">
+        <button className="newSessionButton" onClick={() => void handleNewSession()}>
+          <Plus size={17} /> 新建会话
+        </button>
+
+        <section className="panel sessionsPanel">
           <div className="panelHeader">
             <span>会话</span>
-            <button className="iconButton" title="新建会话" onClick={() => void handleNewSession()}>
-              <Plus size={18} />
-            </button>
+            <small>{sessions.length}</small>
           </div>
           <div className="sessionList">
             {sessions.map((item) => (
@@ -1628,7 +1335,7 @@ export function App() {
 
         <section className="panel skillPanel">
           <div className="panelHeader">
-            <span>SKILL</span>
+            <span>技能</span>
             <small>{enabledSkillCount}/{skills.length}</small>
           </div>
           <div className="skillPanelSummary">
@@ -1703,27 +1410,25 @@ export function App() {
             </div>
 
             <div className="controlGroup pathControl">
-              <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
+              <button className="choosePathButton" disabled={!selectedSessionId} onClick={() => void handlePickDirectory()}>
                 <FolderOpen size={17} />
                 选择操作目录
               </button>
             </div>
 
-            <div className="controlGroup previewControl">
-              <button className="openPreviewButton" onClick={openPreviewEditor}>
-                <Eye size={17} />
-                编辑预览地址
-              </button>
-            </div>
-
             <div className="controlGroup modeControl">
               <div className="modeStack">
-                <button className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'} onClick={() => setViewMode('chat')}>
+                <button
+                  className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'}
+                  aria-pressed={viewMode === 'chat'}
+                  onClick={() => setViewMode('chat')}
+                >
                   <MessageSquare size={17} />
                   对话
                 </button>
                 <button
                   className={viewMode === 'metrics' ? 'modeButton active' : 'modeButton'}
+                  aria-pressed={viewMode === 'metrics'}
                   disabled={!selectedSessionId}
                   onClick={() => {
                     setViewMode('metrics')
@@ -1733,6 +1438,10 @@ export function App() {
                   <Gauge size={17} />
                   监控
                 </button>
+              </div>
+              <div className="workspaceStatus" role="status">
+                <span className={running ? 'statusDot running' : 'statusDot'} aria-hidden="true" />
+                {statusLabel}
               </div>
             </div>
           </section>
@@ -1921,39 +1630,29 @@ export function App() {
               </>
             )}
           </div>
-        ) : viewMode === 'preview' ? (
-          <div className="previewStage">
-            {previewUrl ? (
-              <iframe
-                ref={previewFrameRef}
-                className="previewFrame"
-                title="前端预览"
-                src={`/api/preview?url=${encodeURIComponent(previewUrl)}`}
-                onLoad={() => postAnnotatorState()}
-              />
-            ) : (
-              <div className="emptyState">输入地址后打开预览</div>
-            )}
-          </div>
         ) : (
           <div className="timeline" ref={timelineRef}>
-            {!hasSelectedSession ? (
-              <div className="emptyState emptySessionState">
-                <div>
-                  <strong>还没有会话</strong>
-                  <span>新建会话后可以发送需求、选择目录和预览页面</span>
-                </div>
-                <button type="button" onClick={() => void handleNewSession()}>
-                  <Plus size={17} />
-                  新建会话
-                </button>
+            {!hasSelectedSession || (timeline.length === 0 && activityItems.length === 0 && !running) ? (
+              <div className="emptyState welcomeState">
+                <span className="inkMark" aria-hidden="true" />
+                <p className="welcomeEyebrow">AGENT · 智能工作台</p>
+                <h2>从一个想法开始</h2>
+                <p>{hasSelectedSession ? '新会话已准备好。描述需求、检查代码，或一起解决一个问题。' : '还没有会话。新建会话后即可描述需求、选择目录并开始工作。'}</p>
+                {!hasSelectedSession ? (
+                  <button type="button" className="newSessionButton" onClick={() => void handleNewSession()}>
+                    <Plus size={17} /> 新建会话
+                  </button>
+                ) : null}
               </div>
-            ) : timeline.length === 0 && activityItems.length === 0 && !running ? (
-              <div className="emptyState">新会话已准备好</div>
             ) : (
               <>
                 {timeline.map((item, index) => (
                   <article key={item.id} className={`bubble ${item.role}`}>
+                    {item.role === 'assistant' ? (
+                      <div className="responseAuthor">
+                        <span className="inkMark" aria-hidden="true" />Agent
+                      </div>
+                    ) : null}
                     <pre>{item.content}</pre>
                     {item.role === 'assistant' ? (
                       <div className="responseActions" aria-label="模型回复操作" onMouseLeave={() => setCopiedResponseId('')}>
@@ -2019,63 +1718,10 @@ export function App() {
           </div>
         )}
 
-        {selectedElement || elementComments.length > 0 ? (
-          <div className="elementCommentDock">
-            {selectedElement ? (
-              <div className="commentComposerRow">
-                <div className="selectedElementMeta">
-                  <strong>{selectedElement.tagName}</strong>
-                  <span>{selectedElement.text || selectedElement.selector}</span>
-                </div>
-                <textarea
-                  value={elementComment}
-                  onChange={(event) => setElementComment(event.target.value)}
-                  placeholder="写下你想改哪里"
-                />
-                <div className="dockActions">
-                  <button onClick={() => setSelectedElement(null)}>
-                    <X size={16} />
-                    关闭
-                  </button>
-                  <button disabled={!elementComment.trim()} onClick={handleAddComment}>
-                    <CheckCircle2 size={16} />
-                    添加评论
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {elementComments.length > 0 ? (
-              <div className="commentQueueRow">
-                <div className="commentQueueHeader">
-                  <span>评论</span>
-                  <strong>{elementComments.length}</strong>
-                </div>
-                <div className="commentList">
-                  {elementComments.map((item) => (
-                    <article className="commentItem" key={item.id}>
-                      <div>
-                        <strong>{item.tagName}</strong>
-                        <span>{item.text || item.selector}</span>
-                      </div>
-                      <p>{item.comment}</p>
-                      <button className="miniIconButton" title="删除评论" onClick={() => handleRemoveComment(item.id)}>
-                        <Trash2 size={15} />
-                      </button>
-                    </article>
-                  ))}
-                </div>
-                <button className="sendCommentsButton" disabled={running} onClick={() => void handleSendComments()}>
-                  <MessageSquare size={17} />
-                  发送给 Agent
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
+        {controlError?.owner === selectedSessionId ? <div role="alert">{controlError.message}</div> : null}
         {pendingConfirm ? (
           <div className="confirmBar">
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{pendingConfirm.prompt}</div>
             {pendingConfirm.allowWrite ? (
               <div className="confirmWarning" role="alert">
                 {allowWriteConfirmWarning}
@@ -2142,6 +1788,20 @@ export function App() {
           </div>
         ) : null}
 
+        {session?.state.task?.approvedProposal ? (
+          <details className="approvedProposal">
+            <summary>已确认方案{session.state.task.approvedProposal.selection ? `：${session.state.task.approvedProposal.selection}` : ''}</summary>
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{session.state.task.approvedProposal.prompt}</div>
+          </details>
+        ) : null}
+
+        {!running && session?.state.task?.phase === 'paused' ? (
+          <button className="resumeTaskButton" onClick={() => {
+            const task = session.state.task!
+            void sendPrompt('继续', { kind: 'resume', taskId: task.id, taskRevision: task.revision })
+          }}>继续任务</button>
+        ) : null}
+
         <form
           className="composer"
           onSubmit={(event) => {
@@ -2149,12 +1809,21 @@ export function App() {
             void sendPrompt(prompt)
           }}
         >
+          <div className="composerPluginActions">
+            <SlotOutlet
+              runtime={pluginRuntime}
+              name="conversation.input.left"
+              sessionId={selectedSessionId}
+              owner={{}}
+            />
+          </div>
           <textarea
             ref={promptTextareaRef}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="输入需求或问题"
-            disabled={!selectedSessionId || running}
+            aria-label="输入需求或问题"
+            disabled={session?.id !== selectedSessionId || !selectedSessionId || running}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault()
@@ -2162,12 +1831,13 @@ export function App() {
               }
             }}
           />
+          <span className="composerHint">Ctrl / ⌘ + Enter 发送 · Enter 换行</span>
           {running ? (
             <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting} onClick={() => void handleAbort()}>
               <CircleStop size={19} />
             </button>
           ) : (
-            <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId}>
+            <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId || session?.id !== selectedSessionId}>
               <Send size={19} />
             </button>
           )}
@@ -2180,23 +1850,30 @@ export function App() {
             <header>
               <div>
                 <h3>选择操作目录</h3>
-                <p>{directoryListing?.path || '正在读取文件夹'}</p>
+                <p>{directoryBusy ? '正在读取文件夹…' : directoryError ? '读取失败，请重新输入或返回主目录' : directoryListing?.path || '请选择文件夹'}</p>
               </div>
-              <button className="miniIconButton static" title="关闭" onClick={() => setDirectoryPickerOpen(false)}>
+              <button className="miniIconButton static" title="关闭" onClick={closeDirectoryPicker}>
                 <X size={17} />
               </button>
             </header>
 
             {directoryError ? <div className="directoryError">{directoryError}</div> : null}
+            <form className="directoryToolbar" onSubmit={event => { event.preventDefault(); if (directoryPathInput.trim()) void openDirectoryPicker(directoryPathInput.trim()) }}>
+              <input aria-label="文件夹绝对路径" placeholder="输入文件夹绝对路径" value={directoryPathInput} onChange={event => setDirectoryPathInput(event.target.value)} />
+              <button disabled={directoryBusy || !directoryPathInput.trim()}>打开路径</button>
+            </form>
+            {directoryBusy ? <p role="status">正在读取或保存目录…</p> : null}
 
             <div className="directoryToolbar">
               <button
-                disabled={!directoryListing?.parentPath && !(directoryListing?.canListRoots && !directoryListing.isRootListing)}
+                disabled={directoryBusy || (!directoryListing?.parentPath && !(directoryListing?.canListRoots && !directoryListing.isRootListing))}
                 onClick={openDirectoryParent}
               >
                 {directoryListing?.parentPath ? '上一级' : '盘符列表'}
               </button>
-              <button disabled={!directoryListing || directoryListing.isRootListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
+              <button disabled={directoryBusy} onClick={() => void openDirectoryPicker(undefined, { home: true })}>主目录</button>
+              <button disabled={directoryBusy} onClick={() => void openDirectoryPicker(undefined, { roots: true })}>磁盘根目录</button>
+              <button disabled={directoryBusy || !!directoryError || !directoryListing || directoryListing.isRootListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
                 选择当前文件夹
               </button>
             </div>
@@ -2421,37 +2098,6 @@ export function App() {
                 </button>
               </div>
             ) : null}
-          </section>
-        </div>
-      ) : null}
-
-      {previewEditorOpen ? (
-        <div className="modalBackdrop">
-          <section className="previewAddressModal" aria-label="编辑预览地址">
-            <header>
-              <div>
-                <h3>编辑预览地址</h3>
-                <p>输入正在运行的前端页面地址</p>
-              </div>
-              <button className="miniIconButton static" title="关闭" onClick={() => setPreviewEditorOpen(false)}>
-                <X size={17} />
-              </button>
-            </header>
-            <div className="previewAddressBody">
-              <input
-                className="urlInput large"
-                value={previewDraftUrl}
-                onChange={(event) => setPreviewDraftUrl(event.target.value)}
-                placeholder="http://localhost:4000"
-                autoFocus
-              />
-              <div className="dockActions">
-                <button onClick={() => setPreviewEditorOpen(false)}>取消</button>
-                <button disabled={!previewDraftUrl.trim()} onClick={savePreviewAddress}>
-                  打开预览
-                </button>
-              </div>
-            </div>
           </section>
         </div>
       ) : null}

@@ -84,7 +84,14 @@ async function main() {
     if (!prompt) continue
     if (prompt === '/exit') break
 
-    await orchestrator.handleUserInput(prompt)
+    try {
+      // Direct turns bind at entry and persist their RunStore outcome. load()
+      // reconciles interrupted runs before a restarted CLI can recover authority.
+      await orchestrator.handleUserInput(prompt)
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') console.log('[已暂停] 输入“继续”恢复当前任务，或发送新请求。')
+      else console.error(error instanceof Error ? error.message : String(error))
+    }
   }
 
   rl.close()

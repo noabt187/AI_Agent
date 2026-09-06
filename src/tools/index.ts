@@ -11,18 +11,21 @@ import { saveCheckpointTool } from './saveCheckpoint.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
+import { CommandError } from '../utils/command.js'
 import {
   toolFailure,
-  toolSuccess,
+  toolResultFromLegacyOutput,
+  toolResultToLegacyOutput,
   type ToolResult,
 } from './types.js'
 
-type ToolScope = 'read' | 'write' | 'memory'
+export type ToolScope = 'read' | 'write' | 'memory'
 
-type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
+export type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
-type ToolDef = {
+export type ToolDef = {
   fn: ToolFn
+  withSignal?: (rootDir: string, args: string[], signal?: AbortSignal) => Promise<string>
   description: string
   argNames: string[]
   scope: ToolScope
@@ -31,7 +34,7 @@ type ToolDef = {
   argDescriptions?: Record<string, string>
 }
 
-type ExecuteToolOptions = {
+export type ExecuteToolOptions = {
   turnLoadedSkills?: Set<string>
   repository?: RepositoryConfig
 }
@@ -73,7 +76,7 @@ function applyRepositoryDefaults(
 
 // ── Registry ────────────────────────────────────────────────────────
 
-const toolRegistry: Record<string, ToolDef> = {
+export const builtinToolRegistry: Readonly<Record<string, ToolDef>> = {
   readTextFile: {
     fn: readTextFile,
     description: '读取指定绝对路径的文本文件内容',
@@ -115,7 +118,8 @@ const toolRegistry: Record<string, ToolDef> = {
     scope: 'write',
   },
   verifyCode: {
-    fn: verifyCodeTool,
+    fn: (rootDir, changedFiles) => verifyCodeTool(rootDir, changedFiles),
+    withSignal: (rootDir, args, signal) => verifyCodeTool(rootDir, args[0] ?? '', signal),
     description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
     scope: 'write',
@@ -182,7 +186,14 @@ const toolRegistry: Record<string, ToolDef> = {
 // ── OpenAI Tool Definitions ───────────────────────────────────────────
 
 export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
-  return Object.entries(toolRegistry)
+  return toolEntriesToOpenAI(Object.entries(builtinToolRegistry), scope)
+}
+
+export function toolEntriesToOpenAI(
+  entries: ReadonlyArray<readonly [string, ToolDef]>,
+  scope: ToolScope,
+): ToolDefinition[] {
+  return entries
     .filter(([, def]) => {
       const allowedScopes: ToolScope[] = scope === 'read' ? ['read'] : ['read', 'write', 'memory']
       return allowedScopes.includes(def.scope)
@@ -213,17 +224,6 @@ export function toolDefsToOpenAI(scope: ToolScope): ToolDefinition[] {
 
 // ── Execute Tool ────────────────────────────────────────────────────
 
-function legacyToolOutput(raw: string): ToolResult {
-  if (/^❌\s*验证未通过/.test(raw)) {
-    return toolFailure('COMMAND_FAILED', raw, false, { output: raw })
-  }
-  if (/^(错误|工具执行错误)/.test(raw.trim())) {
-    const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(raw)
-    return toolFailure(commandMissing ? 'COMMAND_NOT_FOUND' : 'TOOL_EXECUTION_FAILED', raw, false, { output: raw })
-  }
-  return toolSuccess(raw, { output: raw })
-}
-
 export async function executeToolResult(
   name: string,
   args: Record<string, string>,
@@ -232,9 +232,43 @@ export async function executeToolResult(
   signal?: AbortSignal,
   options?: ExecuteToolOptions,
 ): Promise<ToolResult> {
-  const tool = toolRegistry[name]
+  const tool = builtinToolRegistry[name]
   if (!tool) return toolFailure('UNKNOWN_TOOL', `未知工具 "${name}"`)
+  return executeToolDefinitionResult(tool, name, args, allowedPaths, designConfirmed, signal, options)
+}
 
+export async function executeTool(
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<string> {
+  return toolResultToLegacyOutput(await executeToolResult(name, args, allowedPaths, designConfirmed, signal, options))
+}
+
+export async function executeToolDefinition(
+  tool: ToolDef,
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<string> {
+  return toolResultToLegacyOutput(await executeToolDefinitionResult(tool, name, args, allowedPaths, designConfirmed, signal, options))
+}
+
+export async function executeToolDefinitionResult(
+  tool: ToolDef,
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<ToolResult> {
   if (process.env.AGENT_EVAL_LOCAL_ONLY === '1' && REMOTE_SIDE_EFFECT_TOOLS.has(name)) {
     return toolFailure(
       'REMOTE_SIDE_EFFECT_BLOCKED',
@@ -242,6 +276,7 @@ export async function executeToolResult(
     )
   }
 
+  if (signal?.aborted) return toolFailure('ABORTED', '工具执行已取消')
   const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
   // All file writes, command execution and remote operations share one gate.
@@ -296,8 +331,17 @@ export async function executeToolResult(
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
       .map((n) => effectiveArgs[n] ?? '')
 
-    return legacyToolOutput(await tool.fn(effectiveRootDir, ...argValues))
+    const output = tool.withSignal
+      ? await tool.withSignal(effectiveRootDir, argValues, signal)
+      : await tool.fn(effectiveRootDir, ...argValues)
+    return toolResultFromLegacyOutput(output)
   } catch (e: unknown) {
+    if (e instanceof CommandError) {
+      const code = e.kind === 'aborted' ? 'ABORTED' : e.kind === 'timeout' ? 'TIMEOUT'
+        : e.kind === 'output-limit' ? 'OUTPUT_LIMIT' : e.code === 'ENOENT' ? 'COMMAND_NOT_FOUND'
+        : e.kind === 'exit' ? 'COMMAND_FAILED' : 'TOOL_EXECUTION_FAILED'
+      return toolFailure(code, e.message, e.kind === 'timeout', { stdout: e.stdout, stderr: e.stderr, exitCode: e.exitCode })
+    }
     const message = e instanceof Error ? e.message : String(e)
     const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(message)
     const timedOut = /timed?\s*out|ETIMEDOUT/i.test(message)

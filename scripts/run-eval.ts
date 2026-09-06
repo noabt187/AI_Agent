@@ -20,11 +20,18 @@ async function main(): Promise<void> {
   await mkdir(resultsDir, { recursive: true })
   process.env.AGENT_EVAL_LOCAL_ONLY = '1'
 
-  const cfg = await loadModelConfig()
+  // Deterministic tool checks must work in a clean checkout without API keys.
+  const cfg = toolsOnly ? { model: 'not-required (tools-only)' } : await loadModelConfig()
   const contracts = await runToolContractEval()
   const trials: TrialRecord[] = []
   console.log(`[eval] Tool Contract: ${contracts.filter((item) => item.passed).length}/${contracts.length}`)
   await writeArtifacts({ resultsDir, trials, contracts, model: cfg.model })
+
+  if (contracts.some(item => !item.passed)) {
+    console.error('[eval] Tool contracts failed; model trials were not started.')
+    process.exitCode = 1
+    return
+  }
 
   if (toolsOnly) {
     console.log(`[eval] Report: ${resolve(resultsDir, 'report.md')}`)

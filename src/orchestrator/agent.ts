@@ -1,24 +1,24 @@
-import { resolve } from 'node:path'
-import { QueryEngine } from '../QueryEngine.js'
+import { QueryEngine, QueryTerminalError } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
-import { executeToolResult, toolDefsToOpenAI } from '../tools/index.js'
-import { getSkillCatalog, loadSkills, useSkill, type Skill } from '../skills/index.js'
 import {
-  extractMemoryTerms,
-  formatMemoryContext,
-} from '../memory/projectMemory.js'
-import type { AgentEventHandler, AgentResult, WorldState } from './types.js'
+  getSkillCatalog,
+  type Skill,
+} from '../skills/index.js'
+import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
+import { formatMemoryContext } from '../memory/projectMemory.js'
+import type { AgentEventHandler, AgentResult, TurnContext, WorldState } from './types.js'
+import { canWriteTask, ownsTurn } from './taskState.js'
+import { isPureConfirmationInput } from './taskInput.js'
+export { isPureConfirmationInput } from './taskInput.js'
 import { getMemorySettings } from './types.js'
-import type { LlmToolCall, ToolDefinition } from '../llm/types.js'
-import { serializeToolResult, toolFailure } from '../tools/types.js'
+import type { LlmClient, LlmToolCall, ToolDefinition } from '../llm/types.js'
+import { serializeToolResult, toolFailure, toolResultFromLegacyOutput } from '../tools/types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 const MAX_TOOL_RETRIES = 2
 const SYS_UUID = 'agent-sys-001'
-
-const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
 const USE_SKILL_TOOL_DEF: ToolDefinition = {
   type: 'function',
@@ -77,15 +77,24 @@ action 说明：
 When durable long-term memory is worth saving, first call use_skill("auto-memory"), then follow that skill before calling writeMemory. Do not return memories in the final JSON. Skip memory writing for temporary task progress, generic summaries, repo facts, or anything already recorded in code or git history.
 `
 
-export function buildWorldStateContext(state: WorldState): string {
+export function buildWorldStateContext(state: WorldState, turn?: TurnContext): string {
   const parts: string[] = []
 
-  if (state.goal) parts.push(`用户目标: ${state.goal}`)
+  if (state.task) {
+    parts.push(`当前任务版本: ${state.task.id}/${state.task.revision}，阶段: ${state.task.phase}`)
+    if (turn) parts.push(`本轮执行依据（最新请求，优先于历史）: ${turn.intent === 'confirm' || turn.intent === 'resume' ? state.task.objective : turn.input}`)
+    const approved = state.task.approvedProposal
+    if (turn && ownsTurn(state, turn) && state.task.phase === 'active' && approved && (!approved.allowWrite || canWriteTask(state, turn))) {
+      parts.push(`本任务版本已批准方案: ${approved.prompt}`)
+      if (approved.selection !== undefined) parts.push(`本任务版本已确认的候选方案: ${approved.selection}`)
+    }
+    if (state.task.previousContext.length) parts.push(`历史/背景（不得作为本轮执行目标或授权）:\n${JSON.stringify(state.task.previousContext)}`)
+  } else if (state.goal) parts.push(`历史/背景目标（非本轮执行依据）: ${state.goal}`)
   if (state.confirmedRequirement) {
     const preview = state.confirmedRequirement.length > 1500
       ? `${state.confirmedRequirement.slice(0, 1500)}...`
       : state.confirmedRequirement
-    parts.push(`需求已确认: ${preview}`)
+    parts.push(`历史/背景需求（非本轮授权）: ${preview}`)
   }
   if (state.pendingConfirm) {
     const pendingPreview = state.pendingConfirm.message.length > 1200
@@ -125,7 +134,7 @@ export function buildWorldStateContext(state: WorldState): string {
     }
   }
 
-  if (state.designConfirmed) parts.push('写权限: 已开放（可调用写入、验证和仓库操作工具）')
+  if (turn && canWriteTask(state, turn)) parts.push('写权限: 当前任务版本已授权（仅本轮匹配的目录/仓库）')
   else if (state.designTasks?.length) parts.push('写权限: 未开放（需用户确认 allow_write 后才可调用写工具）')
 
   return parts.join('\n') || '空闲状态，无进行中的任务'
@@ -135,8 +144,9 @@ export function buildRuntimeContext(
   state: WorldState,
   memoryContext: string,
   allSkills: Skill[],
+  turn?: TurnContext,
 ): string {
-  const parts = [`## 当前状态\n${buildWorldStateContext(state)}`]
+  const parts = [`## 当前状态\n${buildWorldStateContext(state, turn)}`]
   if (memoryContext.trim()) {
     parts.push(`## Memory\n${memoryContext.trim()}`)
   }
@@ -157,32 +167,17 @@ function abortedResult(signal?: AbortSignal): AgentResult | null {
   return null
 }
 
-export function isPureConfirmationInput(input: string): boolean {
-  const trimmed = input.trim().toLowerCase()
-  return trimmed === '确认' || trimmed === '是' || trimmed === 'yes' || trimmed === 'y'
-    || trimmed === 'ok' || trimmed === '好' || trimmed === '可以' || trimmed === '开始'
-    || trimmed === '确认方案' || trimmed === '开始写' || trimmed === '开始编写'
-}
-
 export function shouldRecallTaskMemories(state: WorldState, userInput: string): boolean {
   const mode = getMemorySettings(state).recallMode
   if (mode === 'off') return false
   if (mode === 'on') return true
   if (isPureConfirmationInput(userInput)) return false
-  return !state.pendingConfirm && !state.confirmedRequirement && !state.designConfirmed
+  return true
 }
 
-export function buildTaskMemorySearchQuery(state: WorldState, userInput: string): string {
-  const trimmed = userInput.trim()
-  const userTerms = extractMemoryTerms(trimmed)
-  if (isPureConfirmationInput(trimmed) || userTerms.length === 0) {
-    return (state.confirmedRequirement || state.goal || trimmed).trim()
-  }
-
-  const parts: string[] = []
-  if (state.goal && state.goal.trim() !== trimmed) parts.push(state.goal)
-  parts.push(trimmed)
-  return parts.join('\n').trim()
+export function buildTaskMemorySearchQuery(state: WorldState, userInput: string, turn?: TurnContext): string {
+  return ((turn?.intent === 'confirm' || turn?.intent === 'resume') && state.task?.id === turn.taskId && state.task.revision === turn.taskRevision
+    ? state.task.objective : userInput).trim()
 }
 
 function jsonObjectCandidates(raw: string): string[] {
@@ -232,7 +227,9 @@ function agentResultFromParsed(obj: Record<string, unknown>, fallbackText: strin
     const prompt = String(obj.prompt || '')
     const message = obj.message ? String(obj.message) : undefined
     const explicit = obj.confirmType === 'allow_write' ? 'allow_write' : undefined
-    return { action: 'confirm', prompt, message, confirmType: explicit }
+    const selections = Array.isArray(obj.selections) && obj.selections.every(s => typeof s === 'string')
+      ? obj.selections : undefined
+    return { action: 'confirm', prompt, message, confirmType: explicit, ...(selections ? { selections } : {}) }
   }
   if (action === 'done') return { action: 'done', message: String(obj.message || '任务完成') }
   return null
@@ -260,6 +257,8 @@ export function parseAgentResult(raw: string): AgentResult | null {
 }
 
 export class Agent {
+  constructor(private readonly runtime: AgentRuntime = legacyAgentRuntime, private readonly llmClient?: LlmClient) {}
+
   async run(
     sessionId: string,
     userInput: string,
@@ -267,14 +266,15 @@ export class Agent {
     signal?: AbortSignal,
     onEvent?: AgentEventHandler,
     onMetric?: MetricCallback,
+    userMessageId?: string,
+    turn?: TurnContext,
   ): Promise<AgentResult> {
-    const cfg = await loadModelConfig()
-    const llm = createLlmClient(cfg, onMetric)
+    const llm = this.llmClient ?? createLlmClient(await loadModelConfig(), onMetric)
     const engine = await QueryEngine.load({ sessionId, llmClient: llm })
 
-    const effectiveAllowedPaths = state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()]
-    const allSkills = await loadSkills(SKILLS_DIR)
-    const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput)
+    const effectiveAllowedPaths = turn?.allowedPaths ?? (state.allowedPaths.length > 0 ? state.allowedPaths : [process.cwd()])
+    const allSkills = await this.runtime.skills.list(effectiveAllowedPaths[0])
+    const taskMemoryQuery = buildTaskMemorySearchQuery(state, userInput, turn)
     const memoryContext = shouldRecallTaskMemories(state, userInput)
       ? await formatMemoryContext({
         projectDir: effectiveAllowedPaths[0],
@@ -285,7 +285,7 @@ export class Agent {
       : ''
 
     const systemPrompt = SYSTEM_PROMPT
-    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills)
+    const runtimeContext = buildRuntimeContext(state, memoryContext, allSkills, turn)
     const turnLoadedSkills = new Set<string>()
 
     const hasCorrectPrompt = engine.state.messages.length > 0 && engine.state.messages[0].uuid === SYS_UUID
@@ -300,7 +300,7 @@ export class Agent {
       engine.state.messages[0].content = systemPrompt
     }
 
-    const tools: ToolDefinition[] = [...toolDefsToOpenAI('write'), USE_SKILL_TOOL_DEF]
+    const tools = [...this.runtime.tools.definitions('write'), USE_SKILL_TOOL_DEF]
     let fullText = ''
     let toolCalls: LlmToolCall[] = []
 
@@ -334,7 +334,7 @@ export class Agent {
     }
 
     try {
-      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext }))
+      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext, uuid: userMessageId }))
 
       const abortRet = abortedResult(signal)
       if (abortRet) return abortRet
@@ -357,7 +357,7 @@ export class Agent {
               await engine.appendToolResult(tc.id, 'use_skill', '错误：缺少 skillName 参数')
               continue
             }
-            const skillContent = useSkill(allSkills, skillName)
+            const skillContent = await this.runtime.skills.get(skillName, effectiveAllowedPaths[0])
             if (skillContent) {
               turnLoadedSkills.add(skillName)
               await engine.appendToolResult(tc.id, 'use_skill', skillContent)
@@ -381,18 +381,19 @@ export class Agent {
             continue
           }
 
-          if (signal?.aborted) break
-          const result = await executeToolResult(
-            tc.name,
+          signal?.throwIfAborted()
+          const request = {
+            name: tc.name,
             args,
-            effectiveAllowedPaths,
-            state.designConfirmed,
+            allowedPaths: effectiveAllowedPaths,
+            designConfirmed: turn ? canWriteTask(state, turn) : false,
             signal,
-            {
-              turnLoadedSkills,
-              repository: state.repository,
-            },
-          )
+            turnLoadedSkills,
+            repository: turn?.repository ?? state.repository,
+          }
+          const result = this.runtime.tools.executeResult
+            ? await this.runtime.tools.executeResult(request)
+            : toolResultFromLegacyOutput(await this.runtime.tools.execute(request))
           const serializedResult = serializeToolResult(result)
           await onEvent?.({ type: 'tool_result', name: tc.name, result: serializedResult })
           await engine.appendToolResult(tc.id, tc.name, serializedResult)
@@ -420,12 +421,13 @@ export class Agent {
         try {
           for await (const evt of engine.submitMessage(
             `[系统提示] 你已达到 ${MAX_TOOL_ITERATIONS} 轮工具调用上限，请基于已获取的信息直接回答用户的问题。`,
-            { tools: [], signal, runtimeContext },
+            { tools: [], signal, runtimeContext, isMeta: true },
           )) {
             if (evt.kind === 'delta') fullText += evt.delta
             if (evt.kind === 'retry') fullText = ''
           }
         } catch (err) {
+          if (err instanceof QueryTerminalError) throw err
           console.error('[Agent] 最终总结 LLM 调用失败:', err)
         }
         if (!fullText.trim() && prevText.trim()) {
@@ -434,13 +436,13 @@ export class Agent {
       }
 
       if (!fullText.trim()) {
-        return { action: 'chat', message: '(Agent 返回了空响应)' }
+        return { action: 'chat', message: '(Agent 返回了空响应)', protocolFallback: true }
       }
 
       const parsed = parseAgentResult(fullText)
       if (parsed) return parsed
 
-      return { action: 'chat', message: fullText.trim() }
+      return { action: 'chat', message: fullText.trim(), protocolFallback: true }
     } catch (err) {
       const a = abortedResult(signal)
       if (a) return a

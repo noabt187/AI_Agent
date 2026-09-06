@@ -14,6 +14,10 @@ type QueryEngineParams = {
   llmClient: LlmClient
 }
 
+export class QueryTerminalError extends Error {
+  constructor(message: string) { super(message); this.name = 'QueryTerminalError' }
+}
+
 function withRuntimeContext(messages: Message[], runtimeContext?: string): Message[] {
   const trimmedContext = runtimeContext?.trim()
   if (!trimmedContext) return messages
@@ -86,7 +90,11 @@ export class QueryEngine {
       isMeta: options?.isMeta ?? false,
     }
 
-    await this.appendMessage(userMessage)
+    // Queue admission can persist the real user message before execution.
+    const existing = this.state.messages.find(message => message.uuid === userUuid)
+    if (existing) {
+      if (existing.role !== 'user' || existing.content !== content || !!existing.isMeta !== userMessage.isMeta) throw new Error('User message UUID binding mismatch')
+    } else await this.appendMessage(userMessage)
 
     const terminal = yield* this.queryLoop(options?.tools, options?.signal, options?.runtimeContext)
 
@@ -102,6 +110,7 @@ export class QueryEngine {
       if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
+      if (!isAbort) throw new QueryTerminalError(terminal.error)
     }
   }
 
@@ -120,6 +129,7 @@ export class QueryEngine {
       if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
+      if (!isAbort) throw new QueryTerminalError(terminal.error)
     }
   }
 

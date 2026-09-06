@@ -4,7 +4,7 @@ import { dirname, extname, resolve } from 'node:path'
 import type { Skill } from './index.js'
 import { parseFrontmatter } from './index.js'
 
-type SkillSource = 'builtin' | 'custom'
+export type SkillSource = 'builtin' | 'custom' | 'plugin'
 
 export type ManagedSkill = {
   id: string
@@ -18,7 +18,7 @@ export type ManagedSkill = {
   source: SkillSource
 }
 
-type LoadedSkill = Skill & {
+export type ManagedSkillRecord = Skill & {
   id: string
   filePath: string
   source: SkillSource
@@ -28,7 +28,7 @@ type LoadedSkill = Skill & {
   entry?: string
 }
 
-type StoredRegistry = {
+export type StoredRegistry = {
   enabled: Record<string, boolean>
 }
 
@@ -49,7 +49,7 @@ function skillId(source: SkillSource, name: string): string {
   return `${source}:${name}`
 }
 
-function asSkill(raw: string, filePath: string, source: SkillSource): LoadedSkill | null {
+function asSkill(raw: string, filePath: string, source: SkillSource): ManagedSkillRecord | null {
   const { meta, body } = parseFrontmatter(raw)
   if (!meta.name || !meta.description || !body) return null
 
@@ -67,7 +67,7 @@ function asSkill(raw: string, filePath: string, source: SkillSource): LoadedSkil
   }
 }
 
-function managedSkill(skill: LoadedSkill, enabled: boolean): ManagedSkill {
+function managedSkill(skill: ManagedSkillRecord, enabled: boolean): ManagedSkill {
   return {
     id: skill.id,
     name: skill.name,
@@ -102,7 +102,7 @@ async function saveRegistry(registry: StoredRegistry): Promise<void> {
   await writeFile(REGISTRY_PATH, JSON.stringify(registry, null, 2), 'utf8')
 }
 
-async function loadSkillDir(dir: string, source: SkillSource): Promise<LoadedSkill[]> {
+async function loadSkillDir(dir: string, source: 'builtin' | 'custom'): Promise<ManagedSkillRecord[]> {
   let entries: string[]
   try {
     entries = await readdir(dir)
@@ -110,7 +110,7 @@ async function loadSkillDir(dir: string, source: SkillSource): Promise<LoadedSki
     return []
   }
 
-  const skills: LoadedSkill[] = []
+  const skills: ManagedSkillRecord[] = []
   for (const entry of entries) {
     if (extname(entry).toLowerCase() !== '.md') continue
     const filePath = resolve(dir, entry)
@@ -124,9 +124,9 @@ async function loadSkillDir(dir: string, source: SkillSource): Promise<LoadedSki
   return skills
 }
 
-function dedupeByName(skills: LoadedSkill[]): LoadedSkill[] {
+function dedupeByName(skills: ManagedSkillRecord[]): ManagedSkillRecord[] {
   const names = new Set<string>()
-  const result: LoadedSkill[] = []
+  const result: ManagedSkillRecord[] = []
   for (const skill of skills) {
     const key = skill.name.toLowerCase()
     if (names.has(key)) continue
@@ -136,7 +136,9 @@ function dedupeByName(skills: LoadedSkill[]): LoadedSkill[] {
   return result
 }
 
-async function loadAllSkills(builtinSkillsDir = BUILTIN_SKILLS_DIR): Promise<{ skills: LoadedSkill[]; registry: StoredRegistry }> {
+export async function loadManagedSkillRecords(
+  builtinSkillsDir = BUILTIN_SKILLS_DIR,
+): Promise<{ skills: ManagedSkillRecord[]; registry: StoredRegistry }> {
   const [builtinSkills, customSkills, registry] = await Promise.all([
     loadSkillDir(builtinSkillsDir, 'builtin'),
     loadSkillDir(CUSTOM_SKILLS_DIR, 'custom'),
@@ -149,7 +151,7 @@ async function loadAllSkills(builtinSkillsDir = BUILTIN_SKILLS_DIR): Promise<{ s
   }
 }
 
-function isEnabled(skill: LoadedSkill, registry: StoredRegistry): boolean {
+function isEnabled(skill: ManagedSkillRecord, registry: StoredRegistry): boolean {
   return registry.enabled[skill.id] ?? true
 }
 
@@ -160,18 +162,18 @@ function sortManaged(a: ManagedSkill, b: ManagedSkill): number {
 }
 
 export async function listManagedSkills(): Promise<ManagedSkill[]> {
-  const { skills, registry } = await loadAllSkills()
+  const { skills, registry } = await loadManagedSkillRecords()
   return skills.map((skill) => managedSkill(skill, isEnabled(skill, registry))).sort(sortManaged)
 }
 
 export async function loadEnabledSkills(builtinSkillsDir: string): Promise<Skill[]> {
-  const { skills, registry } = await loadAllSkills(builtinSkillsDir)
+  const { skills, registry } = await loadManagedSkillRecords(builtinSkillsDir)
   return skills
     .filter((skill) => isEnabled(skill, registry))
     .map(({ id: _id, filePath: _filePath, source: _source, ...skill }) => skill)
 }
 
-function validateUploadedSkill(fileName: string, content: string): LoadedSkill {
+function validateUploadedSkill(fileName: string, content: string): ManagedSkillRecord {
   if (extname(fileName).toLowerCase() !== '.md') {
     throw new SkillRegistryError('Skill 文件必须是 .md')
   }
@@ -213,7 +215,7 @@ export async function uploadManagedSkill(params: {
 }
 
 export async function setManagedSkillEnabled(id: string, enabled: boolean): Promise<ManagedSkill> {
-  const { skills, registry } = await loadAllSkills()
+  const { skills, registry } = await loadManagedSkillRecords()
   const skill = skills.find((item) => item.id === id)
   if (!skill) throw new SkillRegistryError('Skill 不存在', 404)
 
@@ -223,7 +225,7 @@ export async function setManagedSkillEnabled(id: string, enabled: boolean): Prom
 }
 
 export async function deleteManagedSkill(id: string): Promise<{ deleted: boolean }> {
-  const { skills, registry } = await loadAllSkills()
+  const { skills, registry } = await loadManagedSkillRecords()
   const skill = skills.find((item) => item.id === id)
   if (!skill) throw new SkillRegistryError('Skill 不存在', 404)
   if (skill.source !== 'custom') throw new SkillRegistryError('内置 Skill 不能删除', 403)

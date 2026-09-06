@@ -1,10 +1,14 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, copyFile, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { normalizeTaskState } from '../orchestrator/taskPersistence.js'
 import { resolve } from 'node:path'
 import type { Message } from '../types/index.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 
 function getSessionDir(sessionId: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error('Invalid session id')
   return resolve(stateDir, sessionId)
 }
 
@@ -64,20 +68,45 @@ export async function saveMessagesBackup(sessionId: string, messages: Message[])
   }
 }
 
-export async function loadOrchestratorState<T>(sessionId: string): Promise<T | null> {
+const stateWrites = new Map<string, Promise<void>>()
+
+export async function loadOrchestratorState<T = import('../orchestrator/types.js').WorldState>(sessionId: string): Promise<T | null> {
   const path = getOrchestratorStatePath(sessionId)
   try {
     const raw = await readFile(path, 'utf8')
-    return JSON.parse(raw) as T
-  } catch {
-    return null
+    const state = normalizeTaskState(JSON.parse(raw.replace(/^\uFEFF/, '')))
+    if (state.sessionId !== sessionId) throw new Error('任务状态 sessionId 不匹配')
+    return state as T
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
 }
 
 export async function saveOrchestratorState<T>(sessionId: string, state: T): Promise<void> {
-  const sessionDir = getSessionDir(sessionId)
-  await mkdir(sessionDir, { recursive: true })
-  await writeFile(getOrchestratorStatePath(sessionId), JSON.stringify(state, null, 2), 'utf8')
+  const snapshot = normalizeTaskState(state)
+  if (snapshot.sessionId !== sessionId) throw new Error('任务状态 sessionId 不匹配')
+  const serialized = JSON.stringify(snapshot, null, 2)
+  const previous = stateWrites.get(sessionId) ?? Promise.resolve()
+  const pending = previous.catch(() => {}).then(async () => {
+    const sessionDir = getSessionDir(sessionId)
+    await mkdir(sessionDir, { recursive: true })
+    const path = getOrchestratorStatePath(sessionId)
+    try {
+      const raw = await readFile(path, 'utf8')
+      const existing = JSON.parse(raw.replace(/^\uFEFF/, ''))
+      normalizeTaskState(existing)
+      if (existing.schemaVersion === undefined) {
+        try { await copyFile(path, `${path}.legacy.bak`, constants.COPYFILE_EXCL) }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    const temp = `${path}.${randomUUID()}.tmp`
+    try { await writeFile(temp, serialized, 'utf8'); await rename(temp, path) }
+    finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error }) }
+  })
+  stateWrites.set(sessionId, pending)
+  try { await pending } finally { if (stateWrites.get(sessionId) === pending) stateWrites.delete(sessionId) }
 }
 
 export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {

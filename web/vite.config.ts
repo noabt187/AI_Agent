@@ -10,6 +10,7 @@ export default defineConfig({
     port: webPort,
     proxy: {
       '/api': `http://localhost:${serverPort}`,
+      '/plugins': `http://localhost:${serverPort}`,
     },
   },
 })

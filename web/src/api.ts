@@ -1,3 +1,6 @@
+import type { ConfirmationRef, TaskInputControl, TaskState } from '../../src/orchestrator/types'
+export type { ConfirmationRef, TaskInputControl, TaskState } from '../../src/orchestrator/types'
+
 export type SessionSummary = {
   id: string
   title?: string
@@ -50,6 +53,8 @@ export type MemoryItem = {
 }
 
 export type WorldState = {
+  schemaVersion?: 2
+  task?: TaskState
   sessionId: string
   allowedPaths: string[]
   memorySettings?: MemorySettings
@@ -64,9 +69,29 @@ export type SessionDetail = {
   running: boolean
   state: WorldState
   messages: Message[]
+  runs?: RunRecord[]
+}
+
+export type RunRecord = {
+  taskId?: string
+  taskRevision?: number
+  taskPhase?: TaskState['phase']
+  id: string
+  sessionId: string
+  prompt: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  createdAt: number
+  startedAt?: number
+  endedAt?: number
+  messageIds: string[]
+  userMessageId?: string
+  partialOutput?: string
+  error?: string
 }
 
 export type StreamEvent =
+  | { type: 'task'; runId: string; task: TaskState }
+  | { type: 'run'; run: RunRecord }
   | { type: 'start'; sessionId: string }
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
@@ -173,8 +198,8 @@ export async function createSession(): Promise<string> {
   return payload.sessionId
 }
 
-export async function loadSession(sessionId: string): Promise<SessionDetail> {
-  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+export async function loadSession(sessionId: string, signal?: AbortSignal): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal })
 }
 
 export async function updateSessionTitle(sessionId: string, title: string): Promise<SessionDetail> {
@@ -217,9 +242,10 @@ export async function loadRepositoryIdentity(sessionId: string): Promise<Reposit
   return jsonRequest<RepositoryIdentity>(`/api/sessions/${encodeURIComponent(sessionId)}/repository/identity`)
 }
 
-export async function clearPendingConfirm(sessionId: string): Promise<SessionDetail> {
+export async function clearPendingConfirm(sessionId: string, expected: ConfirmationRef): Promise<SessionDetail> {
   return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}/pending-confirm`, {
     method: 'DELETE',
+    body: JSON.stringify({ expected }),
   })
 }
 
@@ -317,11 +343,13 @@ export async function streamPrompt(
   sessionId: string,
   prompt: string,
   onEvent: (event: StreamEvent) => void,
+  onAccepted?: () => void,
+  control?: TaskInputControl,
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, control }),
   })
 
   if (!res.ok || !res.body) {
@@ -332,6 +360,7 @@ export async function streamPrompt(
     } catch {}
     throw new Error(message)
   }
+  onAccepted?.()
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -352,3 +381,5 @@ export async function streamPrompt(
     }
   }
 }
+
+export const consumePromptStream = streamPrompt

@@ -120,7 +120,8 @@ function buildToolUsageSummary(messages: Message[]): string {
 
 // ── Compress Old Messages ─────────────────────────────────────────────
 
-async function compressOldMessages(oldMessages: Message[], allMessages?: Message[]): Promise<string | null> {
+async function compressOldMessages(oldMessages: Message[], allMessages?: Message[], signal?: AbortSignal): Promise<string | null> {
+  signal?.throwIfAborted()
   const qaMessages = filterQAMessages(oldMessages)
   if (qaMessages.length === 0) return null
 
@@ -138,7 +139,8 @@ async function compressOldMessages(oldMessages: Message[], allMessages?: Message
   ]
 
   let summary = ''
-  for await (const evt of llm.streamChat(llmMessages)) {
+  for await (const evt of llm.streamChat(llmMessages, undefined, signal)) {
+    signal?.throwIfAborted()
     if (evt.type === 'delta') {
       summary += evt.text
     } else if (evt.type === 'error') {
@@ -159,7 +161,9 @@ export async function maybeCompressContext(
   sessionId: string,
   threshold: number = COMPRESSION_THRESHOLD,
   keepRounds: number = KEEP_ROUNDS,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted()
   // Circuit breaker: skip if too many consecutive failures
   const failures = await getCompressionFailureCount(sessionId)
   if (failures >= MAX_COMPRESSION_FAILURES) {
@@ -177,7 +181,8 @@ export async function maybeCompressContext(
   if (oldMessages.length === 0) return false
 
   try {
-    const summary = await compressOldMessages(oldMessages, messages)
+    const summary = await compressOldMessages(oldMessages, messages, signal)
+    signal?.throwIfAborted()
     if (!summary) return false
 
     // Backup full history before compression
@@ -207,10 +212,12 @@ ${summary}`,
       newMessages.push(msg)
     }
 
+    signal?.throwIfAborted()
     await saveMessages(sessionId, newMessages)
     await resetCompressionFailures(sessionId)
     return true
   } catch (err) {
+    signal?.throwIfAborted()
     await incrementCompressionFailure(sessionId)
     console.error(`[上下文压缩] 压缩失败 (${failures + 1}/${MAX_COMPRESSION_FAILURES}):`, err)
     return false

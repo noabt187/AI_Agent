@@ -4,9 +4,10 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Orchestrator } from '../src/orchestrator/orchestrator.js'
-import type { AgentResult, WorldState } from '../src/orchestrator/types.js'
+import type { WorldState } from '../src/orchestrator/types.js'
 import { normalizeMemorySettings } from '../src/orchestrator/types.js'
 import { executeToolResult, toolDefsToOpenAI } from '../src/tools/index.js'
+import { applyTaskResult, beginTaskTurn, canWriteTask } from '../src/orchestrator/taskState.js'
 
 function state(sessionId: string): WorldState {
   return {
@@ -50,22 +51,21 @@ test('execution gate allows a confirmed write', async () => {
   assert.equal(await readFile(filePath, 'utf8'), 'allowed')
 })
 
-test('chat and done both clear the current task permission', async () => {
-  const orchestrator = new Orchestrator('permission-reset', state('permission-reset'))
-  const handler = orchestrator as unknown as {
-    handleAgentResult(result: AgentResult): Promise<void>
-  }
-
+test('protocol fallback and done revoke grants without erasing the revision-bound task history', () => {
   for (const result of [
-    { action: 'chat', message: '回答完成' } as const,
+    { action: 'chat', message: 'unparsed fallback', protocolFallback: true } as const,
     { action: 'done', message: '修改完成' } as const,
   ]) {
-    orchestrator.state.designConfirmed = true
-    orchestrator.state.goal = 'test goal'
-    orchestrator.state.pendingConfirm = { allowWrite: true, message: 'test' }
-    await handler.handleAgentResult(result)
+    const orchestrator = new Orchestrator('permission-reset', state('permission-reset'))
+    const initial = beginTaskTurn(orchestrator.state, orchestrator.bindInput('test goal'))
+    applyTaskResult(orchestrator.state, initial, { action: 'confirm', prompt: 'write only this task', confirmType: 'allow_write' })
+    const confirmed = beginTaskTurn(orchestrator.state, orchestrator.bindInput('确认'))
+    assert.equal(canWriteTask(orchestrator.state, confirmed), true)
+    applyTaskResult(orchestrator.state, confirmed, result)
+    assert.equal(canWriteTask(orchestrator.state, confirmed), false)
     assert.equal(orchestrator.state.designConfirmed, false)
-    assert.equal(orchestrator.state.goal, undefined)
     assert.equal(orchestrator.state.pendingConfirm, undefined)
+    assert.equal(orchestrator.state.task?.objective, 'test goal')
+    assert.equal(orchestrator.state.task?.phase, result.action === 'done' ? 'completed' : 'active')
   }
 })
