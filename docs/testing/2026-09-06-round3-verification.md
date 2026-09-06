@@ -17,9 +17,46 @@ Tested working-tree SHA-256 values, including concurrent external image-slot sou
 - `plugins/dsh-frontend-feedback/lib/client.js`: `378654e781731c414d233d09aae02126d5e9b2ba7259cc5be6194221fa9e663b`
 - `plugins/dsh-frontend-feedback/lib/index.js`: `842f6c799abf608a8ed992c7e8d026d4b04cb49fa78f22cec9cd37328c0c6667`
 
-Only the conflict source/test/generated-client hunks belong to this fix wave; concurrent image-slot edits are preserved and excluded from its commit. The artifact identity and browser results below are historical and do **not** validate these rebuilt bytes. No repack, installation, browser action, server mutation, or native-confirm acceptance was performed in this source fix pass. The controller still owns same-artifact dual-host acceptance and native Confirm/discard plus supported-UI draft cleanup.
+Only the conflict source/test/generated-client hunks belong to this fix wave; concurrent image-slot edits are preserved and excluded from its commit. The earlier artifact identity and full browser matrix farther below remain historical and do **not** validate these rebuilt bytes. The bounded final-artifact refresh below does validate the final built bytes in both hosts. Native Confirm/discard remains pending and is not waived.
 
-## Artifact identity and host assembly
+## Final artifact refresh at `6868654`
+
+The current built PageCraft was packed once to `D:\project\AI_Agent\.tmp\r3-c2\final-package\dsh-frontend-feedback-0.3.0.tgz`, SHA-256 `24efe9d2c7b8718ffe95a56ffbabc55ff85133305703282f74408c9a0ee5ab6`. The package contains 8 files (438.3 kB packed / 1.7 MB unpacked) and honestly includes active concurrent image-slot working-tree changes. Those bytes are acceptance input, not ownership by this verification commit. No rebuild occurred during the refresh because source hashes matched the final-fix report. This package hash and the 125/125 root plus 106/106 plugin results are a captured tested snapshot; further external annotator/source/test working-tree changes appeared afterward, remain outside this commit, and were not rebuilt or retested here.
+
+Both isolated profile manifests point to that same absolute tarball. Exact source/installed equality:
+
+```text
+D:\project\AI_Agent\plugins\dsh-frontend-feedback\lib\client.js
+D:\project\AI_Agent\.tmp\r3-c2\agent-home\profiles\c2-acceptance\node_modules\dsh-frontend-feedback\lib\client.js
+D:\project\AI_Agent\.tmp\r3-c2\dsh-home\profiles\web\node_modules\dsh-frontend-feedback\lib\client.js
+  SHA256 378654E781731C414D233D09AAE02126D5E9B2BA7259CC5BE6194221FA9E663B
+
+D:\project\AI_Agent\plugins\dsh-frontend-feedback\lib\index.js
+D:\project\AI_Agent\.tmp\r3-c2\agent-home\profiles\c2-acceptance\node_modules\dsh-frontend-feedback\lib\index.js
+D:\project\AI_Agent\.tmp\r3-c2\dsh-home\profiles\web\node_modules\dsh-frontend-feedback\lib\index.js
+  SHA256 842F6C799ABF608A8ED992C7E8D026D4B04CB49FA78F22CEC9CD37328C0C6667
+```
+
+Both actual hosts served identical client bytes:
+
+```text
+http://127.0.0.1:61138/plugins/dsh-frontend-feedback/client.js?rev=378654e78173
+http://127.0.0.1:49451/plugins/dsh-frontend-feedback/client.js?rev=4ab432a56f7e
+  Status 200; 1,393,771 bytes
+  SHA256 378654E781731C414D233D09AAE02126D5E9B2BA7259CC5BE6194221FA9E663B
+```
+
+The new `final-bom-crlf.txt` began as 43 bytes, SHA-256 `862023924120676b3fec167fc4f752887e88b89124b6f3765a6522e76ca90bd0`: UTF-8 BOM, homogeneous CRLF, Chinese plus non-BMP emoji, and no terminal newline. In the actual Agent UI, append/undo restored the original clean disabled-Save state; saving `-FINAL-AGENT` produced 55 bytes and SHA-256 `1f068536765c97302cb0b417fbb98b2f9ec5e6a5c5ba7f44d0b2296657b1b4d6`. After reloading to observe the held run, the actual clean workspace close and preview-address Escape removed PageCraft while Stop stayed visible and the composer stayed disabled.
+
+The actual DSH UI read those Agent-written bytes. Append/undo again restored a clean disabled-Save state; saving `-FINAL-DSH` produced 65 bytes and SHA-256 `381549e608a9cc025479ee2dda66dae2751f7cfc0d0466bc0354dd05ae3ea3e1`. BOM, CRLF, and no terminal newline survived both hosts. Clean workspace close and preview-address Escape removed PageCraft; the blank DSH session made no model call.
+
+After both UI smokes, the fresh held Agent run completed durably: harness counters `started=1 completed=1 aborted=0`, and both public API and `.tmp/r3-c2/state/session-final-001/runs.json` recorded run `53b3ee74-5515-4e2e-a20e-165d86faa648` as `completed`, not cancelled. Both final test-only hosts were then stopped. This acceptance worker touched neither the user frontend on port 5173 nor its backend on port 3090. Separately, the controller recovered the stale 3090 dev watcher and verified the original 5173 PageCraft open/close flow plus session-011 history on the current client revision.
+
+The old historical held run cannot be claimed completed: its exec process disappeared before this refresh, its last live counters were `1/0/0`, and its preserved row `fecb1e8e-6039-4af9-8e80-efb8011b9a73` still says `running`. No private mutation was used to rewrite it. Native Chrome Confirm/discard likewise remains **unverified** after the earlier automation blockage; the old browser-only draft was not erased with IndexedDB/private APIs, and disk `dirty-exit.txt` remains at SHA-256 `e6645514189956cbc087179ed881872e91cc93e9064aa0fbb4930c93177f1e38`.
+
+Two explicit handoff rulings remain in `.superpowers/sdd/2026-09-06-pagecraft-editor-state/progress.md`: (1) the native Confirm/discard gap stays open, and a later manual defect requires another fix/retest rather than being inferred from deterministic coverage; (2) refactoring the pre-existing fixed-ID abort test is deferred. Its three cancelled `/remember should not save` rows were moved to the recoverable `.tmp/r3-c2/leftover-session-cancel-fixture` archive with no message/state/memory writes, but rerunning that older test in the same working directory may recreate the harmless test session until the fixture is isolated.
+
+## Historical artifact identity and host assembly
 
 PageCraft was built before acceptance, packed once as `dsh-frontend-feedback-0.3.0.tgz`, and the exact same tarball was installed into isolated AI Agent and DeepSeek Harness `web` profiles.
 
@@ -31,7 +68,7 @@ PageCraft was built before acceptance, packed once as `dsh-frontend-feedback-0.3
 
 The Agent profile used the real host, queue, run persistence, built web app, and an injected held constructor runner in an isolated process. The DSH profile used the source-mode launcher with an isolated `DSH_HOME`, the normal `web` profile, and no source/default-profile modifications. A blank DSH workspace/session was created through the public JSON RPC; no model request was sent.
 
-## Browser results
+## Historical browser results
 
 ### AI Agent
 
@@ -67,7 +104,7 @@ The same boundary is covered deterministically by the assembled root App test us
 - Legacy matching drafts inherit disk format; mismatched drafts remain conflicts, and legacy mixed drafts keep raw content.
 - Existing Agent session snapshots have been exercised through the real UI; migration backups preserve the legacy snapshots and do not re-grant authorization.
 
-## Verification commands
+## Historical verification commands
 
 - `npm test`: 115/115 passing.
 - `npm run build`: passed.
