@@ -86,7 +86,11 @@ export class QueryEngine {
       isMeta: options?.isMeta ?? false,
     }
 
-    await this.appendMessage(userMessage)
+    // Queue admission can persist the real user message before execution.
+    const existing = this.state.messages.find(message => message.uuid === userUuid)
+    if (existing) {
+      if (existing.role !== 'user' || existing.content !== content || !!existing.isMeta !== userMessage.isMeta) throw new Error('User message UUID binding mismatch')
+    } else await this.appendMessage(userMessage)
 
     const terminal = yield* this.queryLoop(options?.tools, options?.signal, options?.runtimeContext)
 

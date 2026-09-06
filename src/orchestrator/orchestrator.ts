@@ -1,8 +1,13 @@
 import { access } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { runCommand } from '../utils/command.js'
-import type { AgentEventHandler, WorldState } from './types.js'
-import { Agent, isPureConfirmationInput } from './agent.js'
+import type { AgentEventHandler, ConfirmationRef, TaskRequestBinding, TurnContext, WorldState } from './types.js'
+import type { RunRecord } from '../state/runStore.js'
+import { Agent } from './agent.js'
+import { bindTaskInput, TaskStateError, workspaceKey } from './taskInput.js'
+import { applyTaskResult, beginTaskTurn, invalidateTaskWorkspace, ownsTurn, pauseTask, projectTask, requireConfirmation } from './taskState.js'
+import { normalizeTaskState, reconcileTaskRuns } from './taskPersistence.js'
 import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
 import { maybeCompressContext } from '../context/contextCompressor.js'
 import { loadOrchestratorState, saveOrchestratorState } from '../state/sessionStore.js'
@@ -34,23 +39,24 @@ export class Orchestrator {
   state: WorldState
   private askConfirm?: AskConfirmFn
   private askInput?: AskInputFn
-  private agent: Agent
+  private agent: Pick<Agent, 'run'>
+  private executing = false
   private abortController?: AbortController
   private externalSignal?: AbortSignal
   private userMessageId?: string
   private metricRecorder: (metric: import('../llm/monitoredClient.js').LlmCallMetric) => void
 
-  constructor(sessionId: string, initialState?: WorldState, runtime: AgentRuntime = legacyAgentRuntime) {
-    this.state = initialState ?? {
+  constructor(sessionId: string, initialState?: WorldState, runtime: AgentRuntime = legacyAgentRuntime, runner?: Pick<Agent, 'run'>) {
+    this.state = normalizeTaskState(initialState ?? {
       sessionId,
       allowedPaths: [],
       memorySettings: normalizeMemorySettings(),
       completedTaskIds: [],
       failedTaskIds: [],
-    }
+    })
     this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
     this.state.repository = normalizeRepositoryConfig(this.state.repository)
-    this.agent = new Agent(runtime)
+    this.agent = runner ?? new Agent(runtime)
     this.metricRecorder = createMetricRecorder(this.state.sessionId)
   }
 
@@ -91,7 +97,6 @@ export class Orchestrator {
   }
 
   async persist(): Promise<void> {
-    this.externalSignal?.throwIfAborted()
     await saveOrchestratorState(this.state.sessionId, this.state)
   }
 
@@ -115,8 +120,39 @@ export class Orchestrator {
   }
 
   async setRepositoryConfig(config: Partial<RepositoryConfig>): Promise<void> {
+    if (this.executing) throw new TaskStateError('busy', '运行期间不能更换仓库')
+    const previous = workspaceKey(this.state)
     this.state.repository = normalizeRepositoryConfig(config)
+    if (workspaceKey(this.state) !== previous) invalidateTaskWorkspace(this.state)
     await this.persist()
+  }
+
+  async setAllowedPaths(paths: string[]): Promise<void> {
+    if (this.executing) throw new TaskStateError('busy', '运行期间不能更换目录')
+    if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string' || !p.trim())) throw new TaskStateError('malformed_paths', '无效操作目录', 400)
+    const previous = workspaceKey(this.state)
+    this.state.allowedPaths = [...paths]
+    if (workspaceKey(this.state) !== previous) invalidateTaskWorkspace(this.state)
+    await this.persist()
+  }
+
+  bindInput(input: string, control?: unknown, ids?: { runId: string; userMessageId: string }): TaskRequestBinding {
+    return bindTaskInput(this.state, input, control, ids)
+  }
+
+  async clearConfirmation(expected: ConfirmationRef): Promise<void> {
+    if (this.executing) throw new TaskStateError('busy', '运行期间不能撤销确认')
+    requireConfirmation(this.state, expected)
+    this.state.task!.pendingConfirmation = undefined
+    this.state.task!.approval = undefined
+    this.state.task!.phase = 'paused'
+    projectTask(this.state)
+    await this.persist()
+  }
+
+  async reconcileRuns(records: RunRecord[]): Promise<void> {
+    if (this.executing) throw new TaskStateError('busy', '运行期间不能恢复状态')
+    if (reconcileTaskRuns(this.state, records)) await this.persist()
   }
 
   async rememberMemory(layer: MemoryLayerId, content: string): Promise<{ memory: MemoryItem; created: boolean }> {
@@ -150,6 +186,7 @@ export class Orchestrator {
 
   private async ensureAllowedPaths(onEvent?: AgentEventHandler) {
     if (!this.state.allowedPaths || this.state.allowedPaths.length === 0) {
+      const previousWorkspace = workspaceKey(this.state)
       const defaultPath = process.cwd()
       await this.emitOutput('\n[设置操作目录] Agent 可在以下目录中读写文件：', onEvent)
       await this.emitOutput(`  默认: ${defaultPath}`, onEvent)
@@ -166,30 +203,35 @@ export class Orchestrator {
         this.state.allowedPaths = [defaultPath]
       }
 
+      if (workspaceKey(this.state) !== previousWorkspace) invalidateTaskWorkspace(this.state)
+
       await this.emitOutput(`[操作目录已设置] ${this.state.allowedPaths.join(', ')}`, onEvent)
       await this.persist()
     }
   }
 
-  async handleUserInput(userInput: string, onEvent?: AgentEventHandler, signal?: AbortSignal, userMessageId?: string): Promise<void> {
+  async handleUserInput(userInput: string, onEvent?: AgentEventHandler, signal?: AbortSignal, userMessageId?: string, binding?: TaskRequestBinding): Promise<void> {
+    if (this.executing) throw new TaskStateError('busy', '当前会话正在运行')
+    let bound = binding ?? this.bindInput(userInput, undefined, userMessageId ? { runId: randomUUID(), userMessageId } : undefined)
+    const needsDirectory = this.state.allowedPaths.length === 0
+    if (bound.input !== userInput || (userMessageId && bound.userMessageId !== userMessageId)) throw new TaskStateError('malformed_binding', '请求绑定不一致', 400)
+    this.executing = true
     this.externalSignal = signal
-    this.userMessageId = userMessageId
+    this.userMessageId = bound.userMessageId
     try {
       signal?.throwIfAborted()
-      await this.handleInput(userInput, onEvent)
+      await this.ensureAllowedPaths(onEvent)
+      // An interactive CLI request binds to the directory just chosen by its user.
+      // An already admitted queue binding must keep its captured target.
+      if (!binding && needsDirectory) bound = this.bindInput(userInput, bound.control, { runId: bound.runId, userMessageId: bound.userMessageId })
+      await this.handleInput(userInput, onEvent, bound)
       signal?.throwIfAborted()
-    } finally { this.externalSignal = undefined; this.userMessageId = undefined }
+    } finally { this.externalSignal = undefined; this.userMessageId = undefined; this.executing = false }
   }
 
-  private async handleInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
-    await this.ensureAllowedPaths(onEvent)
+  private async handleInput(userInput: string, onEvent: AgentEventHandler | undefined, binding: TaskRequestBinding): Promise<void> {
     this.externalSignal?.throwIfAborted()
 
-    const normalizedInput = userInput.trim().toLowerCase()
-    if (normalizedInput === '取消' || normalizedInput === 'cancel' || normalizedInput === '不做了') {
-      await this.handleCancel(onEvent)
-      return
-    }
     if (userInput === '设置目录') {
       await this.handleSetDirectory(onEvent)
       return
@@ -212,49 +254,65 @@ export class Orchestrator {
       return
     }
 
-    if (isPureConfirmationInput(userInput) && this.state.pendingConfirm) {
-      await this.handleConfirmResponse(userInput, onEvent)
-      return
-    }
-
-    try {
-      const compressed = await maybeCompressContext(this.state.sessionId, undefined, undefined, this.externalSignal)
-      this.externalSignal?.throwIfAborted()
-      if (compressed) {
-        await this.emitOutput(`[上下文压缩] 消息过长，已压缩旧对话并保留最近 ${10} 轮`, onEvent)
-      }
-    } catch (err) {
-      this.externalSignal?.throwIfAborted()
-      console.error('[上下文压缩] 压缩异常，继续执行:', err)
-      await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err), recoverable: true })
-    }
-
-    if (!this.state.goal && !this.state.confirmedRequirement) {
-      this.state.goal = userInput
-    }
-
-    await this.runAgentTurn(userInput, onEvent)
+    const turn = beginTaskTurn(this.state, binding)
+    await this.runAgentTurn(userInput, onEvent, turn)
   }
 
-  private async runAgentTurn(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
+  private async runAgentTurn(userInput: string, onEvent: AgentEventHandler | undefined, turn: TurnContext): Promise<void> {
     const controller = new AbortController()
     this.abortController = controller
     const signal = this.externalSignal ? AbortSignal.any([controller.signal, this.externalSignal]) : controller.signal
-    let result: import('./types.js').AgentResult
+    let acceptingEvents = true
+    const emitTask = async () => { if (ownsTurn(this.state, turn)) await onEvent?.({ type: 'task', runId: turn.runId, task: structuredClone(this.state.task!) }) }
+    const ownedEvent: AgentEventHandler = async event => { if (acceptingEvents && ownsTurn(this.state, turn) && !signal.aborted) await onEvent?.(event) }
     try {
+      await this.persist()
+      await emitTask()
       signal.throwIfAborted()
-      result = await this.agent.run(this.state.sessionId, userInput, this.state, signal, onEvent, this.metricRecorder, this.userMessageId)
+      if (turn.intent === 'cancel') {
+        await this.emitOutput('\n[已取消] 当前任务已取消，历史和已执行结果保留。', ownedEvent)
+        return
+      }
+      if (this.state.task?.phase === 'awaiting_confirmation') {
+        await this.emitOutput(this.state.task.pendingConfirmation!.prompt, ownedEvent)
+        return
+      }
+      try {
+        const compressed = await maybeCompressContext(this.state.sessionId, undefined, undefined, signal)
+        signal.throwIfAborted()
+        if (compressed) await this.emitOutput('[上下文压缩] 消息过长，已压缩旧对话并保留最近 10 轮', ownedEvent)
+      } catch (error) {
+        signal.throwIfAborted()
+        await ownedEvent({ type: 'error', message: error instanceof Error ? error.message : String(error), recoverable: true })
+      }
+      const result = await this.agent.run(this.state.sessionId, userInput, this.state, signal, ownedEvent, this.metricRecorder, this.userMessageId, turn)
+      signal.throwIfAborted()
+      if (!ownsTurn(this.state, turn)) return
+      await ownedEvent({ type: 'result', result })
+      signal.throwIfAborted()
+      if (applyTaskResult(this.state, turn, result)) await this.handleAgentResult(result, ownedEvent)
+      signal.throwIfAborted()
+    } catch (error) {
+      pauseTask(this.state, turn, signal.aborted ? 'cancelled' : 'error')
+      if (signal.aborted) await onEvent?.({ type: 'aborted', message: '中断完成' })
+      throw error
     } finally {
-      if (this.abortController === controller) this.abortController = undefined
+      acceptingEvents = false
+      // Host finalization must persist even when execution has been cancelled.
+      if (signal.aborted) pauseTask(this.state, turn, 'cancelled')
+      try {
+        await this.persist()
+        await emitTask()
+      } finally {
+        // Cancellation may arrive while awaiting terminal delivery/persistence.
+        if (signal.aborted && ownsTurn(this.state, turn) && this.state.task?.phase !== 'paused' && this.state.task?.phase !== 'cancelled') {
+          pauseTask(this.state, turn, 'cancelled')
+          await this.persist()
+          await emitTask()
+        }
+        if (this.abortController === controller) this.abortController = undefined
+      }
     }
-    if (signal.aborted) {
-      await onEvent?.({ type: 'aborted', message: '中断完成' })
-      return
-    }
-    await onEvent?.({ type: 'result', result })
-
-    await this.handleAgentResult(result, onEvent)
-    await this.persist()
   }
 
   private async handleAgentResult(result: import('./types.js').AgentResult, onEvent?: AgentEventHandler) {
@@ -265,56 +323,23 @@ export class Orchestrator {
       case 'ask_user':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput('\n[需要你确认]', onEvent)
-        result.questions.forEach((q, i) => {
+        for (const [i, q] of result.questions.entries()) {
           console.log(`  ${i + 1}. ${q}`)
-          void onEvent?.({ type: 'output', message: `  ${i + 1}. ${q}` })
-        })
+          await onEvent?.({ type: 'output', message: `  ${i + 1}. ${q}` })
+        }
         break
       case 'confirm':
         if (result.message) await this.emitOutput(`\n${result.message}`, onEvent)
         await this.emitOutput(`\n${result.prompt}`, onEvent)
         const allowWrite = result.confirmType === 'allow_write'
-        this.state.pendingConfirm = {
-          allowWrite,
-          message: result.message || result.prompt,
-        }
         if (allowWrite) {
           await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':
         await this.emitOutput(`\n${result.message}`, onEvent)
-        this.clearCurrentTaskState()
         break
     }
-  }
-
-  private clearCurrentTaskState(): void {
-    this.state.goal = undefined
-    this.state.confirmedRequirement = undefined
-    this.state.designTasks = undefined
-    this.state.completedTaskIds = []
-    this.state.failedTaskIds = []
-    this.state.pendingConfirm = undefined
-    this.state.designConfirmed = false
-    this.state.memorySettings = normalizeMemorySettings(this.state.memorySettings)
-  }
-
-  private async handleConfirmResponse(userInput: string, onEvent?: AgentEventHandler) {
-    this.externalSignal?.throwIfAborted()
-    const pending = this.state.pendingConfirm!
-    this.state.pendingConfirm = undefined
-
-    if (pending.allowWrite) {
-      this.state.designConfirmed = true
-      await this.emitOutput('\n[已确认] Agent 已获得文件写入权限，开始执行...', onEvent)
-    } else {
-      this.state.confirmedRequirement = this.state.confirmedRequirement || pending.message
-      await this.emitOutput('\n[已确认] 正在继续...', onEvent)
-    }
-    await this.persist()
-
-    await this.runAgentTurn(userInput, onEvent)
   }
 
   private async handleSetDirectory(onEvent?: AgentEventHandler) {
@@ -324,6 +349,7 @@ export class Orchestrator {
       this.externalSignal?.throwIfAborted()
       if (input.trim()) {
         this.state.allowedPaths = input.split(',').map((p) => p.trim()).filter(Boolean)
+        invalidateTaskWorkspace(this.state)
         await this.persist()
         await this.emitOutput(`[操作目录已更新] ${this.state.allowedPaths.join(', ')}`, onEvent)
       }
@@ -471,12 +497,4 @@ export class Orchestrator {
     }
   }
 
-  // ── Cancel ────────────────────────────────────────────────────────
-
-  private async handleCancel(onEvent?: AgentEventHandler) {
-    this.abort()
-    this.clearCurrentTaskState()
-    await this.persist()
-    await this.emitOutput('\n[已取消] 当前任务已清除。', onEvent)
-  }
 }
