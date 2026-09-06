@@ -8,6 +8,8 @@ import { IDBFactory } from 'fake-indexeddb'
 import { WorkspaceExplorer } from '../src/client/source-workspace.tsx'
 import { IndexedDbDraftStorage, sourceDraftKey } from '../src/client/source-drafts.ts'
 import type { PresentationImageSlotSelection } from '../src/presentation.ts'
+import type { PresentationProjectManifest } from '../src/presentation-workspace.ts'
+import { workspaceFolderStorageKey } from '../src/workspace.ts'
 import { installBrowserDom } from './helpers/browser-dom.ts'
 
 const scope = { sessionId: 'test', rootPath: '/fixture', selectedFolder: '.', path: 'source.txt' }
@@ -17,6 +19,8 @@ function snapshot(content: string, path = 'source.txt') {
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) }) }
 interface MountWorkspaceOptions {
   previewSrc?: string | null
+  presentationManifest?: PresentationProjectManifest
+  rememberedFolder?: string
   onImageSlotSelection?(selection: PresentationImageSlotSelection): void
 }
 
@@ -26,6 +30,9 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   const storage = new IndexedDbDraftStorage(idb)
   if (legacy) await storage.put({ ...scope, ...legacy, key: sourceDraftKey(scope), revision: 1, updatedAt: 0 })
   Object.defineProperty(window, 'indexedDB', { configurable: true, value: idb })
+  if (options.rememberedFolder !== undefined) {
+    window.localStorage.setItem(workspaceFolderStorageKey(scope.rootPath, 'test'), options.rememberedFolder)
+  }
   const oldFetch = globalThis.fetch
   const oldEvents = globalThis.EventSource
   globalThis.EventSource = class { addEventListener() {} close() {} } as any
@@ -36,6 +43,7 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   let readGate: Promise<void> | undefined
   let restoreGate: Promise<void> | undefined
   let writes = 0
+  const workspaceSelections: string[] = []
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), 'http://fixture')
     if (url.pathname.endsWith('/directory')) return Response.json(['source.txt', 'other.txt'].map(path => ({ path, name: path, kind: 'file', textEditable: true, imagePreviewable: false, updatedAt: '' })))
@@ -60,12 +68,20 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
     }
     if (url.pathname.endsWith('/history')) return Response.json([{ id: 'old', path: 'source.txt', createdAt: '', hash: 'old', bytes: 4 }])
     if (url.pathname.endsWith('/restore')) { await restoreGate; disk = snapshot('history\n'); return Response.json(disk) }
-    return Response.json({ rootPath: scope.rootPath, selectedPath: scope.rootPath, selectedFolder: '.', watcher: 'connected', sequence: 0 })
+    workspaceSelections.push(url.searchParams.get('selectedFolder') ?? '')
+    const selectedFolder = url.searchParams.get('selectedFolder') ?? '.'
+    return Response.json({
+      rootPath: scope.rootPath,
+      selectedPath: selectedFolder === '.' ? scope.rootPath : `${scope.rootPath}/${selectedFolder}`,
+      selectedFolder,
+      watcher: 'connected',
+      sequence: 0,
+    })
   }
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
-  const render = (sessionId = 'test') => root.render(<WorkspaceExplorer sessionId={sessionId} previewSrc={options.previewSrc ?? null} onClose={() => {}} onRefresh={() => {}} onNavigate={() => {}} onAnnotationSelection={() => {}} onImageSlotSelection={options.onImageSlotSelection ?? (() => {})} />)
+  const render = (sessionId = 'test') => root.render(<WorkspaceExplorer sessionId={sessionId} previewSrc={options.previewSrc ?? null} presentationManifest={options.presentationManifest} onClose={() => {}} onRefresh={() => {}} onNavigate={() => {}} onAnnotationSelection={() => {}} onImageSlotSelection={options.onImageSlotSelection ?? (() => {})} />)
   await act(async () => render())
   await settle()
   const click = async (label: string) => {
@@ -79,8 +95,31 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   const edit = async (insert: string) => { await act(async () => view().dispatch({ changes: { from: view().state.doc.length, insert } })); await settle() }
   const saveButton = () => Array.from(host.querySelectorAll('header button')).find(button => /保存|处理中/.test(button.textContent!)) as HTMLButtonElement
   t.after(async () => { await act(async () => root.unmount()); globalThis.fetch = oldFetch; globalThis.EventSource = oldEvents; dom.cleanup() })
-  return { host, click, view, edit, saveButton, storage, key: sourceDraftKey(scope), disk: () => disk, otherDisk: () => otherDisk, writes: () => writes, setDisk: (raw: string) => { disk = snapshot(raw) }, setOtherDisk: (raw: string) => { otherDisk = snapshot(raw, 'other.txt') }, setPutGate: (gate?: Promise<void>) => { putGate = gate }, setPutResponseGate: (gate?: Promise<void>) => { putResponseGate = gate }, setReadGate: (gate?: Promise<void>) => { readGate = gate }, setRestoreGate: (gate?: Promise<void>) => { restoreGate = gate }, render }
+  return { host, click, view, edit, saveButton, storage, key: sourceDraftKey(scope), disk: () => disk, otherDisk: () => otherDisk, writes: () => writes, workspaceSelections, setDisk: (raw: string) => { disk = snapshot(raw) }, setOtherDisk: (raw: string) => { otherDisk = snapshot(raw, 'other.txt') }, setPutGate: (gate?: Promise<void>) => { putGate = gate }, setPutResponseGate: (gate?: Promise<void>) => { putResponseGate = gate }, setReadGate: (gate?: Promise<void>) => { readGate = gate }, setRestoreGate: (gate?: Promise<void>) => { restoreGate = gate }, render }
 }
+
+test('presentation workspace stays rooted at the real project and labels source and asset folders', async t => {
+  const manifest: PresentationProjectManifest = {
+    name: 'Deck',
+    sourceRoot: '.pagecraft/presentations/deck',
+    deck: '.pagecraft/presentations/deck/deck.json',
+    theme: '.pagecraft/presentations/deck/theme.css',
+    assets: 'public/pagecraft-assets',
+    publicAssetBase: '/pagecraft-assets',
+    editableFiles: [
+      '.pagecraft/presentations/deck/deck.json',
+      '.pagecraft/presentations/deck/theme.css',
+    ],
+  }
+  const f = await mountWorkspace(t, 'base\n', undefined, {
+    presentationManifest: manifest,
+    rememberedFolder: 'another-folder',
+  })
+
+  assert.equal(f.workspaceSelections.every(selection => selection === '.'), true)
+  assert.match(f.host.textContent ?? '', /PPT 源码：\.pagecraft\/presentations\/deck/)
+  assert.match(f.host.textContent ?? '', /图片：public\/pagecraft-assets/)
+})
 
 test('file workspace forwards image-slot clicks from its own preview frame', async t => {
   let selected: PresentationImageSlotSelection | null = null

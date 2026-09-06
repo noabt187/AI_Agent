@@ -39,6 +39,7 @@ import type {
 import {
   applyDirectoryListing,
   applyWorkspaceEvent,
+  expandWorkspacePath,
   initialWorkspaceTreeState,
   setDirectoryLoading,
   toggleDirectory,
@@ -54,10 +55,12 @@ import {
 import type { SourceDraftScope } from './source-drafts.ts'
 import { normalizePresentationImageSlotSelection } from '../presentation.ts'
 import type { PresentationImageSlotSelection } from '../presentation.ts'
+import type { PresentationProjectManifest } from '../presentation-workspace.ts'
 
 interface WorkspaceExplorerProps {
   sessionId: string
   previewSrc: string | null
+  presentationManifest?: PresentationProjectManifest
   onClose(): void
   onRefresh(): void
   onNavigate(url: string): void
@@ -184,6 +187,7 @@ function conflictCurrent(error: WorkspaceApiError): WorkspaceFile | null {
 export function WorkspaceExplorer({
   sessionId,
   previewSrc,
+  presentationManifest,
   onClose,
   onRefresh,
   onNavigate,
@@ -318,7 +322,29 @@ export function WorkspaceExplorer({
     ))
     if (epoch !== scopeEpoch.current) return
     setTree(value => applyDirectoryListing(value, next.selectedFolder, entries))
+    if (presentationManifest !== undefined && next.selectedFolder === '.') {
+      await revealProjectDirectory(presentationManifest.sourceRoot, next.selectedFolder, epoch)
+      setStatus(`已打开项目：${next.rootPath}；PPT 源码和图片目录来自项目清单。`)
+      return
+    }
     setStatus(`已打开真实目录：${next.selectedPath}`)
+  }
+
+  async function revealProjectDirectory(path: string, root: string, epoch: number): Promise<void> {
+    const directories: string[] = []
+    let current = ''
+    for (const segment of path.split('/').filter(Boolean)) {
+      current = current.length === 0 ? segment : `${current}/${segment}`
+      directories.push(current)
+    }
+    for (const directory of directories) {
+      const entries = await apiJson<WorkspaceEntry[]>(await fetch(
+        `${PAGECRAFT_WORKSPACE_DIRECTORY_PATH}?${apiQuery(sessionId, { selectedFolder: root, path: directory })}`,
+        { cache: 'no-store' },
+      ))
+      if (epoch !== scopeEpoch.current) return
+      setTree(value => expandWorkspacePath(applyDirectoryListing(value, directory, entries), directory))
+    }
   }
 
   async function loadWorkspace(): Promise<void> {
@@ -331,10 +357,12 @@ export function WorkspaceExplorer({
       ))
       if (epoch !== scopeEpoch.current) return
       let remembered = '.'
-      try {
-        remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || '.'
-      } catch {
-        remembered = '.'
+      if (presentationManifest === undefined) {
+        try {
+          remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || '.'
+        } catch {
+          remembered = '.'
+        }
       }
       try {
         await connectFolder(remembered, root.rootPath)
@@ -354,7 +382,7 @@ export function WorkspaceExplorer({
     setHistory([])
     void loadWorkspace()
     return () => { scopeEpoch.current++ }
-  }, [sessionId])
+  }, [presentationManifest?.assets, presentationManifest?.sourceRoot, sessionId])
 
   const revealEditedFile = useCallback((file: WorkspaceFile, line: number, version?: DocumentVersion): void => {
     const scope = draftScope(file.path)
@@ -1005,8 +1033,20 @@ export function WorkspaceExplorer({
   return (
     <div ref={shellRef} data-pagecraft-source-workspace="" style={sourceStyles.root}>
       <header style={sourceStyles.toolbar}>
-        <div style={sourceStyles.brand}><strong>PageCraft 文件工作区</strong><span title={summary?.selectedPath}>{selectedFolder} · 与本地目录实时同步</span></div>
-        <button type="button" onClick={() => { void openFolderPicker() }} style={sourceStyles.toolbarButton}>打开文件夹</button>
+        <div style={sourceStyles.brand}>
+          <strong>PageCraft 文件工作区</strong>
+          <span title={summary?.rootPath}>项目：{summary?.rootPath ?? selectedFolder}</span>
+          {presentationManifest === undefined ? (
+            <span title={summary?.selectedPath}>{selectedFolder} · 与本地目录实时同步</span>
+          ) : (
+            <span title={`${presentationManifest.sourceRoot} | ${presentationManifest.assets}`}>
+              PPT 源码：{presentationManifest.sourceRoot} · 图片：{presentationManifest.assets}
+            </span>
+          )}
+        </div>
+        {presentationManifest === undefined ? (
+          <button type="button" onClick={() => { void openFolderPicker() }} style={sourceStyles.toolbarButton}>打开文件夹</button>
+        ) : null}
         <button type="button" onClick={() => {
           for (const path of treeRef.current.expanded) void loadDirectory(path, true)
           void refreshOpenFiles()

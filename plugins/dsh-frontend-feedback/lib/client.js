@@ -32246,6 +32246,19 @@ function toggleDirectory(state, path) {
   else expanded.add(path);
   return { ...state, expanded };
 }
+function expandWorkspacePath(state, path) {
+  const root = state.selectedFolder;
+  const relativePath = root === "." ? path : path === root ? "" : path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null;
+  if (relativePath === null) return state;
+  const expanded = new Set(state.expanded);
+  expanded.add(root);
+  let current = root === "." ? "" : root;
+  for (const segment of relativePath.split("/").filter(Boolean)) {
+    current = current.length === 0 ? segment : `${current}/${segment}`;
+    expanded.add(current);
+  }
+  return { ...state, expanded };
+}
 function invalidateWorkspacePaths(state, paths) {
   const stale = new Set(state.stale);
   for (const path of paths) stale.add(path === "." && state.selectedFolder !== "." ? state.selectedFolder : path);
@@ -32348,6 +32361,7 @@ function conflictCurrent(error) {
 function WorkspaceExplorer({
   sessionId,
   previewSrc,
+  presentationManifest,
   onClose,
   onRefresh,
   onNavigate,
@@ -32477,7 +32491,28 @@ function WorkspaceExplorer({
     ));
     if (epoch !== scopeEpoch.current) return;
     setTree((value) => applyDirectoryListing(value, next.selectedFolder, entries));
+    if (presentationManifest !== void 0 && next.selectedFolder === ".") {
+      await revealProjectDirectory(presentationManifest.sourceRoot, next.selectedFolder, epoch);
+      setStatus(`\u5DF2\u6253\u5F00\u9879\u76EE\uFF1A${next.rootPath}\uFF1BPPT \u6E90\u7801\u548C\u56FE\u7247\u76EE\u5F55\u6765\u81EA\u9879\u76EE\u6E05\u5355\u3002`);
+      return;
+    }
     setStatus(`\u5DF2\u6253\u5F00\u771F\u5B9E\u76EE\u5F55\uFF1A${next.selectedPath}`);
+  }
+  async function revealProjectDirectory(path, root, epoch) {
+    const directories = [];
+    let current = "";
+    for (const segment of path.split("/").filter(Boolean)) {
+      current = current.length === 0 ? segment : `${current}/${segment}`;
+      directories.push(current);
+    }
+    for (const directory of directories) {
+      const entries = await apiJson(await fetch(
+        `${PAGECRAFT_WORKSPACE_DIRECTORY_PATH}?${apiQuery(sessionId, { selectedFolder: root, path: directory })}`,
+        { cache: "no-store" }
+      ));
+      if (epoch !== scopeEpoch.current) return;
+      setTree((value) => expandWorkspacePath(applyDirectoryListing(value, directory, entries), directory));
+    }
   }
   async function loadWorkspace() {
     const epoch = scopeEpoch.current;
@@ -32489,10 +32524,12 @@ function WorkspaceExplorer({
       ));
       if (epoch !== scopeEpoch.current) return;
       let remembered = ".";
-      try {
-        remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || ".";
-      } catch {
-        remembered = ".";
+      if (presentationManifest === void 0) {
+        try {
+          remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || ".";
+        } catch {
+          remembered = ".";
+        }
       }
       try {
         await connectFolder(remembered, root.rootPath);
@@ -32513,7 +32550,7 @@ function WorkspaceExplorer({
     return () => {
       scopeEpoch.current++;
     };
-  }, [sessionId]);
+  }, [presentationManifest?.assets, presentationManifest?.sourceRoot, sessionId]);
   const revealEditedFile = (0, import_react4.useCallback)((file, line, version) => {
     const scope = draftScope(file.path);
     if (scope === null) return;
@@ -33125,14 +33162,23 @@ function WorkspaceExplorer({
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("header", { style: sourceStyles.toolbar, children: [
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.brand, children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: "PageCraft \u6587\u4EF6\u5DE5\u4F5C\u533A" }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { title: summary?.selectedPath, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { title: summary?.rootPath, children: [
+          "\u9879\u76EE\uFF1A",
+          summary?.rootPath ?? selectedFolder
+        ] }),
+        presentationManifest === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { title: summary?.selectedPath, children: [
           selectedFolder,
           " \xB7 \u4E0E\u672C\u5730\u76EE\u5F55\u5B9E\u65F6\u540C\u6B65"
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { title: `${presentationManifest.sourceRoot} | ${presentationManifest.assets}`, children: [
+          "PPT \u6E90\u7801\uFF1A",
+          presentationManifest.sourceRoot,
+          " \xB7 \u56FE\u7247\uFF1A",
+          presentationManifest.assets
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
+      presentationManifest === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
         void openFolderPicker();
-      }, style: sourceStyles.toolbarButton, children: "\u6253\u5F00\u6587\u4EF6\u5939" }),
+      }, style: sourceStyles.toolbarButton, children: "\u6253\u5F00\u6587\u4EF6\u5939" }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
         for (const path of treeRef.current.expanded) void loadDirectory(path, true);
         void refreshOpenFiles();
@@ -34489,6 +34535,7 @@ function FrontendFeedbackPanel({
       {
         sessionId,
         previewSrc: previewFrame?.src ?? null,
+        presentationManifest: presentationWorkspace?.manifest,
         onClose: () => setShowSourceWorkspace(false),
         onRefresh: () => refreshPreview("\u6B63\u5728\u5237\u65B0\u6587\u4EF6\u5DE5\u4F5C\u533A\u9884\u89C8\u2026", "\u672C\u5730\u6587\u4EF6\u4FEE\u6539\u5DF2\u4FDD\u5B58\uFF0C\u9884\u89C8\u5DF2\u540C\u6B65\u3002"),
         onNavigate: (url) => navigatePreview(url, "\u6B63\u5728\u6253\u5F00\u6587\u4EF6\u5DE5\u4F5C\u533A\u9884\u89C8\u4E2D\u7684\u94FE\u63A5\u2026"),

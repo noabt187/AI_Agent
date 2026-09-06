@@ -924,6 +924,7 @@ function FrontendFeedbackPanel({
         <WorkspaceExplorer
           sessionId={sessionId}
           previewSrc={previewFrame?.src ?? null}
+          presentationManifest={presentationWorkspace?.manifest}
           onClose={() => setShowSourceWorkspace(false)}
           onRefresh={() => refreshPreview('正在刷新文件工作区预览…', '本地文件修改已保存，预览已同步。')}
           onNavigate={(url) => navigatePreview(url, '正在打开文件工作区预览中的链接…')}
