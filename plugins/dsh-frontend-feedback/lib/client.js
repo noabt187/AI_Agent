@@ -32984,7 +32984,10 @@ function WorkspaceExplorer({
         const disk = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
         if (refreshRequestsRef.current.get(item.documentId) !== request) continue;
         setOpenFiles((files) => files.map((open) => {
-          if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open;
+          if (!sameDocumentReplacementVersion(open, version, true)) return open;
+          if (disk.hash === open.file.hash) {
+            return open.conflict && open.conflict.hash !== disk.hash ? observeSourceConflict(open, null) : open;
+          }
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
             return observeSourceConflict(open, disk);
           }

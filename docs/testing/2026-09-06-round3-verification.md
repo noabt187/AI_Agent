@@ -1,7 +1,23 @@
 # Round 3 PageCraft editor-state verification
 
 Date: 2026-09-06
-Implementation base: `3bc1af48c1f89f2c3544933a71d48574adb33f79`
+Historical acceptance base: `3bc1af48c1f89f2c3544933a71d48574adb33f79`
+
+## Final source fix wave (after whole-branch review)
+
+All six final review findings are fixed in source: admission captures controls before RunStore I/O; resume rejects constraint-bearing text; CLI turns persist/reconcile run outcomes; B → base A clears obsolete editor conflicts and invalidates pending replacements; terminal QueryEngine failures reach failed-run/paused-task finalization; queue finalization commits a stable Stop boundary and pauses the owned cancelled task before the successor runs.
+
+Focused regressions went RED before implementation (host 8 failures / 1 preservation pass; mounted B → A 2 failures / 1 legacy preservation pass), then GREEN. Final complete suites passed with explicit single-worker execution: root `node --import tsx --test --test-concurrency=1 tests/**/*.test.ts tests/**/*.test.tsx` **125/125**, and the same command from the plugin directory **106/106**. The plugin count includes concurrent image-slot tests outside this fix wave. Backend and web builds passed (1,593 modules). Plugin build and 8-file package dry-run passed separately.
+
+The default parallel `npm test` and plugin `npm run check` attempts did not pass: this machine exhausted memory/process capacity (root log: `FATAL ERROR: AlignedAlloc Allocation failed - process out of memory`, plus `spawn UNKNOWN`; two plugin workers exited). Serialized execution changed only concurrency, not test scope. The known trust/DEP0190 and React border warnings remain.
+
+Tested working-tree SHA-256 values, including concurrent external image-slot source/build changes:
+
+- `plugins/dsh-frontend-feedback/src/client/source-workspace.tsx`: `24d4ec4b2a4370995fbb3a4caf864d7bf71b306980e0a3202de8108523238b4c`
+- `plugins/dsh-frontend-feedback/lib/client.js`: `378654e781731c414d233d09aae02126d5e9b2ba7259cc5be6194221fa9e663b`
+- `plugins/dsh-frontend-feedback/lib/index.js`: `842f6c799abf608a8ed992c7e8d026d4b04cb49fa78f22cec9cd37328c0c6667`
+
+Only the conflict source/test/generated-client hunks belong to this fix wave; concurrent image-slot edits are preserved and excluded from its commit. The artifact identity and browser results below are historical and do **not** validate these rebuilt bytes. No repack, installation, browser action, server mutation, or native-confirm acceptance was performed in this source fix pass. The controller still owns same-artifact dual-host acceptance and native Confirm/discard plus supported-UI draft cleanup.
 
 ## Artifact identity and host assembly
 
@@ -66,4 +82,4 @@ The root suite also emits the existing plugin trust notice and Node `DEP0190` wa
 
 Conduit was exercised read-only. Final `git status --short` was empty; `README.md` SHA-256 remained `eae49f05002f4e8e9032609565811aa5ab69eac88a0018e2d679bf0631fa0365` and `.gitignore` remained `4dd81f573672bc56286beb49e4618f5a42244be54d04a9903ee6240a7c9ca6c8`.
 
-The deferred `source-workspace.tsx:882` disk-B-to-base-A conflict observation was not changed during C2 acceptance and remains for final whole-branch review.
+The deferred disk-B-to-base-A observation was unchanged during historical C2 acceptance; it is now fixed and covered by mounted editor regressions in the final source fix wave above.

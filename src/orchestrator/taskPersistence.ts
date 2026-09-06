@@ -74,7 +74,7 @@ export function reconcileTaskRuns(state: WorldState, records: RunRecord[]): bool
   const t = state.task
   if (!t || ['completed', 'cancelled'].includes(t.phase)) return false
   const run = records.find(r => r.id === t.lastRunId)
-  // CLI runs have no RunStore row; callers reconcile only when using the HTTP store.
+  // CLI and HTTP turns both require a durable matching outcome to recover grants.
   const identity = run as (RunRecord & { taskId?: string; taskRevision?: number }) | undefined
   const consistent = run && run.sessionId === state.sessionId && identity?.taskId === t.id && identity.taskRevision === t.revision
   const resumableStop = consistent && run.status === 'cancelled' && t.phase === 'paused'

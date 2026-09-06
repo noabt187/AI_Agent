@@ -879,7 +879,12 @@ export function WorkspaceExplorer({
         // response must not advance conflictRevision and invalidate a newer read.
         if (refreshRequestsRef.current.get(item.documentId) !== request) continue
         setOpenFiles(files => files.map(open => {
-          if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open
+          if (!sameDocumentReplacementVersion(open, version, true)) return open
+          if (disk.hash === open.file.hash) {
+            // Disk B returning to base A invalidates an obsolete replacement.
+            // A legacy draft conflict already representing A remains unresolved.
+            return open.conflict && open.conflict.hash !== disk.hash ? observeSourceConflict(open, null) : open
+          }
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
             return observeSourceConflict(open, disk)
           }

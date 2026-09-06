@@ -27,7 +27,7 @@ export class PromptQueueError extends Error {
 
 export class SessionPromptQueue {
   private readonly pending = new Map<string, QueuedPrompt[]>()
-  private readonly active = new Map<string, { prompt: QueuedPrompt; settled: Promise<void>; controller: AbortController }>()
+  private readonly active = new Map<string, { prompt: QueuedPrompt; settled: Promise<void>; controller: AbortController; finalizing: boolean }>()
 
   constructor(
     private readonly execute: (job: PromptJob) => Promise<void>,
@@ -50,8 +50,10 @@ export class SessionPromptQueue {
   async abort(sessionId: string): Promise<void> {
     const current = this.active.get(sessionId)
     if (!current) return
-    current.controller.abort()
-    await this.abortActive(sessionId)
+    if (!current.finalizing) {
+      current.controller.abort()
+      await this.abortActive(sessionId)
+    }
     await current.settled
   }
 
@@ -65,8 +67,10 @@ export class SessionPromptQueue {
     }
     const active = this.active.get(sessionId)
     if (active === undefined) return
-    active.controller.abort()
-    await this.abortActive(sessionId)
+    if (!active.finalizing) {
+      active.controller.abort()
+      await this.abortActive(sessionId)
+    }
     await active.settled.catch(() => {})
   }
 
@@ -91,7 +95,7 @@ export class SessionPromptQueue {
     const settled = new Promise<void>(resolve => { markSettled = resolve })
     const controller = new AbortController()
     prompt.job = { ...prompt.job, signal: prompt.job.signal ? AbortSignal.any([controller.signal, prompt.job.signal]) : controller.signal }
-    this.active.set(sessionId, { prompt, settled, controller })
+    this.active.set(sessionId, { prompt, settled, controller, finalizing: false })
     void this.run(prompt).finally(() => {
       this.active.delete(sessionId)
       markSettled()
@@ -110,7 +114,12 @@ export class SessionPromptQueue {
     } catch (error) {
       failure = error
     }
-    try { await item.job.onFinish?.(failure, item.job.signal) } catch (error) { failure = error }
+    // Commit the outcome before asynchronous persistence. Stop after this point
+    // waits for finalization; it cannot change the outcome or target a successor.
+    const active = this.active.get(item.job.sessionId)
+    if (active?.prompt === item) active.finalizing = true
+    const terminalSignal = item.job.signal?.aborted ? AbortSignal.abort(item.job.signal.reason) : new AbortController().signal
+    try { await item.job.onFinish?.(failure, terminalSignal) } catch (error) { failure = error }
     if (failure !== undefined) item.reject(failure)
     else item.resolve()
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { normalizeRepositoryConfig, type AgentResult, type ConfirmationRef, type TaskRequestBinding, type TaskState, type TurnContext, type WorldState } from './types.js'
-import { isCancelInput, parseTaskControl, TaskStateError, validateConfirmationInput, workspaceKey } from './taskInput.js'
+import { isCancelInput, parseTaskControl, TaskStateError, validateControlInput, workspaceKey } from './taskInput.js'
 export { TaskStateError } from './taskInput.js'
 
 export function ownsTurn(state: WorldState, turn: TurnContext): boolean {
@@ -39,7 +39,7 @@ export function beginTaskTurn(state: WorldState, binding: TaskRequestBinding): T
   let task = state.task
   let intent: TurnContext['intent'] = 'new'
   const c = parseTaskControl(binding.control)
-  validateConfirmationInput(binding.input, c)
+  validateControlInput(binding.input, c)
   if (c) {
     if (!task || task.id !== c.taskId || task.revision !== c.taskRevision) throw new TaskStateError('stale_task', '任务版本已改变')
     if (c.kind === 'confirm' || c.kind === 'revise') requireConfirmation(state, c)

@@ -6,14 +6,13 @@ import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { legacyAgentRuntime, type AgentRuntime } from '../orchestrator/runtime.js'
 import { SessionPromptQueue, type PromptJob } from './promptQueue.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
-import { RunStore, type RunStatus } from '../state/runStore.js'
+import { sessionRunStore as runStore, type RunStatus } from '../state/runStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 import { beginTaskTurn } from '../orchestrator/taskState.js'
 import type { ConfirmationRef } from '../orchestrator/types.js'
 
 const stateDir = resolve(process.cwd(), 'state')
-const runStore = new RunStore(stateDir)
 const orchestrators = new Map<string, Orchestrator>()
 const loadingOrchestrators = new Map<string, Promise<Orchestrator>>()
 const liveCreatedAt = new Map<string, number>()
@@ -82,13 +81,11 @@ export function configureSessionRuntime(runtime: AgentRuntime, queue: SessionPro
 
 export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
   const orchestrator = await getOrchestrator(job.sessionId)
-  const record = await runStore.create(job.sessionId, job.prompt)
-  let binding: import('../orchestrator/types.js').TaskRequestBinding
+  // Capture intent, proposal identity and workspace before the first admission I/O.
+  const binding = orchestrator.bindInput(job.prompt, job.control)
+  if (binding.control) beginTaskTurn(structuredClone(orchestrator.state), binding)
+  const record = await runStore.create(job.sessionId, job.prompt, binding)
   try {
-    binding = orchestrator.bindInput(job.prompt, job.control, { runId: record.id, userMessageId: record.userMessageId! })
-    // Validate controls against admission state without consuming the proposal.
-    // The real transition repeats validation when this exact binding executes.
-    if (binding.control) beginTaskTurn(structuredClone(orchestrator.state), binding)
     await runStore.update(job.sessionId, record.id, { binding })
   } catch (error) {
     await runStore.update(job.sessionId, record.id, { status: 'failed', error: error instanceof Error ? error.message : String(error) })
@@ -113,7 +110,10 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
     : []
   const finish = async (error: unknown, signal?: AbortSignal) => {
     if (finished) return
-    if (signal?.aborted) outcome = 'cancelled'
+    if (signal?.aborted) {
+      outcome = 'cancelled'
+      await orchestrator.finalizeCancelledRun(record.id, originalExecute)
+    }
     else if (error !== undefined) outcome = 'failed'
     if (error !== undefined) errorMessage = error instanceof Error ? error.message : String(error)
     await runStore.update(job.sessionId, record.id, {
@@ -229,7 +229,6 @@ export async function getOrchestrator(sessionId: string): Promise<Orchestrator> 
 
 async function loadOrchestrator(sessionId: string): Promise<Orchestrator> {
   const orchestrator = await Orchestrator.load(sessionId, agentRuntime)
-  await orchestrator.reconcileRuns(await runStore.list(sessionId))
   orchestrators.set(sessionId, orchestrator)
   let createdAt = Date.now()
   try {

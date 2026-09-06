@@ -1,4 +1,4 @@
-import { QueryEngine } from '../QueryEngine.js'
+import { QueryEngine, QueryTerminalError } from '../QueryEngine.js'
 import { createLlmClient } from '../llm/index.js'
 import type { MetricCallback } from '../llm/index.js'
 import { loadModelConfig } from '../context/modelConfig.js'
@@ -403,6 +403,7 @@ export class Agent {
             if (evt.kind === 'delta') fullText += evt.delta
           }
         } catch (err) {
+          if (err instanceof QueryTerminalError) throw err
           console.error('[Agent] 最终总结 LLM 调用失败:', err)
         }
         if (!fullText.trim() && prevText.trim()) {

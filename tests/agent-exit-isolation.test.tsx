@@ -44,7 +44,7 @@ async function settleUntil(predicate: () => boolean): Promise<void> {
   assert.fail('App did not reach the expected DOM state')
 }
 
-test('Escape exits PageCraft without aborting the running Agent; only Stop aborts it', async (t) => {
+test('assembled PageCraft editor resets and native-confirm branches isolate exits from Agent Stop', async (t) => {
   const browser = installBrowserDom()
   const previousWindowConstructor = Object.getOwnPropertyDescriptor(globalThis, 'Window')
   Object.defineProperty(globalThis, 'Window', { configurable: true, writable: true, value: browser.window.Window })

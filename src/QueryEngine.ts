@@ -14,6 +14,10 @@ type QueryEngineParams = {
   llmClient: LlmClient
 }
 
+export class QueryTerminalError extends Error {
+  constructor(message: string) { super(message); this.name = 'QueryTerminalError' }
+}
+
 function withRuntimeContext(messages: Message[], runtimeContext?: string): Message[] {
   const trimmedContext = runtimeContext?.trim()
   if (!trimmedContext) return messages
@@ -106,6 +110,7 @@ export class QueryEngine {
       if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
+      if (!isAbort) throw new QueryTerminalError(terminal.error)
     }
   }
 
@@ -124,6 +129,7 @@ export class QueryEngine {
       if (isAbort) errMsg.toolName = 'abort'
       await this.appendMessage(errMsg)
       yield { kind: 'message', ...errMsg }
+      if (!isAbort) throw new QueryTerminalError(terminal.error)
     }
   }
 

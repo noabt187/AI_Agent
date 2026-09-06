@@ -73,9 +73,10 @@ export class RunStore {
   list(sessionId: string): Promise<RunRecord[]> {
     return this.serial(sessionId, async records => structuredClone(records))
   }
-  create(sessionId: string, prompt: string): Promise<RunRecord> {
+  create(sessionId: string, prompt: string, ids?: { runId: string; userMessageId: string }): Promise<RunRecord> {
     return this.serial(sessionId, async records => {
-      const record: RunRecord = { id: randomUUID(), sessionId, prompt, status: 'queued', createdAt: Date.now(), messageIds: [], userMessageId: randomUUID() }
+      const record: RunRecord = { id: ids?.runId ?? randomUUID(), sessionId, prompt, status: 'queued', createdAt: Date.now(), messageIds: [], userMessageId: ids?.userMessageId ?? randomUUID() }
+      if (records.some(existing => existing.id === record.id)) throw new Error('Duplicate run id')
       records.push(record)
       await this.write(sessionId, records)
       return structuredClone(record)
@@ -95,3 +96,7 @@ export class RunStore {
     })
   }
 }
+
+// All entry points share initialization, so loading a CLI/HTTP session cannot
+// reconcile a row that this process is already executing.
+export const sessionRunStore = new RunStore(resolve(process.cwd(), 'state'))

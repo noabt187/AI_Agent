@@ -89,7 +89,6 @@ test('idle recovery reconciles real run associations and concurrent loaders shar
   for (const status of ['running', 'cancelled', 'completed'] as const) {
     const id = `task-recover-${randomUUID()}`, dir = resolve('state', id)
     const store = new RunStore(resolve('state'))
-    const row = await store.create(id, 'confirmed execution')
     const controller = new AbortController()
     const o = new Orchestrator(id, undefined, undefined, { run: async (_id, input) => {
       if (input === 'A') return { action: 'confirm', prompt: 'approved proposal', confirmType: 'allow_write' }
@@ -98,13 +97,17 @@ test('idle recovery reconciles real run associations and concurrent loaders shar
     } })
     o.state.allowedPaths = [process.cwd()]
     await o.handleUserInput('A')
+    const row = await store.create(id, 'confirmed execution')
     await o.handleUserInput('确认', undefined, controller.signal, row.userMessageId, o.bindInput('确认', undefined, { runId: row.id, userMessageId: row.userMessageId! })).catch(error => { if (error.name !== 'AbortError') throw error })
     await store.update(id, row.id, { status, taskId: o.state.task!.id, taskRevision: o.state.task!.revision, taskPhase: o.state.task!.phase })
+    // Direct setup turns now use the shared RunStore too. Model a fresh process
+    // recovering rows before exercising concurrent HTTP session loaders.
+    await new RunStore(resolve('state')).list(id)
     t.after(async () => { await api.deleteSession(id); await rm(dir, { recursive: true, force: true }) })
     const [first, second] = await Promise.all([api.getOrchestrator(id), api.getOrchestrator(id)])
     assert.equal(first, second)
-    const detail = await api.loadSession(id) as { runs: { status: string }[] }
-    assert.equal(detail.runs[0].status, status === 'running' ? 'interrupted' : status)
+    const detail = await api.loadSession(id) as { runs: { id: string; status: string }[] }
+    assert.equal(detail.runs.find(run => run.id === row.id)!.status, status === 'running' ? 'interrupted' : status)
     assert.equal(first.state.task!.phase, status === 'completed' ? 'active' : 'paused')
     assert.equal(!!first.state.task!.approval, status !== 'running')
   }

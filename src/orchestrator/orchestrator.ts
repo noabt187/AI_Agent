@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { runCommand } from '../utils/command.js'
 import type { AgentEventHandler, ConfirmationRef, TaskRequestBinding, TurnContext, WorldState } from './types.js'
-import type { RunRecord } from '../state/runStore.js'
+import { sessionRunStore, type RunRecord, type RunStatus } from '../state/runStore.js'
 import { Agent } from './agent.js'
 import { bindTaskInput, TaskStateError, workspaceKey } from './taskInput.js'
 import { applyTaskResult, beginTaskTurn, invalidateTaskWorkspace, ownsTurn, pauseTask, projectTask, requireConfirmation } from './taskState.js'
@@ -69,7 +69,7 @@ export class Orchestrator {
       persisted.memorySettings = normalizeMemorySettings(persisted.memorySettings)
       persisted.repository = normalizeRepositoryConfig(persisted.repository)
     }
-    return new Orchestrator(sessionId, persisted ?? {
+    const orchestrator = new Orchestrator(sessionId, persisted ?? {
       sessionId,
       allowedPaths: [],
       memorySettings: normalizeMemorySettings(),
@@ -77,6 +77,8 @@ export class Orchestrator {
       completedTaskIds: [],
       failedTaskIds: [],
     }, runtime)
+    await orchestrator.reconcileRuns(await sessionRunStore.list(sessionId))
+    return orchestrator
   }
 
   setAskConfirm(fn: AskConfirmFn) { this.askConfirm = fn }
@@ -155,6 +157,17 @@ export class Orchestrator {
     if (reconcileTaskRuns(this.state, records)) await this.persist()
   }
 
+  async finalizeCancelledRun(runId: string, onEvent?: AgentEventHandler): Promise<void> {
+    const task = this.state.task
+    if (!task || task.lastRunId !== runId || task.phase === 'cancelled') return
+    // Queue finalization still owns this run, including the gap after Agent return.
+    task.phase = 'paused'; task.interruption = 'cancelled'; projectTask(this.state)
+    await this.persist()
+    if (this.state.task === task && task.lastRunId === runId) {
+      await onEvent?.({ type: 'task', runId, task: structuredClone(task) })
+    }
+  }
+
   async rememberMemory(layer: MemoryLayerId, content: string): Promise<{ memory: MemoryItem; created: boolean }> {
     return this.saveMemoryItem({
       layer,
@@ -218,15 +231,46 @@ export class Orchestrator {
     this.executing = true
     this.externalSignal = signal
     this.userMessageId = bound.userMessageId
+    let localRun: RunRecord | undefined
+    const outcome: { status: RunStatus } = { status: 'completed' }
+    let failure: unknown
+    const deliver: AgentEventHandler = async event => {
+      if (localRun) {
+        if (event.type === 'aborted') outcome.status = 'cancelled'
+        if (event.type === 'error' && !event.recoverable) outcome.status = 'failed'
+        if (event.type === 'task' && event.runId === localRun.id && event.task.lastRunId === localRun.id) {
+          await sessionRunStore.update(this.state.sessionId, localRun.id, { taskId: event.task.id, taskRevision: event.task.revision, taskPhase: event.task.phase })
+        }
+      }
+      await onEvent?.(event)
+    }
     try {
       signal?.throwIfAborted()
-      await this.ensureAllowedPaths(onEvent)
+      // Unbound calls are CLI/direct turns; HTTP admission already owns its row.
+      if (!binding) {
+        localRun = await sessionRunStore.create(this.state.sessionId, userInput, bound)
+        await sessionRunStore.update(this.state.sessionId, localRun.id, { status: 'running', binding: bound })
+      }
+      await this.ensureAllowedPaths(deliver)
       // An interactive CLI request binds to the directory just chosen by its user.
       // An already admitted queue binding must keep its captured target.
       if (!binding && needsDirectory) bound = this.bindInput(userInput, bound.control, { runId: bound.runId, userMessageId: bound.userMessageId })
-      await this.handleInput(userInput, onEvent, bound)
+      if (localRun) await sessionRunStore.update(this.state.sessionId, localRun.id, { binding: bound })
+      await this.handleInput(userInput, deliver, bound)
       signal?.throwIfAborted()
-    } finally { this.externalSignal = undefined; this.userMessageId = undefined; this.executing = false }
+    } catch (error) {
+      failure = error
+      if (outcome.status !== 'cancelled') outcome.status = signal?.aborted ? 'cancelled' : 'failed'
+      throw error
+    } finally {
+      try {
+        if (localRun) {
+          if (signal?.aborted) outcome.status = 'cancelled'
+          if (outcome.status === 'cancelled') await this.finalizeCancelledRun(localRun.id, deliver)
+          await sessionRunStore.update(this.state.sessionId, localRun.id, { status: outcome.status, error: failure instanceof Error ? failure.message : failure === undefined ? undefined : String(failure) })
+        }
+      } finally { this.externalSignal = undefined; this.userMessageId = undefined; this.executing = false }
+    }
   }
 
   private async handleInput(userInput: string, onEvent: AgentEventHandler | undefined, binding: TaskRequestBinding): Promise<void> {

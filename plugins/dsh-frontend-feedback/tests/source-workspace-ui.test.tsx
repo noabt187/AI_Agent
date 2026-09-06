@@ -186,6 +186,44 @@ test('discard cannot accept obsolete disk B when a gated delete observes conflic
   assert.equal(await f.storage.get(f.key), undefined)
 })
 
+for (const pendingReplacement of [false, true]) {
+  test(`disk B returning to base A clears obsolete conflict${pendingReplacement ? ' and invalidates pending replacement' : ''}`, async t => {
+    const f = await mountWorkspace(t)
+    await f.edit('mine')
+    f.setDisk('disk B\n')
+    await f.click('刷新目录')
+    assert.match(f.host.textContent!, /disk B/)
+    const gate = deferred()
+    if (pendingReplacement) {
+      const original = IndexedDbDraftStorage.prototype.delete
+      IndexedDbDraftStorage.prototype.delete = async function (key) { await gate.promise; return original.call(this, key) }
+      t.after(() => { gate.resolve(); IndexedDbDraftStorage.prototype.delete = original })
+      await f.click('载入最新版本')
+    }
+    f.setDisk('base\n')
+    await f.click('刷新目录')
+    await act(async () => gate.resolve())
+    await settle()
+    assert.doesNotMatch(f.host.textContent!, /disk B|文件已被 Agent/)
+    assert.equal(f.view().state.doc.toString(), 'base\nmine')
+    assert.equal(f.saveButton().disabled, false)
+    assert.equal((await f.storage.get(f.key))?.content, 'base\nmine')
+    await f.click('保存 Ctrl+S')
+    assert.equal(f.disk().content, 'base\nmine')
+    assert.equal(f.saveButton().disabled, true)
+  })
+}
+
+test('refresh at base A preserves intentional legacy conflict already representing A', async t => {
+  const f = await mountWorkspace(t, 'base\n', { content: 'legacy draft\n', baseHash: 'legacy hash' })
+  await f.click('刷新目录')
+  assert.match(f.host.textContent!, /文件已被 Agent/)
+  assert.equal(f.view().state.doc.toString(), 'legacy draft\n')
+  assert.equal((await f.storage.get(f.key))?.content, 'legacy draft\n')
+  await f.click('载入最新版本')
+  assert.equal(f.view().state.doc.toString(), 'base\n')
+})
+
 test('save response for disk B retains conflict C observed after the disk write', async t => {
   const f = await mountWorkspace(t)
   await f.edit('saved B')
