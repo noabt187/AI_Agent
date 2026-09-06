@@ -1017,6 +1017,12 @@ test('client exposes one launcher and no duplicate conversation view', async () 
   assert.equal(bundle.match(/ctx\.slots\.inject/g)?.length, 1)
 })
 
+test('project image binding refreshes immediately after the source write', async () => {
+  const source = await readFile(new URL('../src/client/project-assets.tsx', import.meta.url), 'utf8')
+  assert.match(source, /setStatus\('图片引用已写入 deck\.json，正在刷新项目预览。'\)\s+onRefresh\(\)/)
+  assert.doesNotMatch(source, /setTimeout\(onRefresh,\s*450\)/)
+})
+
 test('preview runtime exposes the DOM text-selection verification protocol', async () => {
   const bundle = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8')
   const clientBundle = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')

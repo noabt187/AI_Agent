@@ -32694,6 +32694,11 @@ function WorkspaceExplorer({
         onImageSlotSelection(imageSlot);
         return;
       }
+      if (data2?.type === "dsh-pagecraft-image-load-error") {
+        const url = typeof data2.url === "string" ? data2.url : "\u672A\u77E5\u56FE\u7247\u5730\u5740";
+        setStatus(`\u56FE\u7247\u52A0\u8F7D\u5931\u8D25\uFF1A${url}\u3002\u56FE\u7247\u53EF\u80FD\u5DF2\u7ECF\u4FDD\u5B58\uFF0C\u4F46\u5F53\u524D\u9884\u89C8\u670D\u52A1\u6CA1\u6709\u63D0\u4F9B\u8FD9\u4E2A\u5730\u5740\u3002`);
+        return;
+      }
       if (data2?.type === "dsh-pagecraft-text-verification" && typeof data2.transactionId === "string") {
         const pending = pendingVerificationRef.current;
         if (pending === null || pending.started.transactionId !== data2.transactionId) return;
@@ -33586,7 +33591,7 @@ function ProjectAssetLibraryDialog({
       ));
       setAssets(result.assets);
       setStatus("\u56FE\u7247\u5F15\u7528\u5DF2\u5199\u5165 deck.json\uFF0C\u6B63\u5728\u5237\u65B0\u9879\u76EE\u9884\u89C8\u3002");
-      window.setTimeout(onRefresh, 450);
+      onRefresh();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -34056,6 +34061,11 @@ function FrontendFeedbackPanel({
       if (event.data?.type === "dsh-pagecraft-image-slot-selected") {
         const nextImageSlot = normalizePresentationImageSlotSelection(event.data);
         if (nextImageSlot !== null) void openImageSlot(nextImageSlot);
+        return;
+      }
+      if (event.data?.type === "dsh-pagecraft-image-load-error") {
+        const url = typeof event.data.url === "string" ? event.data.url : "\u672A\u77E5\u56FE\u7247\u5730\u5740";
+        setStatus(`\u56FE\u7247\u52A0\u8F7D\u5931\u8D25\uFF1A${url}\u3002\u56FE\u7247\u53EF\u80FD\u5DF2\u7ECF\u4FDD\u5B58\uFF0C\u4F46\u5F53\u524D\u9884\u89C8\u670D\u52A1\u6CA1\u6709\u63D0\u4F9B\u8FD9\u4E2A\u5730\u5740\u3002`);
         return;
       }
       if (event.data?.type === "dsh-frontend-feedback-deck-state") {

@@ -138,7 +138,7 @@ export function ProjectAssetLibraryDialog({
       ))
       setAssets(result.assets)
       setStatus('图片引用已写入 deck.json，正在刷新项目预览。')
-      window.setTimeout(onRefresh, 450)
+      onRefresh()
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {

@@ -463,6 +463,11 @@ function FrontendFeedbackPanel({
         if (nextImageSlot !== null) void openImageSlot(nextImageSlot)
         return
       }
+      if (event.data?.type === 'dsh-pagecraft-image-load-error') {
+        const url = typeof event.data.url === 'string' ? event.data.url : '未知图片地址'
+        setStatus(`图片加载失败：${url}。图片可能已经保存，但当前预览服务没有提供这个地址。`)
+        return
+      }
       if (event.data?.type === 'dsh-frontend-feedback-deck-state') {
         if (workspaceMode !== 'presentation') return
         const discoveredSlides = resolvePresentationSlides(event.data.slides)

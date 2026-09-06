@@ -65,3 +65,47 @@ test('image-slot clicks take priority over DOM annotation modes', async (t) => {
   })
   assert.equal(messages.some((message: any) => message.type === 'dsh-frontend-feedback-selected'), false)
 })
+
+test('broken project images report the failed URL and owning slot', async (t) => {
+  const browser = installBrowserDom()
+  const observers: MutationObserver[] = []
+  const BrowserMutationObserver = globalThis.MutationObserver
+  Object.defineProperty(globalThis, 'MutationObserver', {
+    configurable: true,
+    writable: true,
+    value: class extends BrowserMutationObserver {
+      constructor(callback: MutationCallback) {
+        super(callback)
+        observers.push(this)
+      }
+    },
+  })
+  t.after(() => {
+    for (const observer of observers) observer.disconnect()
+    browser.cleanup()
+  })
+
+  browser.document.body.innerHTML = `
+    <figure data-pagecraft-image-slot="slide-02-architecture">
+      <img src="http://fixture/pagecraft-assets/missing.png" alt="系统架构图">
+    </figure>
+  `
+  const messages: unknown[] = []
+  Object.defineProperty((browser.window as any).parent, 'postMessage', {
+    configurable: true,
+    value(message: unknown) {
+      messages.push(message)
+    },
+  })
+
+  new Function(ANNOTATOR_SCRIPT)()
+  const image = browser.document.querySelector('img')
+  assert.ok(image)
+  image.dispatchEvent(new browser.window.Event('error'))
+
+  assert.deepEqual(messages.find((message: any) => message.type === 'dsh-pagecraft-image-load-error'), {
+    type: 'dsh-pagecraft-image-load-error',
+    url: 'http://fixture/pagecraft-assets/missing.png',
+    slotId: 'slide-02-architecture',
+  })
+})
