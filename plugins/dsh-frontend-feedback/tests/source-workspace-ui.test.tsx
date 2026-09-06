@@ -116,6 +116,34 @@ for (const eol of ['\n', '\r\n', '\r']) {
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
 
+for (const responseOrder of ['B then C', 'C then B']) {
+  test(`overlapping refreshes accept latest disk C when responses arrive ${responseOrder}`, async t => {
+    const f = await mountWorkspace(t)
+    await f.edit('mine')
+    const b = deferred()
+    const c = deferred()
+    f.setDisk('disk B\n')
+    f.setReadGate(b.promise)
+    await f.click('刷新目录')
+    f.setDisk('disk C\n')
+    f.setReadGate(c.promise)
+    await f.click('刷新目录')
+    const [first, second] = responseOrder === 'B then C' ? [b, c] : [c, b]
+    await act(async () => first.resolve())
+    await settle()
+    await act(async () => second.resolve())
+    await settle()
+    assert.match(f.host.textContent!, /disk C/)
+    assert.doesNotMatch(f.host.textContent!, /disk B/)
+    assert.equal(f.view().state.doc.toString(), 'base\nmine')
+    await f.click('载入最新版本')
+    assert.equal(f.view().state.doc.toString(), f.disk().content)
+    assert.equal(f.view().state.doc.toString(), 'disk C\n')
+    assert.equal(f.saveButton().disabled, true)
+    assert.equal(await f.storage.get(f.key), undefined)
+  })
+}
+
 test('two dirty documents retain consecutive conflict controls and overwrite their own disks', async t => {
   const f = await mountWorkspace(t)
   await f.edit('mine one')

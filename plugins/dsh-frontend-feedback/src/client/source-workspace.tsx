@@ -216,6 +216,7 @@ export function WorkspaceExplorer({
   const shellRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef(tree)
   const openFilesRef = useRef(openFiles)
+  const refreshRequestsRef = useRef(new Map<string, symbol>())
   const draftCache = useMemo(() => new SourceDraftCache(new IndexedDbDraftStorage()), [])
   const lastSequenceRef = useRef(0)
   const loadedLayoutRootRef = useRef<string | null>(null)
@@ -869,9 +870,14 @@ export function WorkspaceExplorer({
   const refreshOpenFiles = useCallback(async (): Promise<void> => {
     for (const item of openFilesRef.current) {
       const version = documentVersion(item)
+      const request = Symbol('refresh')
+      refreshRequestsRef.current.set(item.documentId, request)
       try {
         const query = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path })
         const disk = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
+        // Only the most recently requested read may update this document. An older
+        // response must not advance conflictRevision and invalidate a newer read.
+        if (refreshRequestsRef.current.get(item.documentId) !== request) continue
         setOpenFiles(files => files.map(open => {
           if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
@@ -880,9 +886,12 @@ export function WorkspaceExplorer({
           return resetSourceDocument(open, disk)
         }))
       } catch (error) {
+        if (refreshRequestsRef.current.get(item.documentId) !== request) continue
         if (error instanceof WorkspaceApiError && error.status === 404) {
           setOpenFiles(files => files.filter(open => !sameDocumentVersion(open, version)))
         }
+      } finally {
+        if (refreshRequestsRef.current.get(item.documentId) === request) refreshRequestsRef.current.delete(item.documentId)
       }
     }
   }, [setOpenFiles])

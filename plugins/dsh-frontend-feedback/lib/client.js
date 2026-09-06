@@ -32353,6 +32353,7 @@ function WorkspaceExplorer({
   const shellRef = (0, import_react4.useRef)(null);
   const treeRef = (0, import_react4.useRef)(tree);
   const openFilesRef = (0, import_react4.useRef)(openFiles);
+  const refreshRequestsRef = (0, import_react4.useRef)(/* @__PURE__ */ new Map());
   const draftCache = (0, import_react4.useMemo)(() => new SourceDraftCache(new IndexedDbDraftStorage()), []);
   const lastSequenceRef = (0, import_react4.useRef)(0);
   const loadedLayoutRootRef = (0, import_react4.useRef)(null);
@@ -32976,9 +32977,12 @@ function WorkspaceExplorer({
   const refreshOpenFiles = (0, import_react4.useCallback)(async () => {
     for (const item of openFilesRef.current) {
       const version = documentVersion(item);
+      const request = Symbol("refresh");
+      refreshRequestsRef.current.set(item.documentId, request);
       try {
         const query2 = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path });
         const disk = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
+        if (refreshRequestsRef.current.get(item.documentId) !== request) continue;
         setOpenFiles((files) => files.map((open) => {
           if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open;
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
@@ -32987,9 +32991,12 @@ function WorkspaceExplorer({
           return resetSourceDocument(open, disk);
         }));
       } catch (error) {
+        if (refreshRequestsRef.current.get(item.documentId) !== request) continue;
         if (error instanceof WorkspaceApiError && error.status === 404) {
           setOpenFiles((files) => files.filter((open) => !sameDocumentVersion(open, version)));
         }
+      } finally {
+        if (refreshRequestsRef.current.get(item.documentId) === request) refreshRequestsRef.current.delete(item.documentId);
       }
     }
   }, [setOpenFiles]);
