@@ -785,6 +785,14 @@ test('presentation skill describes slot-level source persistence for multi-image
   assert.doesNotMatch(skill, /updates the selected slide's `visual` object/)
 })
 
+test('presentation skill defines asset routing and live reload for direct previews', async () => {
+  const skill = await readFile(new URL('../skills/presentation-builder/SKILL.md', import.meta.url), 'utf8')
+  assert.match(skill, /map `publicAssetBase` to the real `assets` directory/)
+  assert.match(skill, /reject path traversal/i)
+  assert.match(skill, /server-sent events/i)
+  assert.match(skill, /preserve the current slide/i)
+})
+
 test('legacy deck migration only accepts one unambiguous presentation source', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-migration-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
