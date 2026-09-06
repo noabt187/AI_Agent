@@ -1,5 +1,5 @@
 import { CodeEditor } from './CodeEditor.tsx'
-import { createSourceDocument, editSourceDocument, resetSourceDocument, documentVersion, sameDocumentVersion, sourceDocumentRaw, sourceDocumentDirty, sourceDocumentReadOnly, recoverSourceDocument } from './source-document.ts'
+import { createSourceDocument, editSourceDocument, resetSourceDocument, documentVersion, sameDocumentVersion, sameDocumentReplacementVersion, observeSourceConflict, sourceDocumentRaw, sourceDocumentDirty, sourceDocumentReadOnly, recoverSourceDocument } from './source-document.ts'
 import type { SourceDocument, DocumentVersion } from './source-document.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
@@ -200,7 +200,6 @@ export function WorkspaceExplorer({
   const [status, setStatus] = useState('正在读取当前 DSH 工作区…')
   const [busy, setBusy] = useState(false)
   const [pendingPersistence, setPendingPersistence] = useState(0)
-  const [conflict, setConflict] = useState<{ documentId: string; current: WorkspaceFile } | null>(null)
   const [history, setHistory] = useState<WorkspaceHistoryEntry[]>([])
   const [historyDocumentId, setHistoryDocumentId] = useState<string | null>(null)
   const [folderPickerOpen, setFolderPickerOpen] = useState(false)
@@ -347,7 +346,6 @@ export function WorkspaceExplorer({
   useEffect(() => {
     setOpenFiles([])
     setActivePath(null)
-    setConflict(null)
     setHistory([])
     void loadWorkspace()
     return () => { scopeEpoch.current++ }
@@ -362,9 +360,8 @@ export function WorkspaceExplorer({
       if (existing === undefined) return [...items, createSourceDocument(scope, file)]
       return items.map(item => {
         if (item.documentId !== existing.documentId) return item
-        if (sourceDocumentDirty(item) || (version !== undefined && !sameDocumentVersion(item, version))) {
-          setConflict({ documentId: item.documentId, current: file })
-          return { ...item, conflict: file }
+        if (sourceDocumentDirty(item) || (version !== undefined && !sameDocumentReplacementVersion(item, version))) {
+          return observeSourceConflict(item, file)
         }
         return resetSourceDocument(item, file)
       })
@@ -570,7 +567,6 @@ export function WorkspaceExplorer({
             setStatus(`已恢复 ${entry.path} 的浏览器草稿（尚未写入磁盘）。`)
           } else if (restored.kind === 'conflict') {
             opened = recoverSourceDocument(opened, restored)
-            setConflict({ documentId: opened.documentId, current: file })
             setStatus(`${entry.path} 的磁盘内容已变化，请处理恢复冲突。`)
           } else setStatus(`已打开 ${entry.path}`)
         } catch (error) {
@@ -645,7 +641,8 @@ export function WorkspaceExplorer({
       const latest = currentDocument(item)
       if (!sameDocumentVersion(latest, version, true)) return
       // Saving changes the base, not the view or its undo history.
-      setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, file, conflict: null } : open))
+      const newerConflict = latest!.conflictRevision !== version.conflictRevision && latest!.conflict?.hash !== file.hash ? latest!.conflict : null
+      setOpenFiles(items => items.map(open => open.documentId === item.documentId ? observeSourceConflict({ ...open, file }, newerConflict) : open))
       let warning: string | null = null
       try {
         if (version.cacheRevision !== null) await draftCache.clearSaved(item.scope, version.cacheRevision)
@@ -665,7 +662,6 @@ export function WorkspaceExplorer({
         } catch (error) { warning = `磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}` }
         setOpenFiles(items => items.map(open => sameDocumentVersion(open, documentVersion(current)) ? { ...open, draftRevision: null } : open))
       }
-      setConflict(value => value?.documentId === item.documentId ? null : value)
       const newest = currentDocument(item)
       setStatus(diskSaveStatus(file.path, newest !== undefined && sourceDocumentDirty(newest), warning))
       window.setTimeout(onRefresh, 450)
@@ -675,8 +671,7 @@ export function WorkspaceExplorer({
       if (error instanceof WorkspaceApiError) {
         const current = conflictCurrent(error)
         if (current !== null) {
-          setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, conflict: current } : open))
-          setConflict({ documentId: item.documentId, current })
+          setOpenFiles(items => items.map(open => open.documentId === item.documentId ? observeSourceConflict(open, current) : open))
         }
       }
       setStatus(error instanceof Error ? error.message : String(error))
@@ -699,12 +694,16 @@ export function WorkspaceExplorer({
     try {
       await draftCache.discard(item.scope)
       const current = currentDocument(item)
-      if (!sameDocumentVersion(current, version)) {
-        if (current !== undefined) setStatus(`${item.file.path} 在丢弃期间有新的修改；新修改已保留且仍未保存。`)
+      if (!sameDocumentReplacementVersion(current, version)) {
+        if (current !== undefined) {
+          const error = await persistDocument(current)
+          setStatus(error === null
+            ? `${item.file.path} 在丢弃期间有新的修改或磁盘版本；新修改已保留且仍未保存，请重新确认磁盘版本。`
+            : `${item.file.path} 的新修改和磁盘冲突已保留，但浏览器草稿保存失败：${error}`)
+        }
         return
       }
       setOpenFiles(items => items.map(open => open.documentId === item.documentId ? resetSourceDocument(open, disk) : open))
-      setConflict(value => value?.documentId === item.documentId ? null : value)
       setStatus(`已丢弃 ${item.file.path} 的浏览器草稿并载入磁盘版本。`)
     } catch (error) {
       if (currentDocument(item) !== undefined) setStatus(`无法丢弃浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
@@ -817,7 +816,7 @@ export function WorkspaceExplorer({
       ))
       const current = currentDocument(item)
       if (!sameDocumentVersion(current, version, true)) return
-      if (sameDocumentVersion(current, version)) {
+      if (sameDocumentReplacementVersion(current, version)) {
         await discardDocument(current!, file)
         const afterCleanup = currentDocument(item)
         if (sameDocumentVersion(afterCleanup, version, true)) {
@@ -827,7 +826,9 @@ export function WorkspaceExplorer({
           setStatus(error === null ? '历史版本已写入磁盘；保留的修改仍未保存。' : `历史版本已写入磁盘，但草稿缓存失败：${error}`)
         }
       } else {
-        setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, file, conflict: null } : open))
+        setOpenFiles(items => items.map(open => open.documentId === item.documentId
+          ? observeSourceConflict({ ...open, file }, open.conflictRevision === version.conflictRevision ? null : open.conflict)
+          : open))
         const latest = currentDocument(item)!
         const error = await persistDocument(latest)
         setStatus(error === null ? '历史版本已写入磁盘；恢复期间的新修改已保留。' : `历史版本已写入磁盘，但新草稿缓存失败：${error}`)
@@ -872,10 +873,9 @@ export function WorkspaceExplorer({
         const query = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path })
         const disk = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
         setOpenFiles(files => files.map(open => {
-          if (!sameDocumentVersion(open, version, true) || disk.hash === open.file.hash) return open
+          if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
-            setConflict({ documentId: open.documentId, current: disk })
-            return { ...open, conflict: disk }
+            return observeSourceConflict(open, disk)
           }
           return resetSourceDocument(open, disk)
         }))
@@ -964,7 +964,8 @@ export function WorkspaceExplorer({
     textEditable: false,
     imagePreviewable: false,
   }
-  const conflictDocument = conflict === null ? undefined : openFiles.find(item => item.documentId === conflict.documentId)
+  const conflictDocument = active?.conflict != null ? active : openFiles.find(item => item.conflict !== null)
+  const conflict = conflictDocument?.conflict
   const canSave = active !== null && dirty && active.conflict === null && !sourceDocumentReadOnly(active)
   const currentEntry = selectedEntry ?? (activePath === null ? null : workspaceEntryByPath(tree, activePath))
   const imageSource = currentEntry?.imagePreviewable
@@ -1115,23 +1116,23 @@ export function WorkspaceExplorer({
         </div>
       ) : null}
 
-      {conflict !== null && conflictDocument !== undefined ? (
+      {conflict != null && conflictDocument !== undefined ? (
         <div style={sourceStyles.conflictOverlay}>
           <div style={sourceStyles.conflictDialog}>
-            <strong style={sourceStyles.conflictTitle}>文件已被 Agent 或其他编辑器修改</strong>
+            <strong style={sourceStyles.conflictTitle}>文件已被 Agent 或其他编辑器修改：{conflictDocument.file.path}</strong>
             <p style={sourceStyles.conflictText}>为避免覆盖最新代码，PageCraft 已停止保存。可以载入磁盘版本，或者明确用你的内容覆盖当前版本。</p>
             <div style={sourceStyles.diffGrid}>
               <div><b>我的版本</b><pre>{sourceDocumentRaw(conflictDocument).slice(0, 3000)}</pre></div>
-              <div><b>磁盘最新版本</b><pre>{conflict.current.content.slice(0, 3000)}</pre></div>
+              <div><b>磁盘最新版本</b><pre>{conflict.content.slice(0, 3000)}</pre></div>
             </div>
             <div style={sourceStyles.conflictActions}>
               <button type="button" onClick={() => {
                 if (busy) return
-                void discardDocument(conflictDocument, conflict.current)
+                void discardDocument(conflictDocument, conflict)
               }} style={sourceStyles.secondaryButton}>载入最新版本</button>
               <button type="button" disabled={busy || sourceDocumentReadOnly(conflictDocument)} onClick={() => {
                 if (busy) return
-                void writeFile(conflictDocument, conflict.current.hash)
+                void writeFile(conflictDocument, conflict.hash)
               }} style={sourceStyles.dangerButton}>用我的版本覆盖</button>
             </div>
           </div>

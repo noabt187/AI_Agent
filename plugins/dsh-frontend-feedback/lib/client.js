@@ -32110,7 +32110,7 @@ function encodeSourceText(text, format) {
 var generation = 0;
 function createSourceDocument(scope, file) {
   const parsed = decodeSourceText(file.content);
-  return { documentId: `${sourceDraftKey(scope)}:${++generation}`, scope: { ...scope }, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, editRevision: 0, resetRevision: 0, conflict: null, draftRevision: null };
+  return { documentId: `${sourceDraftKey(scope)}:${++generation}`, scope: { ...scope }, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, editRevision: 0, resetRevision: 0, conflict: null, conflictRevision: 0, draftRevision: null };
 }
 function sourceDocumentRaw(doc2) {
   return doc2.format.eol === "mixed" ? doc2.rawDraft : encodeSourceText(doc2.draft, doc2.format);
@@ -32121,14 +32121,17 @@ function sourceDocumentReadOnly(doc2) {
 function recoverSourceDocument(doc2, restored) {
   if (restored.kind === "none") return doc2;
   const parsed = decodeSourceText(restored.content);
-  return {
+  return observeSourceConflict({
     ...doc2,
     draft: parsed.text,
     rawDraft: restored.content,
     format: parsed.format.eol === "mixed" ? parsed.format : restored.format ?? (restored.kind === "recovered" ? doc2.format : parsed.format),
-    conflict: restored.kind === "conflict" ? doc2.file : null,
     draftRevision: restored.revision
-  };
+  }, restored.kind === "conflict" ? doc2.file : null);
+}
+function observeSourceConflict(doc2, conflict) {
+  if (doc2.conflict?.hash === conflict?.hash) return doc2;
+  return { ...doc2, conflict, conflictRevision: doc2.conflictRevision + 1 };
 }
 function sourceDocumentDirty(doc2) {
   return sourceDocumentRaw(doc2) !== doc2.file.content;
@@ -32139,13 +32142,16 @@ function editSourceDocument(doc2, draft) {
 }
 function resetSourceDocument(doc2, file) {
   const parsed = decodeSourceText(file.content);
-  return { ...doc2, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, resetRevision: doc2.resetRevision + 1, draftRevision: null, conflict: null };
+  return observeSourceConflict({ ...doc2, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, resetRevision: doc2.resetRevision + 1, draftRevision: null }, null);
 }
 function documentVersion(doc2) {
-  return { documentId: doc2.documentId, editRevision: doc2.editRevision, resetRevision: doc2.resetRevision, baseHash: doc2.file.hash, cacheRevision: doc2.draftRevision };
+  return { documentId: doc2.documentId, editRevision: doc2.editRevision, resetRevision: doc2.resetRevision, baseHash: doc2.file.hash, cacheRevision: doc2.draftRevision, conflictRevision: doc2.conflictRevision };
 }
 function sameDocumentVersion(doc2, version, allowEdits = false) {
   return doc2 !== void 0 && doc2.documentId === version.documentId && doc2.resetRevision === version.resetRevision && doc2.file.hash === version.baseHash && (allowEdits || doc2.editRevision === version.editRevision);
+}
+function sameDocumentReplacementVersion(doc2, version, allowEdits = false) {
+  return sameDocumentVersion(doc2, version, allowEdits) && doc2.conflictRevision === version.conflictRevision;
 }
 
 // src/client/source-workspace.tsx
@@ -32331,7 +32337,6 @@ function WorkspaceExplorer({
   const [status, setStatus] = (0, import_react4.useState)("\u6B63\u5728\u8BFB\u53D6\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u2026");
   const [busy, setBusy] = (0, import_react4.useState)(false);
   const [pendingPersistence, setPendingPersistence] = (0, import_react4.useState)(0);
-  const [conflict, setConflict] = (0, import_react4.useState)(null);
   const [history2, setHistory] = (0, import_react4.useState)([]);
   const [historyDocumentId, setHistoryDocumentId] = (0, import_react4.useState)(null);
   const [folderPickerOpen, setFolderPickerOpen] = (0, import_react4.useState)(false);
@@ -32471,7 +32476,6 @@ function WorkspaceExplorer({
   (0, import_react4.useEffect)(() => {
     setOpenFiles([]);
     setActivePath(null);
-    setConflict(null);
     setHistory([]);
     void loadWorkspace();
     return () => {
@@ -32487,9 +32491,8 @@ function WorkspaceExplorer({
       if (existing === void 0) return [...items, createSourceDocument(scope, file)];
       return items.map((item) => {
         if (item.documentId !== existing.documentId) return item;
-        if (sourceDocumentDirty(item) || version !== void 0 && !sameDocumentVersion(item, version)) {
-          setConflict({ documentId: item.documentId, current: file });
-          return { ...item, conflict: file };
+        if (sourceDocumentDirty(item) || version !== void 0 && !sameDocumentReplacementVersion(item, version)) {
+          return observeSourceConflict(item, file);
         }
         return resetSourceDocument(item, file);
       });
@@ -32684,7 +32687,6 @@ function WorkspaceExplorer({
             setStatus(`\u5DF2\u6062\u590D ${entry.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\uFF08\u5C1A\u672A\u5199\u5165\u78C1\u76D8\uFF09\u3002`);
           } else if (restored.kind === "conflict") {
             opened = recoverSourceDocument(opened, restored);
-            setConflict({ documentId: opened.documentId, current: file });
             setStatus(`${entry.path} \u7684\u78C1\u76D8\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u5904\u7406\u6062\u590D\u51B2\u7A81\u3002`);
           } else setStatus(`\u5DF2\u6253\u5F00 ${entry.path}`);
         } catch (error) {
@@ -32759,7 +32761,8 @@ function WorkspaceExplorer({
       ));
       const latest = currentDocument(item);
       if (!sameDocumentVersion(latest, version, true)) return;
-      setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, file, conflict: null } : open));
+      const newerConflict = latest.conflictRevision !== version.conflictRevision && latest.conflict?.hash !== file.hash ? latest.conflict : null;
+      setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? observeSourceConflict({ ...open, file }, newerConflict) : open));
       let warning = null;
       try {
         if (version.cacheRevision !== null) await draftCache.clearSaved(item.scope, version.cacheRevision);
@@ -32781,7 +32784,6 @@ function WorkspaceExplorer({
         }
         setOpenFiles((items) => items.map((open) => sameDocumentVersion(open, documentVersion(current)) ? { ...open, draftRevision: null } : open));
       }
-      setConflict((value) => value?.documentId === item.documentId ? null : value);
       const newest = currentDocument(item);
       setStatus(diskSaveStatus(file.path, newest !== void 0 && sourceDocumentDirty(newest), warning));
       window.setTimeout(onRefresh, 450);
@@ -32791,8 +32793,7 @@ function WorkspaceExplorer({
       if (error instanceof WorkspaceApiError) {
         const current = conflictCurrent(error);
         if (current !== null) {
-          setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, conflict: current } : open));
-          setConflict({ documentId: item.documentId, current });
+          setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? observeSourceConflict(open, current) : open));
         }
       }
       setStatus(error instanceof Error ? error.message : String(error));
@@ -32814,12 +32815,14 @@ function WorkspaceExplorer({
     try {
       await draftCache.discard(item.scope);
       const current = currentDocument(item);
-      if (!sameDocumentVersion(current, version)) {
-        if (current !== void 0) setStatus(`${item.file.path} \u5728\u4E22\u5F03\u671F\u95F4\u6709\u65B0\u7684\u4FEE\u6539\uFF1B\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u4E14\u4ECD\u672A\u4FDD\u5B58\u3002`);
+      if (!sameDocumentReplacementVersion(current, version)) {
+        if (current !== void 0) {
+          const error = await persistDocument(current);
+          setStatus(error === null ? `${item.file.path} \u5728\u4E22\u5F03\u671F\u95F4\u6709\u65B0\u7684\u4FEE\u6539\u6216\u78C1\u76D8\u7248\u672C\uFF1B\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u4E14\u4ECD\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u78C1\u76D8\u7248\u672C\u3002` : `${item.file.path} \u7684\u65B0\u4FEE\u6539\u548C\u78C1\u76D8\u51B2\u7A81\u5DF2\u4FDD\u7559\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${error}`);
+        }
         return;
       }
       setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? resetSourceDocument(open, disk) : open));
-      setConflict((value) => value?.documentId === item.documentId ? null : value);
       setStatus(`\u5DF2\u4E22\u5F03 ${item.file.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u5E76\u8F7D\u5165\u78C1\u76D8\u7248\u672C\u3002`);
     } catch (error) {
       if (currentDocument(item) !== void 0) setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
@@ -32924,7 +32927,7 @@ function WorkspaceExplorer({
       ));
       const current = currentDocument(item);
       if (!sameDocumentVersion(current, version, true)) return;
-      if (sameDocumentVersion(current, version)) {
+      if (sameDocumentReplacementVersion(current, version)) {
         await discardDocument(current, file);
         const afterCleanup = currentDocument(item);
         if (sameDocumentVersion(afterCleanup, version, true)) {
@@ -32933,7 +32936,7 @@ function WorkspaceExplorer({
           setStatus(error === null ? "\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF1B\u4FDD\u7559\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002" : `\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF0C\u4F46\u8349\u7A3F\u7F13\u5B58\u5931\u8D25\uFF1A${error}`);
         }
       } else {
-        setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, file, conflict: null } : open));
+        setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? observeSourceConflict({ ...open, file }, open.conflictRevision === version.conflictRevision ? null : open.conflict) : open));
         const latest = currentDocument(item);
         const error = await persistDocument(latest);
         setStatus(error === null ? "\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF1B\u6062\u590D\u671F\u95F4\u7684\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u3002" : `\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF0C\u4F46\u65B0\u8349\u7A3F\u7F13\u5B58\u5931\u8D25\uFF1A${error}`);
@@ -32977,10 +32980,9 @@ function WorkspaceExplorer({
         const query2 = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path });
         const disk = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
         setOpenFiles((files) => files.map((open) => {
-          if (!sameDocumentVersion(open, version, true) || disk.hash === open.file.hash) return open;
+          if (!sameDocumentReplacementVersion(open, version, true) || disk.hash === open.file.hash) return open;
           if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
-            setConflict({ documentId: open.documentId, current: disk });
-            return { ...open, conflict: disk };
+            return observeSourceConflict(open, disk);
           }
           return resetSourceDocument(open, disk);
         }));
@@ -33061,7 +33063,8 @@ function WorkspaceExplorer({
     textEditable: false,
     imagePreviewable: false
   };
-  const conflictDocument = conflict === null ? void 0 : openFiles.find((item) => item.documentId === conflict.documentId);
+  const conflictDocument = active?.conflict != null ? active : openFiles.find((item) => item.conflict !== null);
+  const conflict = conflictDocument?.conflict;
   const canSave = active !== null && dirty && active.conflict === null && !sourceDocumentReadOnly(active);
   const currentEntry = selectedEntry ?? (activePath === null ? null : workspaceEntryByPath(tree, activePath));
   const imageSource = currentEntry?.imagePreviewable ? `${PAGECRAFT_WORKSPACE_BLOB_PATH}?${apiQuery(sessionId, { selectedFolder, path: currentEntry.path })}` : null;
@@ -33256,8 +33259,11 @@ function WorkspaceExplorer({
         ] })
       ] }, entry.id))
     ] }) : null,
-    conflict !== null && conflictDocument !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictDialog, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: sourceStyles.conflictTitle, children: "\u6587\u4EF6\u5DF2\u88AB Agent \u6216\u5176\u4ED6\u7F16\u8F91\u5668\u4FEE\u6539" }),
+    conflict != null && conflictDocument !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictDialog, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("strong", { style: sourceStyles.conflictTitle, children: [
+        "\u6587\u4EF6\u5DF2\u88AB Agent \u6216\u5176\u4ED6\u7F16\u8F91\u5668\u4FEE\u6539\uFF1A",
+        conflictDocument.file.path
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { style: sourceStyles.conflictText, children: "\u4E3A\u907F\u514D\u8986\u76D6\u6700\u65B0\u4EE3\u7801\uFF0CPageCraft \u5DF2\u505C\u6B62\u4FDD\u5B58\u3002\u53EF\u4EE5\u8F7D\u5165\u78C1\u76D8\u7248\u672C\uFF0C\u6216\u8005\u660E\u786E\u7528\u4F60\u7684\u5185\u5BB9\u8986\u76D6\u5F53\u524D\u7248\u672C\u3002" }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.diffGrid, children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
@@ -33266,17 +33272,17 @@ function WorkspaceExplorer({
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("b", { children: "\u78C1\u76D8\u6700\u65B0\u7248\u672C" }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("pre", { children: conflict.current.content.slice(0, 3e3) })
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("pre", { children: conflict.content.slice(0, 3e3) })
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictActions, children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
           if (busy) return;
-          void discardDocument(conflictDocument, conflict.current);
+          void discardDocument(conflictDocument, conflict);
         }, style: sourceStyles.secondaryButton, children: "\u8F7D\u5165\u6700\u65B0\u7248\u672C" }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: busy || sourceDocumentReadOnly(conflictDocument), onClick: () => {
           if (busy) return;
-          void writeFile(conflictDocument, conflict.current.hash);
+          void writeFile(conflictDocument, conflict.hash);
         }, style: sourceStyles.dangerButton, children: "\u7528\u6211\u7684\u7248\u672C\u8986\u76D6" })
       ] })
     ] }) }) : null,

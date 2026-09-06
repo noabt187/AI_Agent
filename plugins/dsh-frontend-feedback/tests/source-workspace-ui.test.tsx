@@ -24,7 +24,9 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   const oldEvents = globalThis.EventSource
   globalThis.EventSource = class { addEventListener() {} close() {} } as any
   let disk = snapshot(raw)
+  let otherDisk = snapshot('other\n', 'other.txt')
   let putGate: Promise<void> | undefined
+  let putResponseGate: Promise<void> | undefined
   let readGate: Promise<void> | undefined
   let restoreGate: Promise<void> | undefined
   let writes = 0
@@ -36,10 +38,15 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
         const body = JSON.parse(String(init.body))
         writes++
         await putGate
-        if (body.baseHash !== disk.hash) return Response.json({ error: { code: 'WORKSPACE_FILE_CONFLICT', message: 'conflict', details: { current: disk } } }, { status: 409 })
+        const current = body.path === 'other.txt' ? otherDisk : disk
+        if (body.baseHash !== current.hash) return Response.json({ error: { code: 'WORKSPACE_FILE_CONFLICT', message: 'conflict', details: { current } } }, { status: 409 })
+        if (body.path === 'other.txt') { otherDisk = snapshot(body.content, 'other.txt'); return Response.json(otherDisk) }
         disk = snapshot(body.content)
+        const saved = disk
+        await putResponseGate
+        return Response.json(saved)
       } else {
-        const result = url.searchParams.get('path') === 'other.txt' ? snapshot('other\n', 'other.txt') : disk
+        const result = url.searchParams.get('path') === 'other.txt' ? otherDisk : disk
         await readGate
         return Response.json(result)
       }
@@ -66,7 +73,7 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   const edit = async (insert: string) => { await act(async () => view().dispatch({ changes: { from: view().state.doc.length, insert } })); await settle() }
   const saveButton = () => Array.from(host.querySelectorAll('header button')).find(button => /保存|处理中/.test(button.textContent!)) as HTMLButtonElement
   t.after(async () => { await act(async () => root.unmount()); globalThis.fetch = oldFetch; globalThis.EventSource = oldEvents; dom.cleanup() })
-  return { host, click, view, edit, saveButton, storage, key: sourceDraftKey(scope), disk: () => disk, writes: () => writes, setDisk: (raw: string) => { disk = snapshot(raw) }, setPutGate: (gate?: Promise<void>) => { putGate = gate }, setReadGate: (gate?: Promise<void>) => { readGate = gate }, setRestoreGate: (gate?: Promise<void>) => { restoreGate = gate }, render }
+  return { host, click, view, edit, saveButton, storage, key: sourceDraftKey(scope), disk: () => disk, otherDisk: () => otherDisk, writes: () => writes, setDisk: (raw: string) => { disk = snapshot(raw) }, setOtherDisk: (raw: string) => { otherDisk = snapshot(raw, 'other.txt') }, setPutGate: (gate?: Promise<void>) => { putGate = gate }, setPutResponseGate: (gate?: Promise<void>) => { putResponseGate = gate }, setReadGate: (gate?: Promise<void>) => { readGate = gate }, setRestoreGate: (gate?: Promise<void>) => { restoreGate = gate }, render }
 }
 
 test('real editor discard resets text, dirty state, cache and undo; next input cannot resurrect it', async t => {
@@ -108,6 +115,65 @@ for (const eol of ['\n', '\r\n', '\r']) {
 }
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
+
+test('two dirty documents retain consecutive conflict controls and overwrite their own disks', async t => {
+  const f = await mountWorkspace(t)
+  await f.edit('mine one')
+  await f.click('other.txt')
+  await f.edit('mine two')
+  f.setDisk('external one\n')
+  f.setOtherDisk('external two\n')
+  await f.click('刷新目录')
+  await f.click('用我的版本覆盖')
+  assert.equal(f.otherDisk().content, 'other\nmine two')
+  assert.match(f.host.textContent!, /文件已被 Agent/)
+  await f.click('用我的版本覆盖')
+  assert.equal(f.disk().content, 'base\nmine one')
+  assert.doesNotMatch(f.host.textContent!, /文件已被 Agent/)
+  await f.click('source.txt')
+  assert.equal(f.saveButton().disabled, true)
+})
+
+test('discard cannot accept obsolete disk B when a gated delete observes conflict C', async t => {
+  const f = await mountWorkspace(t)
+  await f.edit('mine')
+  f.setDisk('disk B\n')
+  await f.click('刷新目录')
+  const gate = deferred()
+  const original = IndexedDbDraftStorage.prototype.delete
+  IndexedDbDraftStorage.prototype.delete = async function (key) { await gate.promise; return original.call(this, key) }
+  t.after(() => { IndexedDbDraftStorage.prototype.delete = original })
+  await f.click('载入最新版本')
+  f.setDisk('disk C\n')
+  await f.click('刷新目录')
+  assert.match(f.host.textContent!, /disk C/)
+  await act(async () => gate.resolve())
+  await settle()
+  assert.equal(f.view().state.doc.toString(), 'base\nmine')
+  assert.match(f.host.textContent!, /disk C/)
+  assert.equal((await f.storage.get(f.key))?.content, 'base\nmine')
+  await f.click('载入最新版本')
+  assert.equal(f.view().state.doc.toString(), 'disk C\n')
+  assert.equal(f.saveButton().disabled, true)
+  assert.equal(await f.storage.get(f.key), undefined)
+})
+
+test('save response for disk B retains conflict C observed after the disk write', async t => {
+  const f = await mountWorkspace(t)
+  await f.edit('saved B')
+  const gate = deferred()
+  f.setPutResponseGate(gate.promise)
+  await f.click('保存 Ctrl+S')
+  assert.equal(f.disk().content, 'base\nsaved B')
+  f.setDisk('external C\n')
+  await f.click('刷新目录')
+  await act(async () => gate.resolve())
+  await settle()
+  assert.match(f.host.textContent!, /external C/)
+  assert.equal(f.view().state.doc.toString(), 'base\nsaved B')
+  await f.click('载入最新版本')
+  assert.equal(f.view().state.doc.toString(), 'external C\n')
+})
 
 test('discard ABA edit during controlled cache deletion retains text and latest cached revision', async t => {
   const f = await mountWorkspace(t)
