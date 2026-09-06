@@ -1,12 +1,6 @@
-import { basicSetup } from 'codemirror'
-import { css } from '@codemirror/lang-css'
-import { html } from '@codemirror/lang-html'
-import { javascript } from '@codemirror/lang-javascript'
-import { json } from '@codemirror/lang-json'
-import { markdown } from '@codemirror/lang-markdown'
-import { EditorState } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
-import { oneDark } from '@codemirror/theme-one-dark'
+import { CodeEditor } from './CodeEditor.tsx'
+import { createSourceDocument, editSourceDocument, resetSourceDocument, documentVersion, sameDocumentVersion, sourceDocumentRaw, sourceDocumentDirty, sourceDocumentReadOnly, recoverSourceDocument } from './source-document.ts'
+import type { SourceDocument, DocumentVersion } from './source-document.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
@@ -46,7 +40,6 @@ import {
   applyDirectoryListing,
   applyWorkspaceEvent,
   initialWorkspaceTreeState,
-  reconcileOpenFile,
   setDirectoryLoading,
   toggleDirectory,
   workspaceEntryByPath,
@@ -56,7 +49,6 @@ import {
   IndexedDbDraftStorage,
   SourceDraftCache,
   diskSaveStatus,
-  draftAfterQueuedOperation,
   isDraftCacheAllowed,
 } from './source-drafts.ts'
 import type { SourceDraftScope } from './source-drafts.ts'
@@ -70,18 +62,15 @@ interface WorkspaceExplorerProps {
   onAnnotationSelection(selection: FeedbackSelection): void
 }
 
-interface OpenFile {
-  file: WorkspaceFile
-  draft: string
-  conflict: WorkspaceFile | null
-  draftRevision: number | null
-}
+type OpenFile = SourceDocument
 
 interface PendingTextVerification {
   started: DirectTextEditStart
   selection: DomTextSelection
   expectedText: string
   timer: number
+  epoch: number
+  version?: DocumentVersion
 }
 
 interface StoredLayout {
@@ -145,82 +134,6 @@ function storeLayout(storageKey: string, value: Required<StoredLayout>): void {
   }
 }
 
-function editorExtensions(path: string, onChange: (value: string) => void, onSave: () => void) {
-  const extension = path.slice(path.lastIndexOf('.')).toLowerCase()
-  let language
-  if (extension === '.json') language = json()
-  else if (extension === '.css') language = css()
-  else if (extension === '.html' || extension === '.htm') language = html()
-  else if (extension === '.md' || extension === '.markdown') language = markdown()
-  else if (extension === '.ts' || extension === '.tsx') language = javascript({ jsx: extension === '.tsx', typescript: true })
-  else if (extension === '.jsx') language = javascript({ jsx: true })
-  else language = javascript()
-  return [
-    basicSetup,
-    language,
-    oneDark,
-    keymap.of([{
-      key: 'Mod-s',
-      preventDefault: true,
-      run() {
-        onSave()
-        return true
-      },
-    }]),
-    EditorView.updateListener.of((update) => {
-      if (update.docChanged) onChange(update.state.doc.toString())
-    }),
-    EditorView.theme({
-      '&': { height: '100%', fontSize: '12px' },
-      '.cm-scroller': { overflow: 'auto', fontFamily: 'JetBrains Mono, Consolas, ui-monospace, monospace' },
-      '.cm-content': { padding: '12px 0' },
-    }),
-  ]
-}
-
-function CodeEditor({ path, value, revealLine, onChange, onSave }: {
-  path: string
-  value: string
-  revealLine?: number
-  onChange(value: string): void
-  onSave(): void
-}): ReactElement {
-  const hostRef = useRef<HTMLDivElement>(null)
-  const onChangeRef = useRef(onChange)
-  const onSaveRef = useRef(onSave)
-  onChangeRef.current = onChange
-  onSaveRef.current = onSave
-
-  useEffect(() => {
-    if (hostRef.current === null) return
-    const state = EditorState.create({
-      doc: value,
-      ...(revealLine === undefined
-        ? {}
-        : { selection: { anchor: Math.min(value.length, stateLineOffset(value, revealLine)) } }),
-      extensions: editorExtensions(path, next => onChangeRef.current(next), () => onSaveRef.current()),
-    })
-    const view = new EditorView({ state, parent: hostRef.current })
-    if (revealLine !== undefined) {
-      view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: 'center' }) })
-    }
-    return () => view.destroy()
-  }, [path, revealLine])
-
-  return <div ref={hostRef} style={sourceStyles.codeEditor} />
-}
-
-function stateLineOffset(value: string, line: number): number {
-  if (line <= 1) return 0
-  let offset = 0
-  for (let current = 1; current < line; current += 1) {
-    const next = value.indexOf('\n', offset)
-    if (next === -1) return value.length
-    offset = next + 1
-  }
-  return offset
-}
-
 function TreeNode({ entry, depth, activePath, tree, onOpen, onToggle }: {
   entry: WorkspaceEntry
   depth: number
@@ -278,7 +191,7 @@ export function WorkspaceExplorer({
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null)
   const [selectedFolder, setSelectedFolder] = useState('.')
   const [tree, setTree] = useState<WorkspaceTreeState>(() => initialWorkspaceTreeState('.'))
-  const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
+  const [openFiles, renderOpenFiles] = useState<OpenFile[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
   const [selectedEntry, setSelectedEntry] = useState<WorkspaceEntry | null>(null)
   const [treeVisible, setTreeVisible] = useState(initialLayout.treeVisible)
@@ -287,8 +200,9 @@ export function WorkspaceExplorer({
   const [status, setStatus] = useState('正在读取当前 DSH 工作区…')
   const [busy, setBusy] = useState(false)
   const [pendingPersistence, setPendingPersistence] = useState(0)
-  const [conflict, setConflict] = useState<{ mine: string; current: WorkspaceFile } | null>(null)
+  const [conflict, setConflict] = useState<{ documentId: string; current: WorkspaceFile } | null>(null)
   const [history, setHistory] = useState<WorkspaceHistoryEntry[]>([])
+  const [historyDocumentId, setHistoryDocumentId] = useState<string | null>(null)
   const [folderPickerOpen, setFolderPickerOpen] = useState(false)
   const [folderBrowsePath, setFolderBrowsePath] = useState('.')
   const [folderEntries, setFolderEntries] = useState<WorkspaceEntry[]>([])
@@ -307,10 +221,18 @@ export function WorkspaceExplorer({
   const lastSequenceRef = useRef(0)
   const loadedLayoutRootRef = useRef<string | null>(null)
   const active = openFiles.find(item => item.file.path === activePath) ?? null
-  const dirty = active !== null && active.draft !== active.file.content
+  const dirty = active !== null && sourceDocumentDirty(active)
   const layoutKey = summary === null ? fallbackLayoutKey : workspaceLayoutStorageKey(summary.rootPath, sessionId)
   treeRef.current = tree
-  openFilesRef.current = openFiles
+  const setOpenFiles = useCallback((update: OpenFile[] | ((items: OpenFile[]) => OpenFile[])): void => {
+    const next = typeof update === 'function' ? update(openFilesRef.current) : update
+    openFilesRef.current = next
+    renderOpenFiles(next)
+  }, [])
+  const currentDocument = (item: OpenFile) => openFilesRef.current.find(open => open.documentId === item.documentId)
+  const scopeEpoch = useRef(0)
+  const sessionRef = useRef(sessionId)
+  if (sessionRef.current !== sessionId) { sessionRef.current = sessionId; scopeEpoch.current++ }
 
   const draftScope = useCallback((path: string): SourceDraftScope | null => summary === null ? null : ({
     sessionId,
@@ -321,7 +243,7 @@ export function WorkspaceExplorer({
 
   useEffect(() => {
     function beforeUnload(event: BeforeUnloadEvent): void {
-      if (pendingPersistence === 0 && !openFilesRef.current.some(item => item.draft !== item.file.content)) return
+      if (pendingPersistence === 0 && !openFilesRef.current.some(item => sourceDocumentDirty(item))) return
       event.preventDefault()
       event.returnValue = ''
     }
@@ -367,10 +289,12 @@ export function WorkspaceExplorer({
   }, [selectedFolder, sessionId])
 
   async function connectFolder(nextFolder: string, rootPath?: string): Promise<void> {
+    const epoch = ++scopeEpoch.current
     const next = await apiJson<WorkspaceSummary>(await fetch(
       `${PAGECRAFT_WORKSPACE_PATH}?${apiQuery(sessionId, { selectedFolder: nextFolder })}`,
       { cache: 'no-store' },
     ))
+    if (epoch !== scopeEpoch.current) return
     setSummary(next)
     setSelectedFolder(next.selectedFolder)
     const nextTree = initialWorkspaceTreeState(next.selectedFolder)
@@ -388,17 +312,20 @@ export function WorkspaceExplorer({
       `${PAGECRAFT_WORKSPACE_DIRECTORY_PATH}?${apiQuery(sessionId, { selectedFolder: next.selectedFolder, path: next.selectedFolder })}`,
       { cache: 'no-store' },
     ))
+    if (epoch !== scopeEpoch.current) return
     setTree(value => applyDirectoryListing(value, next.selectedFolder, entries))
     setStatus(`已打开真实目录：${next.selectedPath}`)
   }
 
   async function loadWorkspace(): Promise<void> {
+    const epoch = scopeEpoch.current
     setBusy(true)
     try {
       const root = await apiJson<WorkspaceSummary>(await fetch(
         `${PAGECRAFT_WORKSPACE_PATH}?${apiQuery(sessionId, { selectedFolder: '.' })}`,
         { cache: 'no-store' },
       ))
+      if (epoch !== scopeEpoch.current) return
       let remembered = '.'
       try {
         remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || '.'
@@ -417,21 +344,36 @@ export function WorkspaceExplorer({
     }
   }
 
-  useEffect(() => { void loadWorkspace() }, [sessionId])
+  useEffect(() => {
+    setOpenFiles([])
+    setActivePath(null)
+    setConflict(null)
+    setHistory([])
+    void loadWorkspace()
+    return () => { scopeEpoch.current++ }
+  }, [sessionId])
 
-  const revealEditedFile = useCallback((file: WorkspaceFile, line: number): void => {
+  const revealEditedFile = useCallback((file: WorkspaceFile, line: number, version?: DocumentVersion): void => {
+    const scope = draftScope(file.path)
+    if (scope === null) return
     setOpenFiles(items => {
       const existing = items.find(item => item.file.path === file.path)
-      if (existing === undefined) return [...items, { file, draft: file.content, conflict: null, draftRevision: null }]
-      return items.map(item => item.file.path === file.path
-        ? { file, draft: file.content, conflict: null, draftRevision: null }
-        : item)
+      if (version !== undefined && (existing === undefined || existing.documentId !== version.documentId)) return items
+      if (existing === undefined) return [...items, createSourceDocument(scope, file)]
+      return items.map(item => {
+        if (item.documentId !== existing.documentId) return item
+        if (sourceDocumentDirty(item) || (version !== undefined && !sameDocumentVersion(item, version))) {
+          setConflict({ documentId: item.documentId, current: file })
+          return { ...item, conflict: file }
+        }
+        return resetSourceDocument(item, file)
+      })
     })
     setActivePath(file.path)
     const entry = workspaceEntryByPath(treeRef.current, file.path)
     if (entry !== null) setSelectedEntry(entry)
     setRevealLocation(current => ({ path: file.path, line, revision: (current?.revision ?? 0) + 1 }))
-  }, [])
+  }, [draftScope, setOpenFiles])
 
   const completeTextVerification = useCallback(async (
     pending: PendingTextVerification,
@@ -454,9 +396,10 @@ export function WorkspaceExplorer({
           }),
         },
       ))
+      if (pending.epoch !== scopeEpoch.current) return
       setStatus(result.message)
       if (result.status === 'committed' && result.file !== undefined) {
-        revealEditedFile(result.file, result.line)
+        revealEditedFile(result.file, result.line, pending.version)
         setTextSelection(null)
         setReplacementText('')
       } else if (result.status === 'rolled_back') {
@@ -490,6 +433,8 @@ export function WorkspaceExplorer({
     if (textSelection === null || textEditBusy || replacementText === textSelection.displayedText) return
     setTextEditBusy(true)
     setStatus('正在自动定位源码并写入本地文件…')
+    const epoch = scopeEpoch.current
+    const versions = openFilesRef.current.map(item => ({ path: item.file.path, version: documentVersion(item) }))
     try {
       const started = await apiJson<DirectTextEditStart>(await fetch(
         `${PAGECRAFT_WORKSPACE_TEXT_EDIT_PATH}?${apiQuery(sessionId)}`,
@@ -500,6 +445,8 @@ export function WorkspaceExplorer({
         },
       ))
       const pending: PendingTextVerification = {
+        epoch,
+        version: versions.find(item => item.path === started.path)?.version,
         started,
         selection: textSelection,
         expectedText: replacementText,
@@ -596,6 +543,7 @@ export function WorkspaceExplorer({
   }, [sessionId])
 
   async function openEntry(entry: WorkspaceEntry): Promise<void> {
+    const epoch = scopeEpoch.current
     setSelectedEntry(entry)
     setActivePath(entry.path)
     if (!entry.textEditable) {
@@ -611,23 +559,26 @@ export function WorkspaceExplorer({
       const query = apiQuery(sessionId, { selectedFolder, path: entry.path })
       const file = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
       const scope = draftScope(file.path)
-      let opened: OpenFile = { file, draft: file.content, conflict: null, draftRevision: null }
+      if (scope === null || epoch !== scopeEpoch.current) return
+      let opened = createSourceDocument(scope, file)
       if (scope !== null) {
         try {
           const restored = await draftCache.restore(scope, file.hash)
+          if (epoch !== scopeEpoch.current) return
           if (restored.kind === 'recovered') {
-            opened = { ...opened, draft: restored.content, draftRevision: restored.revision }
+            opened = recoverSourceDocument(opened, restored)
             setStatus(`已恢复 ${entry.path} 的浏览器草稿（尚未写入磁盘）。`)
           } else if (restored.kind === 'conflict') {
-            opened = { ...opened, draft: restored.content, conflict: file, draftRevision: restored.revision }
-            setConflict({ mine: restored.content, current: file })
+            opened = recoverSourceDocument(opened, restored)
+            setConflict({ documentId: opened.documentId, current: file })
             setStatus(`${entry.path} 的磁盘内容已变化，请处理恢复冲突。`)
           } else setStatus(`已打开 ${entry.path}`)
         } catch (error) {
           setStatus(`无法读取浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
         }
       }
-      setOpenFiles(items => [...items, opened])
+      if (epoch !== scopeEpoch.current) return
+      setOpenFiles(items => items.some(item => item.file.path === file.path) ? items : [...items, opened])
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
@@ -637,133 +588,132 @@ export function WorkspaceExplorer({
 
   function closeTab(path: string): void {
     const item = openFiles.find(file => file.file.path === path)
-    if (item !== undefined && item.draft !== item.file.content && !window.confirm(`${path} 还有未保存修改，确定关闭吗？`)) return
+    if (item !== undefined && sourceDocumentDirty(item) && !window.confirm(`${path} 还有未保存修改，确定关闭吗？`)) return
     const index = openFiles.findIndex(file => file.file.path === path)
     const remaining = openFiles.filter(file => file.file.path !== path)
     setOpenFiles(remaining)
     if (activePath === path) setActivePath(remaining[Math.max(0, index - 1)]?.file.path ?? null)
   }
 
+  async function persistDocument(item: OpenFile): Promise<string | null> {
+    if (!isDraftCacheAllowed(item.file.path)) return null
+    setPendingPersistence(count => count + 1)
+    try {
+      const version = documentVersion(item)
+      const result = await draftCache.persist(item.scope, item.file.hash, sourceDocumentRaw(item), item.format)
+      if (!result.ok) return result.error.message
+      const current = currentDocument(item)
+      if (sameDocumentVersion(current, version)) {
+        if (!sourceDocumentDirty(current!)) {
+          await draftCache.clearSaved(item.scope, result.revision)
+        } else {
+          setOpenFiles(items => items.map(open => sameDocumentVersion(open, version) ? { ...open, draftRevision: result.revision } : open))
+        }
+      }
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    } finally { setPendingPersistence(count => Math.max(0, count - 1)) }
+  }
+
   function updateDraft(value: string): void {
-    if (activePath === null) return
-    const draftPath = activePath
-    setOpenFiles(items => items.map(item => item.file.path === draftPath ? { ...item, draft: value } : item))
-    const item = openFilesRef.current.find(candidate => candidate.file.path === draftPath)
-    const scope = draftScope(draftPath)
-    if (item === undefined || scope === null) return
-    if (!isDraftCacheAllowed(draftPath)) {
+    const item = openFilesRef.current.find(candidate => candidate.file.path === activePath)
+    if (item === undefined) return
+    const next = editSourceDocument(item, value)
+    if (next === item) return
+    setOpenFiles(items => items.map(open => open.documentId === item.documentId ? next : open))
+    if (!isDraftCacheAllowed(item.file.path)) {
       setStatus('安全提示：敏感文件草稿不会缓存在浏览器中；请及时保存到磁盘。')
       return
     }
-    setPendingPersistence(count => count + 1)
-    void draftCache.persist(scope, item.file.hash, value).then((result) => {
-      if (result.ok) {
-        const current = openFilesRef.current.find(open => open.file.path === draftPath)
-        if (current?.draft === value && current.file.content === value) {
-          void draftCache.clearSaved(scope, result.revision).catch(error => {
-            setStatus(`磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}`)
-          })
-        } else {
-          setOpenFiles(items => items.map(open => open.file.path === draftPath && open.draft === value
-            ? { ...open, draftRevision: result.revision }
-            : open))
-        }
-      } else {
-        setStatus(`浏览器草稿保存失败：${result.error.message} 请保存到磁盘后再关闭。`)
-      }
-    }).finally(() => setPendingPersistence(count => Math.max(0, count - 1)))
+    void persistDocument(next).then(error => {
+      if (error !== null && currentDocument(next) !== undefined) setStatus(`浏览器草稿保存失败：${error} 请保存到磁盘后再关闭。`)
+    })
   }
 
   async function writeFile(item: OpenFile, baseHash = item.file.hash): Promise<void> {
-    const savedContent = item.draft
-    const savedRevision = item.draftRevision
+    if (sourceDocumentReadOnly(item)) return
+    const version = documentVersion(item)
+    const savedContent = sourceDocumentRaw(item)
     setBusy(true)
     try {
       const file = await apiJson<WorkspaceFile>(await fetch(
-        `${PAGECRAFT_WORKSPACE_FILE_PATH}?${apiQuery(sessionId)}`,
-        {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ selectedFolder, path: item.file.path, content: item.draft, baseHash }),
-        },
+        `${PAGECRAFT_WORKSPACE_FILE_PATH}?${apiQuery(item.scope.sessionId)}`,
+        { method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ selectedFolder: item.scope.selectedFolder, path: item.file.path, content: savedContent, baseHash }) },
       ))
-      const latestAtWrite = openFilesRef.current.find(open => open.file.path === file.path)
-      const hadNewerEdit = latestAtWrite !== undefined && latestAtWrite.draft !== savedContent
-      setOpenFiles(items => items.map(open => open.file.path === file.path
-        ? hadNewerEdit
-          ? { ...open, file, conflict: null }
-          : { file, draft: file.content, conflict: null, draftRevision: null }
-        : open))
-      const scope = draftScope(file.path)
-      let persistenceWarning: string | null = null
-      const afterCleanup = await draftAfterQueuedOperation(
-        savedContent,
-        () => scope !== null && savedRevision !== null ? draftCache.clearSaved(scope, savedRevision) : Promise.resolve(),
-        () => openFilesRef.current.find(open => open.file.path === file.path)?.draft,
-      )
-      if (afterCleanup.error !== null) {
-        persistenceWarning = `磁盘已保存，但浏览器草稿清理失败：${afterCleanup.error.message}`
+      const latest = currentDocument(item)
+      if (!sameDocumentVersion(latest, version, true)) return
+      // Saving changes the base, not the view or its undo history.
+      setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, file, conflict: null } : open))
+      let warning: string | null = null
+      try {
+        if (version.cacheRevision !== null) await draftCache.clearSaved(item.scope, version.cacheRevision)
+        else await draftCache.clearMatching(item.scope, version.baseHash, savedContent)
+      } catch (error) { warning = `磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}` }
+      const current = currentDocument(item)
+      if (current === undefined || current.resetRevision !== version.resetRevision || current.file.hash !== file.hash) return
+      if (sourceDocumentDirty(current)) {
+        const error = await persistDocument(current)
+        if (error !== null) warning = `磁盘已保存，但较新的浏览器草稿保存失败：${error} 较新的修改仍未保存。`
+      } else {
+        // ABA edits can persist a newer revision containing exactly the saved bytes.
+        // Keep conditional deletion so a subsequent, different edit is never removed.
+        try {
+          await draftCache.clearMatching(item.scope, version.baseHash, savedContent)
+          await draftCache.clearMatching(item.scope, file.hash, savedContent)
+        } catch (error) { warning = `磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}` }
+        setOpenFiles(items => items.map(open => sameDocumentVersion(open, documentVersion(current)) ? { ...open, draftRevision: null } : open))
       }
-      if (scope !== null && afterCleanup.newerDraft !== null) {
-        const newestDraft = afterCleanup.newerDraft
-        const persisted = await draftCache.persist(scope, file.hash, newestDraft)
-        if (persisted.ok) {
-          setOpenFiles(items => items.map(open => open.file.path === file.path && open.draft === newestDraft
-            ? { ...open, draftRevision: persisted.revision }
-            : open))
-        } else persistenceWarning = `磁盘已保存，但较新的浏览器草稿保存失败：${persisted.error.message} 较新的修改仍未保存。`
-      }
-      setConflict(null)
-      setStatus(diskSaveStatus(file.path, afterCleanup.newerDraft !== null, persistenceWarning))
+      setConflict(value => value?.documentId === item.documentId ? null : value)
+      const newest = currentDocument(item)
+      setStatus(diskSaveStatus(file.path, newest !== undefined && sourceDocumentDirty(newest), warning))
       window.setTimeout(onRefresh, 450)
     } catch (error) {
+      const latest = currentDocument(item)
+      if (!sameDocumentVersion(latest, version, true)) return
       if (error instanceof WorkspaceApiError) {
         const current = conflictCurrent(error)
-        if (current !== null) setConflict({ mine: item.draft, current })
+        if (current !== null) {
+          setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, conflict: current } : open))
+          setConflict({ documentId: item.documentId, current })
+        }
       }
       setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   async function saveActive(): Promise<void> {
-    if (active === null || !dirty || busy) return
+    if (active === null || !dirty || busy || active.conflict !== null || sourceDocumentReadOnly(active)) return
     await writeFile(active)
   }
 
   function handleClose(): void {
-    if (openFiles.some(item => item.draft !== item.file.content) && !window.confirm('还有未保存的修改，确定关闭文件工作区吗？')) return
+    if (openFilesRef.current.some(sourceDocumentDirty) && !window.confirm('还有未保存的修改，确定关闭文件工作区吗？')) return
     onClose()
   }
 
-  async function discardActiveDraft(): Promise<void> {
-    if (active === null || !window.confirm(`丢弃 ${active.file.path} 的未保存修改吗？`)) return
-    const discardedDraft = active.draft
-    const scope = draftScope(active.file.path)
+  async function discardDocument(item: OpenFile, disk = item.conflict ?? item.file): Promise<void> {
+    const version = documentVersion(item)
     setBusy(true)
     try {
-      const afterDiscard = await draftAfterQueuedOperation(
-        discardedDraft,
-        () => scope === null ? Promise.resolve() : draftCache.discard(scope),
-        () => openFilesRef.current.find(item => item.file.path === active.file.path)?.draft,
-      )
-      if (afterDiscard.error !== null) {
-        setStatus(`无法丢弃浏览器草稿：${afterDiscard.error.message}`)
+      await draftCache.discard(item.scope)
+      const current = currentDocument(item)
+      if (!sameDocumentVersion(current, version)) {
+        if (current !== undefined) setStatus(`${item.file.path} 在丢弃期间有新的修改；新修改已保留且仍未保存。`)
         return
       }
-      if (afterDiscard.newerDraft !== null) {
-        setStatus(`${active.file.path} 在丢弃期间有新的修改；新修改已保留且仍未保存。`)
-        return
-      }
-      setOpenFiles(items => items.map(item => item.file.path === active.file.path
-        ? { ...item, draft: item.file.content, conflict: null, draftRevision: null }
-        : item))
-      setConflict(null)
-      setStatus(`已丢弃 ${active.file.path} 的浏览器草稿。`)
-    } finally {
-      setBusy(false)
-    }
+      setOpenFiles(items => items.map(open => open.documentId === item.documentId ? resetSourceDocument(open, disk) : open))
+      setConflict(value => value?.documentId === item.documentId ? null : value)
+      setStatus(`已丢弃 ${item.file.path} 的浏览器草稿并载入磁盘版本。`)
+    } catch (error) {
+      if (currentDocument(item) !== undefined) setStatus(`无法丢弃浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setBusy(false) }
+  }
+
+  async function discardActiveDraft(): Promise<void> {
+    if (active === null || busy || !window.confirm(`丢弃 ${active.file.path} 的未保存修改吗？`)) return
+    await discardDocument(active)
   }
 
   async function toggleEntry(entry: WorkspaceEntry): Promise<void> {
@@ -842,32 +792,50 @@ export function WorkspaceExplorer({
 
   async function loadHistory(): Promise<void> {
     if (active === null) return
+    const version = documentVersion(active)
     try {
       const query = apiQuery(sessionId, { selectedFolder, path: active.file.path })
-      setHistory(await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_HISTORY_PATH}?${query}`, { cache: 'no-store' })))
+      const entries = await apiJson<WorkspaceHistoryEntry[]>(await fetch(`${PAGECRAFT_WORKSPACE_HISTORY_PATH}?${query}`, { cache: 'no-store' }))
+      if (!sameDocumentVersion(currentDocument(active), version)) return
+      setHistoryDocumentId(active.documentId)
+      setHistory(entries)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     }
   }
 
   async function restore(entry: WorkspaceHistoryEntry): Promise<void> {
-    if (active === null || !window.confirm(`恢复 ${new Date(entry.createdAt).toLocaleString()} 的版本吗？`)) return
+    if (active === null || active.documentId !== historyDocumentId || busy || !window.confirm(`恢复 ${new Date(entry.createdAt).toLocaleString()} 的版本吗？`)) return
+    const item = active
+    const version = documentVersion(item)
+    setBusy(true)
     try {
       const file = await apiJson<WorkspaceFile>(await fetch(
-        `${PAGECRAFT_WORKSPACE_RESTORE_PATH}?${apiQuery(sessionId)}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ selectedFolder, path: active.file.path, historyId: entry.id, baseHash: active.file.hash }),
-        },
+        `${PAGECRAFT_WORKSPACE_RESTORE_PATH}?${apiQuery(item.scope.sessionId)}`,
+        { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ selectedFolder: item.scope.selectedFolder, path: item.file.path, historyId: entry.id, baseHash: item.file.hash }) },
       ))
-      setOpenFiles(items => items.map(item => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item))
+      const current = currentDocument(item)
+      if (!sameDocumentVersion(current, version, true)) return
+      if (sameDocumentVersion(current, version)) {
+        await discardDocument(current!, file)
+        const afterCleanup = currentDocument(item)
+        if (sameDocumentVersion(afterCleanup, version, true)) {
+          // Disk restore already succeeded even when cleanup failed or new edits arrived.
+          setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, file } : open))
+          const error = await persistDocument(currentDocument(item)!)
+          setStatus(error === null ? '历史版本已写入磁盘；保留的修改仍未保存。' : `历史版本已写入磁盘，但草稿缓存失败：${error}`)
+        }
+      } else {
+        setOpenFiles(items => items.map(open => open.documentId === item.documentId ? { ...open, file, conflict: null } : open))
+        const latest = currentDocument(item)!
+        const error = await persistDocument(latest)
+        setStatus(error === null ? '历史版本已写入磁盘；恢复期间的新修改已保留。' : `历史版本已写入磁盘，但新草稿缓存失败：${error}`)
+      }
       setHistory([])
-      setStatus('历史版本已恢复。')
       window.setTimeout(onRefresh, 450)
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    }
+    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)) }
+    finally { setBusy(false) }
   }
 
   async function browseFolders(path: string): Promise<void> {
@@ -898,34 +866,26 @@ export function WorkspaceExplorer({
   }
 
   const refreshOpenFiles = useCallback(async (): Promise<void> => {
-    const snapshots = openFilesRef.current
-    for (const item of snapshots) {
+    for (const item of openFilesRef.current) {
+      const version = documentVersion(item)
       try {
-        const query = apiQuery(sessionId, { selectedFolder, path: item.file.path })
+        const query = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path })
         const disk = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
         setOpenFiles(files => files.map(open => {
-          if (open.file.path !== disk.path) return open
-          const reconciled = reconcileOpenFile({
-            path: open.file.path,
-            file: open.file,
-            draft: open.draft,
-            conflict: open.conflict,
-          }, disk)
-          if (reconciled.conflict !== null) setConflict({ mine: open.draft, current: disk })
-          return {
-            file: reconciled.file.hash === disk.hash ? disk : open.file,
-            draft: reconciled.draft,
-            conflict: reconciled.conflict === null ? null : disk,
+          if (!sameDocumentVersion(open, version, true) || disk.hash === open.file.hash) return open
+          if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
+            setConflict({ documentId: open.documentId, current: disk })
+            return { ...open, conflict: disk }
           }
+          return resetSourceDocument(open, disk)
         }))
       } catch (error) {
         if (error instanceof WorkspaceApiError && error.status === 404) {
-          setOpenFiles(files => files.filter(open => open.file.path !== item.file.path))
-          if (activePath === item.file.path) setActivePath(null)
+          setOpenFiles(files => files.filter(open => !sameDocumentVersion(open, version)))
         }
       }
     }
-  }, [activePath, selectedFolder, sessionId])
+  }, [setOpenFiles])
 
   useEffect(() => {
     if (summary === null) return
@@ -1004,6 +964,8 @@ export function WorkspaceExplorer({
     textEditable: false,
     imagePreviewable: false,
   }
+  const conflictDocument = conflict === null ? undefined : openFiles.find(item => item.documentId === conflict.documentId)
+  const canSave = active !== null && dirty && active.conflict === null && !sourceDocumentReadOnly(active)
   const currentEntry = selectedEntry ?? (activePath === null ? null : workspaceEntryByPath(tree, activePath))
   const imageSource = currentEntry?.imagePreviewable
     ? `${PAGECRAFT_WORKSPACE_BLOB_PATH}?${apiQuery(sessionId, { selectedFolder, path: currentEntry.path })}`
@@ -1024,7 +986,7 @@ export function WorkspaceExplorer({
         <button type="button" onClick={() => setFocus('preview')} style={{ ...sourceStyles.toolbarButton, ...(focus === 'preview' ? sourceStyles.toolbarButtonActive : {}) }}>预览最大化</button>
         <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={event => { void uploadImages(event.target.files) }} />
         <button type="button" onClick={() => fileInputRef.current?.click()} style={sourceStyles.toolbarButton}>上传图片</button>
-        <button type="button" disabled={!dirty || busy} onClick={() => { void saveActive() }} style={{ ...sourceStyles.saveButton, ...(!dirty || busy ? sourceStyles.disabled : {}) }}>{busy ? '处理中…' : dirty ? '保存 Ctrl+S' : '已保存'}</button>
+        <button type="button" disabled={!canSave || busy} onClick={() => { void saveActive() }} style={{ ...sourceStyles.saveButton, ...(!canSave || busy ? sourceStyles.disabled : {}) }}>{busy ? '处理中…' : dirty ? '保存 Ctrl+S' : '已保存'}</button>
         <button type="button" aria-label="关闭文件工作区" onClick={handleClose} style={sourceStyles.closeButton}>×</button>
       </header>
 
@@ -1051,7 +1013,7 @@ export function WorkspaceExplorer({
                   setActivePath(item.file.path)
                   setSelectedEntry(workspaceEntryByPath(tree, item.file.path))
                 }} style={{ ...sourceStyles.tab, ...(activePath === item.file.path ? sourceStyles.tabActive : {}) }}>
-                  <span>{item.file.path.split('/').at(-1)}</span>{item.draft !== item.file.content ? <b>●</b> : null}
+                  <span>{item.file.path.split('/').at(-1)}</span>{sourceDocumentDirty(item) ? <b>●</b> : null}
                   <span role="button" aria-label={`关闭 ${item.file.path}`} onClick={(event) => { event.stopPropagation(); closeTab(item.file.path) }} style={sourceStyles.tabClose}>×</span>
                 </button>
               ))}
@@ -1059,7 +1021,9 @@ export function WorkspaceExplorer({
             <div style={sourceStyles.editorBody}>
               {active !== null ? (
                 <CodeEditor
-                  key={`${active.file.path}:${active.file.hash}:${revealLocation?.path === active.file.path ? revealLocation.revision : 0}`}
+                  documentId={active.documentId}
+                  resetRevision={active.resetRevision}
+                  readOnly={sourceDocumentReadOnly(active)}
                   path={active.file.path}
                   value={active.draft}
                   revealLine={revealLocation?.path === active.file.path ? revealLocation.line : undefined}
@@ -1073,10 +1037,10 @@ export function WorkspaceExplorer({
               ) : <div style={sourceStyles.noFile}>从左侧选择真实项目文件</div>}
             </div>
             <footer style={sourceStyles.editorStatus}>
-              <span>{status}</span>
+              <span>{active !== null && sourceDocumentReadOnly(active) ? '此文件只读：不自动统一混合换行。' : status}</span>
               <div style={sourceStyles.statusActions}>
                 {active !== null ? <button type="button" onClick={() => { void loadHistory() }} style={sourceStyles.statusButton}>历史版本</button> : null}
-                {dirty ? <button type="button" onClick={() => { void discardActiveDraft() }} style={sourceStyles.statusButton}>丢弃修改</button> : null}
+                {dirty ? <button type="button" disabled={busy} onClick={() => { void discardActiveDraft() }} style={sourceStyles.statusButton}>丢弃修改</button> : null}
                 <span>{active?.file.language ?? ''}{dirty ? ' · 未保存' : active === null ? '' : ' · 已保存'}</span>
               </div>
             </footer>
@@ -1140,7 +1104,7 @@ export function WorkspaceExplorer({
         </main>
       </div>
 
-      {history.length > 0 ? (
+      {history.length > 0 && active?.documentId === historyDocumentId ? (
         <div style={sourceStyles.historyPanel}>
           <div style={sourceStyles.historyHeader}><strong>最近保存版本</strong><button type="button" onClick={() => setHistory([])} style={sourceStyles.statusButton}>关闭</button></div>
           {history.map(entry => (
@@ -1151,33 +1115,23 @@ export function WorkspaceExplorer({
         </div>
       ) : null}
 
-      {conflict !== null ? (
+      {conflict !== null && conflictDocument !== undefined ? (
         <div style={sourceStyles.conflictOverlay}>
           <div style={sourceStyles.conflictDialog}>
             <strong style={sourceStyles.conflictTitle}>文件已被 Agent 或其他编辑器修改</strong>
             <p style={sourceStyles.conflictText}>为避免覆盖最新代码，PageCraft 已停止保存。可以载入磁盘版本，或者明确用你的内容覆盖当前版本。</p>
             <div style={sourceStyles.diffGrid}>
-              <div><b>我的版本</b><pre>{conflict.mine.slice(0, 3000)}</pre></div>
+              <div><b>我的版本</b><pre>{sourceDocumentRaw(conflictDocument).slice(0, 3000)}</pre></div>
               <div><b>磁盘最新版本</b><pre>{conflict.current.content.slice(0, 3000)}</pre></div>
             </div>
             <div style={sourceStyles.conflictActions}>
               <button type="button" onClick={() => {
-                const current = conflict.current
-                const scope = draftScope(current.path)
-                void (async () => {
-                  try {
-                    if (scope !== null) await draftCache.discard(scope)
-                    setOpenFiles(items => items.map(item => item.file.path === current.path ? { file: current, draft: current.content, conflict: null, draftRevision: null } : item))
-                    setConflict(null)
-                    setStatus(`已载入 ${current.path} 的磁盘版本并丢弃对应浏览器草稿。`)
-                  } catch (error) {
-                    setStatus(`无法丢弃浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
-                  }
-                })()
+                if (busy) return
+                void discardDocument(conflictDocument, conflict.current)
               }} style={sourceStyles.secondaryButton}>载入最新版本</button>
-              <button type="button" onClick={() => {
-                if (active === null) return
-                void writeFile({ ...active, draft: conflict.mine }, conflict.current.hash)
+              <button type="button" disabled={busy || sourceDocumentReadOnly(conflictDocument)} onClick={() => {
+                if (busy) return
+                void writeFile(conflictDocument, conflict.current.hash)
               }} style={sourceStyles.dangerButton}>用我的版本覆盖</button>
             </div>
           </div>

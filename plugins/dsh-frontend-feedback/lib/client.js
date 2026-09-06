@@ -26,7 +26,7 @@ __export(index_exports, {
   inject: () => inject
 });
 module.exports = __toCommonJS(index_exports);
-var import_react5 = require("react");
+var import_react6 = require("react");
 var import_react_dom = require("react-dom");
 
 // src/presentation.ts
@@ -19028,11 +19028,11 @@ var language = /* @__PURE__ */ Facet.define({
   combine(languages) {
     return languages.length ? languages[0] : null;
   },
-  enables: (language2) => [
+  enables: (language3) => [
     Language.state,
     parseWorker,
-    EditorView.contentAttributes.compute([language2], (state) => {
-      let lang = state.facet(language2);
+    EditorView.contentAttributes.compute([language3], (state) => {
+      let lang = state.facet(language3);
       return lang && lang.name ? { "data-language": lang.name } : {};
     })
   ]
@@ -19041,10 +19041,10 @@ var LanguageSupport = class {
   /**
   Create a language support object.
   */
-  constructor(language2, support = []) {
-    this.language = language2;
+  constructor(language3, support = []) {
+    this.language = language3;
     this.support = support;
-    this.extension = [language2, support];
+    this.extension = [language3, support];
   }
 };
 var LanguageDescription = class _LanguageDescription {
@@ -31880,8 +31880,276 @@ var oneDarkHighlightStyle = /* @__PURE__ */ HighlightStyle.define([
 ]);
 var oneDark = [oneDarkTheme, /* @__PURE__ */ syntaxHighlighting(oneDarkHighlightStyle)];
 
-// src/client/source-workspace.tsx
+// src/client/CodeEditor.tsx
 var import_react3 = require("react");
+var import_jsx_runtime3 = require("react/jsx-runtime");
+var externalChange = Annotation.define();
+function language2(path) {
+  const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
+  if (ext === ".json") return json();
+  if (ext === ".css") return css();
+  if (ext === ".html" || ext === ".htm") return html();
+  if (ext === ".md" || ext === ".markdown") return markdown();
+  return javascript({ jsx: ext === ".jsx" || ext === ".tsx", typescript: ext === ".ts" || ext === ".tsx" });
+}
+function CodeEditor(props) {
+  const host = (0, import_react3.useRef)(null);
+  const viewRef = (0, import_react3.useRef)(null);
+  const current = (0, import_react3.useRef)(props);
+  current.current = props;
+  const reset = (0, import_react3.useRef)(props.resetRevision);
+  const editable2 = (0, import_react3.useRef)(new Compartment());
+  const extensions = () => [
+    basicSetup,
+    language2(current.current.path),
+    oneDark,
+    editable2.current.of([EditorState.readOnly.of(current.current.readOnly), EditorView.editable.of(!current.current.readOnly)]),
+    keymap.of([{ key: "Mod-s", preventDefault: true, run: () => {
+      if (!current.current.readOnly) current.current.onSave();
+      return true;
+    } }]),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(externalChange))) {
+        current.current.onChange(update.state.doc.toString());
+      }
+    }),
+    EditorView.theme({ "&": { height: "100%", fontSize: "12px" }, ".cm-scroller": { overflow: "auto", fontFamily: "JetBrains Mono, Consolas, ui-monospace, monospace" }, ".cm-content": { padding: "12px 0" } })
+  ];
+  (0, import_react3.useLayoutEffect)(() => {
+    if (host.current === null) return;
+    const view = new EditorView({ parent: host.current, state: EditorState.create({ doc: current.current.value, extensions: extensions() }) });
+    viewRef.current = view;
+    reset.current = current.current.resetRevision;
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, [props.documentId]);
+  (0, import_react3.useLayoutEffect)(() => {
+    const view = viewRef.current;
+    if (view === null) return;
+    if (reset.current !== props.resetRevision) {
+      view.setState(EditorState.create({ doc: props.value, extensions: extensions() }));
+      reset.current = props.resetRevision;
+    } else if (view.state.doc.toString() !== props.value) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.value }, annotations: [externalChange.of(true), Transaction.addToHistory.of(false)] });
+    }
+  }, [props.documentId, props.value, props.resetRevision]);
+  (0, import_react3.useLayoutEffect)(() => {
+    viewRef.current?.dispatch({ effects: editable2.current.reconfigure([EditorState.readOnly.of(props.readOnly), EditorView.editable.of(!props.readOnly)]) });
+  }, [props.documentId, props.readOnly]);
+  (0, import_react3.useLayoutEffect)(() => {
+    const view = viewRef.current;
+    if (view === null || props.revealLine === void 0) return;
+    const line = view.state.doc.line(Math.min(view.state.doc.lines, Math.max(1, props.revealLine)));
+    view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
+  }, [props.documentId, props.revealLine]);
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { ref: host, style: { height: "100%", minHeight: 0 } });
+}
+
+// src/client/source-drafts.ts
+function diskSaveStatus(path, hasNewerEdit, persistenceWarning) {
+  if (persistenceWarning !== null) return persistenceWarning;
+  return hasNewerEdit ? `\u5DF2\u4FDD\u5B58 ${path} \u7684\u5148\u524D\u7248\u672C\uFF1B\u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002` : `\u5DF2\u4FDD\u5B58 ${path}\u3002\u6B63\u5728\u540C\u6B65\u9884\u89C8\u2026`;
+}
+var MAX_DRAFT_BYTES = 1e6;
+var MAX_DRAFTS = 100;
+function canonicalPart(value, root = false) {
+  const normalized = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return root && /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+function sourceDraftKey(scope) {
+  return ["v1", scope.sessionId, canonicalPart(scope.rootPath, true), canonicalPart(scope.selectedFolder), canonicalPart(scope.path)].map(encodeURIComponent).join(":");
+}
+function isDraftCacheAllowed(path) {
+  const name2 = path.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  if (name2 === ".env" || name2.startsWith(".env.")) return false;
+  if (/^(id_(rsa|dsa|ecdsa|ed25519))(\.|$)/.test(name2)) return false;
+  if (/(^|[._-])(?:client[._-]?secret|private[._-]?key|api[._-]?key|service[._-]?account|credentials?|secrets?)(?:[._-]|$)/.test(name2)) return false;
+  if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(name2)) return false;
+  return true;
+}
+var SourceDraftCache = class {
+  constructor(storage) {
+    this.storage = storage;
+  }
+  writes = /* @__PURE__ */ new Map();
+  async queued(key, operation) {
+    const previous = this.writes.get(key) ?? Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.writes.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.writes.get(key) === tail) this.writes.delete(key);
+    }
+  }
+  async persist(scope, baseHash, content2, format) {
+    const key = sourceDraftKey(scope);
+    try {
+      return await this.queued(key, async () => {
+        if (!isDraftCacheAllowed(scope.path)) throw new Error("\u654F\u611F\u6587\u4EF6\u8349\u7A3F\u4E0D\u4F1A\u7F13\u5B58\u5728\u6D4F\u89C8\u5668\u4E2D\u3002");
+        if (new TextEncoder().encode(content2).byteLength > MAX_DRAFT_BYTES) throw new Error("\u8349\u7A3F\u8D85\u8FC7 1 MB \u6D4F\u89C8\u5668\u7F13\u5B58\u4E0A\u9650\u3002");
+        const previous = await this.storage.get(key);
+        const records = await this.storage.list();
+        if (previous === void 0 && records.length >= MAX_DRAFTS) throw new Error("\u6D4F\u89C8\u5668\u4E2D\u5DF2\u6709 100 \u4EFD\u672A\u4FDD\u5B58\u8349\u7A3F\uFF1B\u8BF7\u5148\u4FDD\u5B58\u6216\u4E22\u5F03\u4E00\u4EFD\u3002");
+        const revision = (previous?.revision ?? 0) + 1;
+        await this.storage.put({ ...scope, key, baseHash, content: content2, ...format === void 0 ? {} : { format }, revision, updatedAt: Date.now() });
+        return { ok: true, revision };
+      });
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
+    }
+  }
+  async restore(scope, diskHash) {
+    if (!isDraftCacheAllowed(scope.path)) return { kind: "none" };
+    return this.queued(sourceDraftKey(scope), async () => {
+      const record = await this.storage.get(sourceDraftKey(scope));
+      if (record === void 0) return { kind: "none" };
+      const format = record.format === void 0 ? {} : { format: record.format };
+      if (record.baseHash === diskHash) return { kind: "recovered", content: record.content, revision: record.revision, ...format };
+      return { kind: "conflict", content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash, ...format };
+    });
+  }
+  clearSaved(scope, revision) {
+    const key = sourceDraftKey(scope);
+    return this.queued(key, () => this.storage.deleteIfRevision(key, revision));
+  }
+  // Also covers a write queued before save whose revision is not known to the UI yet.
+  clearMatching(scope, baseHash, content2) {
+    const key = sourceDraftKey(scope);
+    return this.queued(key, async () => {
+      const record = await this.storage.get(key);
+      if (record === void 0 || record.baseHash !== baseHash || record.content !== content2) return false;
+      return this.storage.deleteIfRevision(key, record.revision);
+    });
+  }
+  discard(scope) {
+    const key = sourceDraftKey(scope);
+    return this.queued(key, () => this.storage.delete(key));
+  }
+};
+var IndexedDbDraftStorage = class {
+  database;
+  constructor(indexedDb = window.indexedDB) {
+    this.database = new Promise((resolve, reject) => {
+      const request = indexedDb.open("dsh-pagecraft-source-drafts", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("drafts", { keyPath: "key" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("\u65E0\u6CD5\u6253\u5F00\u6D4F\u89C8\u5668\u8349\u7A3F\u6570\u636E\u5E93\u3002"));
+    });
+  }
+  async request(mode, action) {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("drafts", mode);
+      const request = action(transaction.objectStore("drafts"));
+      let result;
+      request.onsuccess = () => {
+        result = request.result;
+      };
+      request.onerror = () => reject(request.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u5B58\u50A8\u5931\u8D25\u3002"));
+      transaction.oncomplete = () => resolve(result);
+      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
+    });
+  }
+  get(key) {
+    return this.request("readonly", (store) => store.get(key));
+  }
+  async put(record) {
+    await this.request("readwrite", (store) => store.put(record));
+  }
+  async delete(key) {
+    await this.request("readwrite", (store) => store.delete(key));
+  }
+  list() {
+    return this.request("readonly", (store) => store.getAll());
+  }
+  async deleteIfRevision(key, revision) {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("drafts", "readwrite");
+      const store = transaction.objectStore("drafts");
+      const get = store.get(key);
+      let removed = false;
+      get.onsuccess = () => {
+        if (get.result?.revision === revision) {
+          store.delete(key);
+          removed = true;
+        }
+      };
+      transaction.oncomplete = () => resolve(removed);
+      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
+    });
+  }
+};
+
+// src/client/text-format.ts
+function decodeSourceText(raw) {
+  const bom = raw.startsWith("\uFEFF");
+  const body = bom ? raw.slice(1) : raw;
+  const endings = new Set(body.match(/\r\n|\r|\n/g) ?? []);
+  const eol = endings.size > 1 ? "mixed" : endings.has("\r\n") ? "crlf" : endings.has("\r") ? "cr" : "lf";
+  return { text: body.replace(/\r\n|\r/g, "\n"), format: { eol, bom } };
+}
+function encodeSourceText(text, format) {
+  if (format.eol === "mixed") throw new Error("\u4E0D\u81EA\u52A8\u7EDF\u4E00\u6DF7\u5408\u6362\u884C\uFF1B\u6B64\u6587\u4EF6\u53EA\u8BFB\u3002");
+  const eol = format.eol === "crlf" ? "\r\n" : format.eol === "cr" ? "\r" : "\n";
+  return (format.bom ? "\uFEFF" : "") + text.replace(/\r\n|\r|\n/g, eol);
+}
+
+// src/client/source-document.ts
+var generation = 0;
+function createSourceDocument(scope, file) {
+  const parsed = decodeSourceText(file.content);
+  return { documentId: `${sourceDraftKey(scope)}:${++generation}`, scope: { ...scope }, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, editRevision: 0, resetRevision: 0, conflict: null, draftRevision: null };
+}
+function sourceDocumentRaw(doc2) {
+  return doc2.format.eol === "mixed" ? doc2.rawDraft : encodeSourceText(doc2.draft, doc2.format);
+}
+function sourceDocumentReadOnly(doc2) {
+  return doc2.format.eol === "mixed" || decodeSourceText(doc2.file.content).format.eol === "mixed";
+}
+function recoverSourceDocument(doc2, restored) {
+  if (restored.kind === "none") return doc2;
+  const parsed = decodeSourceText(restored.content);
+  return {
+    ...doc2,
+    draft: parsed.text,
+    rawDraft: restored.content,
+    format: parsed.format.eol === "mixed" ? parsed.format : restored.format ?? (restored.kind === "recovered" ? doc2.format : parsed.format),
+    conflict: restored.kind === "conflict" ? doc2.file : null,
+    draftRevision: restored.revision
+  };
+}
+function sourceDocumentDirty(doc2) {
+  return sourceDocumentRaw(doc2) !== doc2.file.content;
+}
+function editSourceDocument(doc2, draft) {
+  if (sourceDocumentReadOnly(doc2) || doc2.draft === draft) return doc2;
+  return { ...doc2, draft, editRevision: doc2.editRevision + 1 };
+}
+function resetSourceDocument(doc2, file) {
+  const parsed = decodeSourceText(file.content);
+  return { ...doc2, file, draft: parsed.text, rawDraft: file.content, format: parsed.format, resetRevision: doc2.resetRevision + 1, draftRevision: null, conflict: null };
+}
+function documentVersion(doc2) {
+  return { documentId: doc2.documentId, editRevision: doc2.editRevision, resetRevision: doc2.resetRevision, baseHash: doc2.file.hash, cacheRevision: doc2.draftRevision };
+}
+function sameDocumentVersion(doc2, version, allowEdits = false) {
+  return doc2 !== void 0 && doc2.documentId === version.documentId && doc2.resetRevision === version.resetRevision && doc2.file.hash === version.baseHash && (allowEdits || doc2.editRevision === version.editRevision);
+}
+
+// src/client/source-workspace.tsx
+var import_react4 = require("react");
 
 // src/workspace.ts
 var PAGECRAFT_WORKSPACE_PATH = "/api/frontend-feedback/workspace";
@@ -31957,13 +32225,6 @@ function applyWorkspaceEvent(tree, lastSequence, event) {
     rescanRequired
   };
 }
-function reconcileOpenFile(state, disk) {
-  if (state.draft === state.file.content) {
-    return { ...state, file: disk, draft: disk.content, conflict: null };
-  }
-  if (state.file.hash === disk.hash) return state;
-  return { ...state, conflict: disk };
-}
 function workspaceEntryByPath(state, path) {
   for (const entries of state.children.values()) {
     const match = entries.find((entry) => entry.path === path);
@@ -31972,153 +32233,8 @@ function workspaceEntryByPath(state, path) {
   return null;
 }
 
-// src/client/source-drafts.ts
-function diskSaveStatus(path, hasNewerEdit, persistenceWarning) {
-  if (persistenceWarning !== null) return persistenceWarning;
-  return hasNewerEdit ? `\u5DF2\u4FDD\u5B58 ${path} \u7684\u5148\u524D\u7248\u672C\uFF1B\u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002` : `\u5DF2\u4FDD\u5B58 ${path}\u3002\u6B63\u5728\u540C\u6B65\u9884\u89C8\u2026`;
-}
-async function draftAfterQueuedOperation(previousDraft, operation, readCurrentDraft) {
-  let error = null;
-  try {
-    await operation();
-  } catch (cause) {
-    error = cause instanceof Error ? cause : new Error(String(cause));
-  }
-  const current = readCurrentDraft();
-  return { newerDraft: current !== void 0 && current !== previousDraft ? current : null, error };
-}
-var MAX_DRAFT_BYTES = 1e6;
-var MAX_DRAFTS = 100;
-function canonicalPart(value, root = false) {
-  const normalized = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return root && /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-function sourceDraftKey(scope) {
-  return ["v1", scope.sessionId, canonicalPart(scope.rootPath, true), canonicalPart(scope.selectedFolder), canonicalPart(scope.path)].map(encodeURIComponent).join(":");
-}
-function isDraftCacheAllowed(path) {
-  const name2 = path.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
-  if (name2 === ".env" || name2.startsWith(".env.")) return false;
-  if (/^(id_(rsa|dsa|ecdsa|ed25519))(\.|$)/.test(name2)) return false;
-  if (/(^|[._-])(?:client[._-]?secret|private[._-]?key|api[._-]?key|service[._-]?account|credentials?|secrets?)(?:[._-]|$)/.test(name2)) return false;
-  if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(name2)) return false;
-  return true;
-}
-var SourceDraftCache = class {
-  constructor(storage) {
-    this.storage = storage;
-  }
-  writes = /* @__PURE__ */ new Map();
-  async queued(key, operation) {
-    const previous = this.writes.get(key) ?? Promise.resolve();
-    let release;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    const tail = previous.then(() => gate);
-    this.writes.set(key, tail);
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (this.writes.get(key) === tail) this.writes.delete(key);
-    }
-  }
-  async persist(scope, baseHash, content2) {
-    const key = sourceDraftKey(scope);
-    try {
-      return await this.queued(key, async () => {
-        if (!isDraftCacheAllowed(scope.path)) throw new Error("\u654F\u611F\u6587\u4EF6\u8349\u7A3F\u4E0D\u4F1A\u7F13\u5B58\u5728\u6D4F\u89C8\u5668\u4E2D\u3002");
-        if (new TextEncoder().encode(content2).byteLength > MAX_DRAFT_BYTES) throw new Error("\u8349\u7A3F\u8D85\u8FC7 1 MB \u6D4F\u89C8\u5668\u7F13\u5B58\u4E0A\u9650\u3002");
-        const previous = await this.storage.get(key);
-        const records = await this.storage.list();
-        if (previous === void 0 && records.length >= MAX_DRAFTS) throw new Error("\u6D4F\u89C8\u5668\u4E2D\u5DF2\u6709 100 \u4EFD\u672A\u4FDD\u5B58\u8349\u7A3F\uFF1B\u8BF7\u5148\u4FDD\u5B58\u6216\u4E22\u5F03\u4E00\u4EFD\u3002");
-        const revision = (previous?.revision ?? 0) + 1;
-        await this.storage.put({ ...scope, key, baseHash, content: content2, revision, updatedAt: Date.now() });
-        return { ok: true, revision };
-      });
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
-    }
-  }
-  async restore(scope, diskHash) {
-    if (!isDraftCacheAllowed(scope.path)) return { kind: "none" };
-    return this.queued(sourceDraftKey(scope), async () => {
-      const record = await this.storage.get(sourceDraftKey(scope));
-      if (record === void 0) return { kind: "none" };
-      if (record.baseHash === diskHash) return { kind: "recovered", content: record.content, revision: record.revision };
-      return { kind: "conflict", content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash };
-    });
-  }
-  clearSaved(scope, revision) {
-    const key = sourceDraftKey(scope);
-    return this.queued(key, () => this.storage.deleteIfRevision(key, revision));
-  }
-  discard(scope) {
-    const key = sourceDraftKey(scope);
-    return this.queued(key, () => this.storage.delete(key));
-  }
-};
-var IndexedDbDraftStorage = class {
-  database;
-  constructor(indexedDb = window.indexedDB) {
-    this.database = new Promise((resolve, reject) => {
-      const request = indexedDb.open("dsh-pagecraft-source-drafts", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("drafts", { keyPath: "key" });
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error ?? new Error("\u65E0\u6CD5\u6253\u5F00\u6D4F\u89C8\u5668\u8349\u7A3F\u6570\u636E\u5E93\u3002"));
-    });
-  }
-  async request(mode, action) {
-    const db = await this.database;
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction("drafts", mode);
-      const request = action(transaction.objectStore("drafts"));
-      let result;
-      request.onsuccess = () => {
-        result = request.result;
-      };
-      request.onerror = () => reject(request.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u5B58\u50A8\u5931\u8D25\u3002"));
-      transaction.oncomplete = () => resolve(result);
-      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
-      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
-    });
-  }
-  get(key) {
-    return this.request("readonly", (store) => store.get(key));
-  }
-  async put(record) {
-    await this.request("readwrite", (store) => store.put(record));
-  }
-  async delete(key) {
-    await this.request("readwrite", (store) => store.delete(key));
-  }
-  list() {
-    return this.request("readonly", (store) => store.getAll());
-  }
-  async deleteIfRevision(key, revision) {
-    const db = await this.database;
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction("drafts", "readwrite");
-      const store = transaction.objectStore("drafts");
-      const get = store.get(key);
-      let removed = false;
-      get.onsuccess = () => {
-        if (get.result?.revision === revision) {
-          store.delete(key);
-          removed = true;
-        }
-      };
-      transaction.oncomplete = () => resolve(removed);
-      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
-      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
-    });
-  }
-};
-
 // src/client/source-workspace.tsx
-var import_jsx_runtime3 = require("react/jsx-runtime");
+var import_jsx_runtime4 = require("react/jsx-runtime");
 var WorkspaceApiError = class extends Error {
   constructor(message, status, code, details) {
     super(message);
@@ -32160,75 +32276,12 @@ function storeLayout(storageKey, value) {
   } catch {
   }
 }
-function editorExtensions(path, onChange, onSave) {
-  const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
-  let language2;
-  if (extension === ".json") language2 = json();
-  else if (extension === ".css") language2 = css();
-  else if (extension === ".html" || extension === ".htm") language2 = html();
-  else if (extension === ".md" || extension === ".markdown") language2 = markdown();
-  else if (extension === ".ts" || extension === ".tsx") language2 = javascript({ jsx: extension === ".tsx", typescript: true });
-  else if (extension === ".jsx") language2 = javascript({ jsx: true });
-  else language2 = javascript();
-  return [
-    basicSetup,
-    language2,
-    oneDark,
-    keymap.of([{
-      key: "Mod-s",
-      preventDefault: true,
-      run() {
-        onSave();
-        return true;
-      }
-    }]),
-    EditorView.updateListener.of((update) => {
-      if (update.docChanged) onChange(update.state.doc.toString());
-    }),
-    EditorView.theme({
-      "&": { height: "100%", fontSize: "12px" },
-      ".cm-scroller": { overflow: "auto", fontFamily: "JetBrains Mono, Consolas, ui-monospace, monospace" },
-      ".cm-content": { padding: "12px 0" }
-    })
-  ];
-}
-function CodeEditor({ path, value, revealLine, onChange, onSave }) {
-  const hostRef = (0, import_react3.useRef)(null);
-  const onChangeRef = (0, import_react3.useRef)(onChange);
-  const onSaveRef = (0, import_react3.useRef)(onSave);
-  onChangeRef.current = onChange;
-  onSaveRef.current = onSave;
-  (0, import_react3.useEffect)(() => {
-    if (hostRef.current === null) return;
-    const state = EditorState.create({
-      doc: value,
-      ...revealLine === void 0 ? {} : { selection: { anchor: Math.min(value.length, stateLineOffset(value, revealLine)) } },
-      extensions: editorExtensions(path, (next) => onChangeRef.current(next), () => onSaveRef.current())
-    });
-    const view = new EditorView({ state, parent: hostRef.current });
-    if (revealLine !== void 0) {
-      view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) });
-    }
-    return () => view.destroy();
-  }, [path, revealLine]);
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { ref: hostRef, style: sourceStyles.codeEditor });
-}
-function stateLineOffset(value, line) {
-  if (line <= 1) return 0;
-  let offset = 0;
-  for (let current = 1; current < line; current += 1) {
-    const next = value.indexOf("\n", offset);
-    if (next === -1) return value.length;
-    offset = next + 1;
-  }
-  return offset;
-}
 function TreeNode2({ entry, depth, activePath, tree, onOpen, onToggle }) {
   const isDirectory = entry.kind === "directory";
   const expanded = tree.expanded.has(entry.path);
   const children = tree.children.get(entry.path) ?? [];
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
       "button",
       {
         type: "button",
@@ -32240,13 +32293,13 @@ function TreeNode2({ entry, depth, activePath, tree, onOpen, onToggle }) {
           ...activePath === entry.path ? sourceStyles.treeItemActive : {}
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: sourceStyles.treeIcon, children: isDirectory ? expanded ? "\u25BE" : "\u25B8" : entry.imagePreviewable ? "\u25A7" : entry.textEditable ? "\u25C7" : "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: sourceStyles.treeName, children: entry.name }),
-          tree.loading.has(entry.path) ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: sourceStyles.lock, children: "\u25CF" }) : null
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: sourceStyles.treeIcon, children: isDirectory ? expanded ? "\u25BE" : "\u25B8" : entry.imagePreviewable ? "\u25A7" : entry.textEditable ? "\u25C7" : "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: sourceStyles.treeName, children: entry.name }),
+          tree.loading.has(entry.path) ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: sourceStyles.lock, children: "\u25CF" }) : null
         ]
       }
     ),
-    isDirectory && expanded ? children.map((child) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TreeNode2, { entry: child, depth: depth + 1, activePath, tree, onOpen, onToggle }, child.path)) : null
+    isDirectory && expanded ? children.map((child) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(TreeNode2, { entry: child, depth: depth + 1, activePath, tree, onOpen, onToggle }, child.path)) : null
   ] });
 }
 function conflictCurrent(error) {
@@ -32264,63 +32317,75 @@ function WorkspaceExplorer({
   onNavigate,
   onAnnotationSelection
 }) {
-  const fallbackLayoutKey = (0, import_react3.useMemo)(() => `dsh-pagecraft.workspace-layout:${encodeURIComponent(sessionId)}`, [sessionId]);
-  const initialLayout = (0, import_react3.useMemo)(() => readLayout(fallbackLayoutKey), [fallbackLayoutKey]);
-  const [summary, setSummary] = (0, import_react3.useState)(null);
-  const [selectedFolder, setSelectedFolder] = (0, import_react3.useState)(".");
-  const [tree, setTree] = (0, import_react3.useState)(() => initialWorkspaceTreeState("."));
-  const [openFiles, setOpenFiles] = (0, import_react3.useState)([]);
-  const [activePath, setActivePath] = (0, import_react3.useState)(null);
-  const [selectedEntry, setSelectedEntry] = (0, import_react3.useState)(null);
-  const [treeVisible, setTreeVisible] = (0, import_react3.useState)(initialLayout.treeVisible);
-  const [split, setSplit] = (0, import_react3.useState)(initialLayout.split);
-  const [focus, setFocus] = (0, import_react3.useState)(initialLayout.focus);
-  const [status, setStatus] = (0, import_react3.useState)("\u6B63\u5728\u8BFB\u53D6\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u2026");
-  const [busy, setBusy] = (0, import_react3.useState)(false);
-  const [pendingPersistence, setPendingPersistence] = (0, import_react3.useState)(0);
-  const [conflict, setConflict] = (0, import_react3.useState)(null);
-  const [history2, setHistory] = (0, import_react3.useState)([]);
-  const [folderPickerOpen, setFolderPickerOpen] = (0, import_react3.useState)(false);
-  const [folderBrowsePath, setFolderBrowsePath] = (0, import_react3.useState)(".");
-  const [folderEntries, setFolderEntries] = (0, import_react3.useState)([]);
-  const [previewSelectionMode, setPreviewSelectionMode] = (0, import_react3.useState)(null);
-  const [textSelection, setTextSelection] = (0, import_react3.useState)(null);
-  const [replacementText, setReplacementText] = (0, import_react3.useState)("");
-  const [textEditBusy, setTextEditBusy] = (0, import_react3.useState)(false);
-  const [revealLocation, setRevealLocation] = (0, import_react3.useState)(null);
-  const fileInputRef = (0, import_react3.useRef)(null);
-  const previewRef = (0, import_react3.useRef)(null);
-  const pendingVerificationRef = (0, import_react3.useRef)(null);
-  const shellRef = (0, import_react3.useRef)(null);
-  const treeRef = (0, import_react3.useRef)(tree);
-  const openFilesRef = (0, import_react3.useRef)(openFiles);
-  const draftCache = (0, import_react3.useMemo)(() => new SourceDraftCache(new IndexedDbDraftStorage()), []);
-  const lastSequenceRef = (0, import_react3.useRef)(0);
-  const loadedLayoutRootRef = (0, import_react3.useRef)(null);
+  const fallbackLayoutKey = (0, import_react4.useMemo)(() => `dsh-pagecraft.workspace-layout:${encodeURIComponent(sessionId)}`, [sessionId]);
+  const initialLayout = (0, import_react4.useMemo)(() => readLayout(fallbackLayoutKey), [fallbackLayoutKey]);
+  const [summary, setSummary] = (0, import_react4.useState)(null);
+  const [selectedFolder, setSelectedFolder] = (0, import_react4.useState)(".");
+  const [tree, setTree] = (0, import_react4.useState)(() => initialWorkspaceTreeState("."));
+  const [openFiles, renderOpenFiles] = (0, import_react4.useState)([]);
+  const [activePath, setActivePath] = (0, import_react4.useState)(null);
+  const [selectedEntry, setSelectedEntry] = (0, import_react4.useState)(null);
+  const [treeVisible, setTreeVisible] = (0, import_react4.useState)(initialLayout.treeVisible);
+  const [split, setSplit] = (0, import_react4.useState)(initialLayout.split);
+  const [focus, setFocus] = (0, import_react4.useState)(initialLayout.focus);
+  const [status, setStatus] = (0, import_react4.useState)("\u6B63\u5728\u8BFB\u53D6\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u2026");
+  const [busy, setBusy] = (0, import_react4.useState)(false);
+  const [pendingPersistence, setPendingPersistence] = (0, import_react4.useState)(0);
+  const [conflict, setConflict] = (0, import_react4.useState)(null);
+  const [history2, setHistory] = (0, import_react4.useState)([]);
+  const [historyDocumentId, setHistoryDocumentId] = (0, import_react4.useState)(null);
+  const [folderPickerOpen, setFolderPickerOpen] = (0, import_react4.useState)(false);
+  const [folderBrowsePath, setFolderBrowsePath] = (0, import_react4.useState)(".");
+  const [folderEntries, setFolderEntries] = (0, import_react4.useState)([]);
+  const [previewSelectionMode, setPreviewSelectionMode] = (0, import_react4.useState)(null);
+  const [textSelection, setTextSelection] = (0, import_react4.useState)(null);
+  const [replacementText, setReplacementText] = (0, import_react4.useState)("");
+  const [textEditBusy, setTextEditBusy] = (0, import_react4.useState)(false);
+  const [revealLocation, setRevealLocation] = (0, import_react4.useState)(null);
+  const fileInputRef = (0, import_react4.useRef)(null);
+  const previewRef = (0, import_react4.useRef)(null);
+  const pendingVerificationRef = (0, import_react4.useRef)(null);
+  const shellRef = (0, import_react4.useRef)(null);
+  const treeRef = (0, import_react4.useRef)(tree);
+  const openFilesRef = (0, import_react4.useRef)(openFiles);
+  const draftCache = (0, import_react4.useMemo)(() => new SourceDraftCache(new IndexedDbDraftStorage()), []);
+  const lastSequenceRef = (0, import_react4.useRef)(0);
+  const loadedLayoutRootRef = (0, import_react4.useRef)(null);
   const active = openFiles.find((item) => item.file.path === activePath) ?? null;
-  const dirty = active !== null && active.draft !== active.file.content;
+  const dirty = active !== null && sourceDocumentDirty(active);
   const layoutKey = summary === null ? fallbackLayoutKey : workspaceLayoutStorageKey(summary.rootPath, sessionId);
   treeRef.current = tree;
-  openFilesRef.current = openFiles;
-  const draftScope = (0, import_react3.useCallback)((path) => summary === null ? null : {
+  const setOpenFiles = (0, import_react4.useCallback)((update) => {
+    const next = typeof update === "function" ? update(openFilesRef.current) : update;
+    openFilesRef.current = next;
+    renderOpenFiles(next);
+  }, []);
+  const currentDocument = (item) => openFilesRef.current.find((open) => open.documentId === item.documentId);
+  const scopeEpoch = (0, import_react4.useRef)(0);
+  const sessionRef = (0, import_react4.useRef)(sessionId);
+  if (sessionRef.current !== sessionId) {
+    sessionRef.current = sessionId;
+    scopeEpoch.current++;
+  }
+  const draftScope = (0, import_react4.useCallback)((path) => summary === null ? null : {
     sessionId,
     rootPath: summary.rootPath,
     selectedFolder,
     path
   }, [selectedFolder, sessionId, summary]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     function beforeUnload(event) {
-      if (pendingPersistence === 0 && !openFilesRef.current.some((item) => item.draft !== item.file.content)) return;
+      if (pendingPersistence === 0 && !openFilesRef.current.some((item) => sourceDocumentDirty(item))) return;
       event.preventDefault();
       event.returnValue = "";
     }
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [pendingPersistence]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     storeLayout(layoutKey, { treeVisible, split, focus });
   }, [focus, layoutKey, split, treeVisible]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     if (summary === null || loadedLayoutRootRef.current === summary.rootPath) return;
     const stored = readLayout(workspaceLayoutStorageKey(summary.rootPath, sessionId));
     loadedLayoutRootRef.current = summary.rootPath;
@@ -32328,14 +32393,14 @@ function WorkspaceExplorer({
     setSplit(stored.split);
     setFocus(stored.focus);
   }, [sessionId, summary]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     function onKeyDown(event) {
       if (event.key === "Escape") handleClose2();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openFiles]);
-  const loadDirectory = (0, import_react3.useCallback)(async (path, force = false) => {
+  const loadDirectory = (0, import_react4.useCallback)(async (path, force = false) => {
     const current = treeRef.current;
     if (!force && current.children.has(path) && !current.stale.has(path)) return;
     setTree((value) => setDirectoryLoading(value, path));
@@ -32351,10 +32416,12 @@ function WorkspaceExplorer({
     }
   }, [selectedFolder, sessionId]);
   async function connectFolder(nextFolder, rootPath) {
+    const epoch = ++scopeEpoch.current;
     const next = await apiJson(await fetch(
       `${PAGECRAFT_WORKSPACE_PATH}?${apiQuery(sessionId, { selectedFolder: nextFolder })}`,
       { cache: "no-store" }
     ));
+    if (epoch !== scopeEpoch.current) return;
     setSummary(next);
     setSelectedFolder(next.selectedFolder);
     const nextTree = initialWorkspaceTreeState(next.selectedFolder);
@@ -32371,16 +32438,19 @@ function WorkspaceExplorer({
       `${PAGECRAFT_WORKSPACE_DIRECTORY_PATH}?${apiQuery(sessionId, { selectedFolder: next.selectedFolder, path: next.selectedFolder })}`,
       { cache: "no-store" }
     ));
+    if (epoch !== scopeEpoch.current) return;
     setTree((value) => applyDirectoryListing(value, next.selectedFolder, entries));
     setStatus(`\u5DF2\u6253\u5F00\u771F\u5B9E\u76EE\u5F55\uFF1A${next.selectedPath}`);
   }
   async function loadWorkspace() {
+    const epoch = scopeEpoch.current;
     setBusy(true);
     try {
       const root = await apiJson(await fetch(
         `${PAGECRAFT_WORKSPACE_PATH}?${apiQuery(sessionId, { selectedFolder: "." })}`,
         { cache: "no-store" }
       ));
+      if (epoch !== scopeEpoch.current) return;
       let remembered = ".";
       try {
         remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || ".";
@@ -32398,21 +32468,38 @@ function WorkspaceExplorer({
       setBusy(false);
     }
   }
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
+    setOpenFiles([]);
+    setActivePath(null);
+    setConflict(null);
+    setHistory([]);
     void loadWorkspace();
+    return () => {
+      scopeEpoch.current++;
+    };
   }, [sessionId]);
-  const revealEditedFile = (0, import_react3.useCallback)((file, line) => {
+  const revealEditedFile = (0, import_react4.useCallback)((file, line, version) => {
+    const scope = draftScope(file.path);
+    if (scope === null) return;
     setOpenFiles((items) => {
       const existing = items.find((item) => item.file.path === file.path);
-      if (existing === void 0) return [...items, { file, draft: file.content, conflict: null, draftRevision: null }];
-      return items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item);
+      if (version !== void 0 && (existing === void 0 || existing.documentId !== version.documentId)) return items;
+      if (existing === void 0) return [...items, createSourceDocument(scope, file)];
+      return items.map((item) => {
+        if (item.documentId !== existing.documentId) return item;
+        if (sourceDocumentDirty(item) || version !== void 0 && !sameDocumentVersion(item, version)) {
+          setConflict({ documentId: item.documentId, current: file });
+          return { ...item, conflict: file };
+        }
+        return resetSourceDocument(item, file);
+      });
     });
     setActivePath(file.path);
     const entry = workspaceEntryByPath(treeRef.current, file.path);
     if (entry !== null) setSelectedEntry(entry);
     setRevealLocation((current) => ({ path: file.path, line, revision: (current?.revision ?? 0) + 1 }));
-  }, []);
-  const completeTextVerification = (0, import_react3.useCallback)(async (pending, verified, observedText) => {
+  }, [draftScope, setOpenFiles]);
+  const completeTextVerification = (0, import_react4.useCallback)(async (pending, verified, observedText) => {
     if (pendingVerificationRef.current?.started.transactionId !== pending.started.transactionId) return;
     window.clearTimeout(pending.timer);
     pendingVerificationRef.current = null;
@@ -32429,9 +32516,10 @@ function WorkspaceExplorer({
           })
         }
       ));
+      if (pending.epoch !== scopeEpoch.current) return;
       setStatus(result.message);
       if (result.status === "committed" && result.file !== void 0) {
-        revealEditedFile(result.file, result.line);
+        revealEditedFile(result.file, result.line, pending.version);
         setTextSelection(null);
         setReplacementText("");
       } else if (result.status === "rolled_back") {
@@ -32462,6 +32550,8 @@ function WorkspaceExplorer({
     if (textSelection === null || textEditBusy || replacementText === textSelection.displayedText) return;
     setTextEditBusy(true);
     setStatus("\u6B63\u5728\u81EA\u52A8\u5B9A\u4F4D\u6E90\u7801\u5E76\u5199\u5165\u672C\u5730\u6587\u4EF6\u2026");
+    const epoch = scopeEpoch.current;
+    const versions = openFilesRef.current.map((item) => ({ path: item.file.path, version: documentVersion(item) }));
     try {
       const started = await apiJson(await fetch(
         `${PAGECRAFT_WORKSPACE_TEXT_EDIT_PATH}?${apiQuery(sessionId)}`,
@@ -32472,6 +32562,8 @@ function WorkspaceExplorer({
         }
       ));
       const pending = {
+        epoch,
+        version: versions.find((item) => item.path === started.path)?.version,
         started,
         selection: textSelection,
         expectedText: replacementText,
@@ -32488,7 +32580,7 @@ function WorkspaceExplorer({
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     function onPreviewMessage(event) {
       if (event.source !== previewRef.current?.contentWindow) return;
       const data2 = event.data;
@@ -32550,7 +32642,7 @@ function WorkspaceExplorer({
     window.addEventListener("message", onPreviewMessage);
     return () => window.removeEventListener("message", onPreviewMessage);
   }, [completeTextVerification, onAnnotationSelection, onClose, onNavigate, previewSelectionMode]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     return () => {
       const pending = pendingVerificationRef.current;
       if (pending === null) return;
@@ -32565,6 +32657,7 @@ function WorkspaceExplorer({
     };
   }, [sessionId]);
   async function openEntry(entry) {
+    const epoch = scopeEpoch.current;
     setSelectedEntry(entry);
     setActivePath(entry.path);
     if (!entry.textEditable) {
@@ -32580,23 +32673,26 @@ function WorkspaceExplorer({
       const query2 = apiQuery(sessionId, { selectedFolder, path: entry.path });
       const file = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
       const scope = draftScope(file.path);
-      let opened = { file, draft: file.content, conflict: null, draftRevision: null };
+      if (scope === null || epoch !== scopeEpoch.current) return;
+      let opened = createSourceDocument(scope, file);
       if (scope !== null) {
         try {
           const restored = await draftCache.restore(scope, file.hash);
+          if (epoch !== scopeEpoch.current) return;
           if (restored.kind === "recovered") {
-            opened = { ...opened, draft: restored.content, draftRevision: restored.revision };
+            opened = recoverSourceDocument(opened, restored);
             setStatus(`\u5DF2\u6062\u590D ${entry.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\uFF08\u5C1A\u672A\u5199\u5165\u78C1\u76D8\uFF09\u3002`);
           } else if (restored.kind === "conflict") {
-            opened = { ...opened, draft: restored.content, conflict: file, draftRevision: restored.revision };
-            setConflict({ mine: restored.content, current: file });
+            opened = recoverSourceDocument(opened, restored);
+            setConflict({ documentId: opened.documentId, current: file });
             setStatus(`${entry.path} \u7684\u78C1\u76D8\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u5904\u7406\u6062\u590D\u51B2\u7A81\u3002`);
           } else setStatus(`\u5DF2\u6253\u5F00 ${entry.path}`);
         } catch (error) {
           setStatus(`\u65E0\u6CD5\u8BFB\u53D6\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      setOpenFiles((items) => [...items, opened]);
+      if (epoch !== scopeEpoch.current) return;
+      setOpenFiles((items) => items.some((item) => item.file.path === file.path) ? items : [...items, opened]);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -32605,79 +32701,99 @@ function WorkspaceExplorer({
   }
   function closeTab(path) {
     const item = openFiles.find((file) => file.file.path === path);
-    if (item !== void 0 && item.draft !== item.file.content && !window.confirm(`${path} \u8FD8\u6709\u672A\u4FDD\u5B58\u4FEE\u6539\uFF0C\u786E\u5B9A\u5173\u95ED\u5417\uFF1F`)) return;
+    if (item !== void 0 && sourceDocumentDirty(item) && !window.confirm(`${path} \u8FD8\u6709\u672A\u4FDD\u5B58\u4FEE\u6539\uFF0C\u786E\u5B9A\u5173\u95ED\u5417\uFF1F`)) return;
     const index = openFiles.findIndex((file) => file.file.path === path);
     const remaining = openFiles.filter((file) => file.file.path !== path);
     setOpenFiles(remaining);
     if (activePath === path) setActivePath(remaining[Math.max(0, index - 1)]?.file.path ?? null);
   }
+  async function persistDocument(item) {
+    if (!isDraftCacheAllowed(item.file.path)) return null;
+    setPendingPersistence((count2) => count2 + 1);
+    try {
+      const version = documentVersion(item);
+      const result = await draftCache.persist(item.scope, item.file.hash, sourceDocumentRaw(item), item.format);
+      if (!result.ok) return result.error.message;
+      const current = currentDocument(item);
+      if (sameDocumentVersion(current, version)) {
+        if (!sourceDocumentDirty(current)) {
+          await draftCache.clearSaved(item.scope, result.revision);
+        } else {
+          setOpenFiles((items) => items.map((open) => sameDocumentVersion(open, version) ? { ...open, draftRevision: result.revision } : open));
+        }
+      }
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    } finally {
+      setPendingPersistence((count2) => Math.max(0, count2 - 1));
+    }
+  }
   function updateDraft(value) {
-    if (activePath === null) return;
-    const draftPath = activePath;
-    setOpenFiles((items) => items.map((item2) => item2.file.path === draftPath ? { ...item2, draft: value } : item2));
-    const item = openFilesRef.current.find((candidate) => candidate.file.path === draftPath);
-    const scope = draftScope(draftPath);
-    if (item === void 0 || scope === null) return;
-    if (!isDraftCacheAllowed(draftPath)) {
+    const item = openFilesRef.current.find((candidate) => candidate.file.path === activePath);
+    if (item === void 0) return;
+    const next = editSourceDocument(item, value);
+    if (next === item) return;
+    setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? next : open));
+    if (!isDraftCacheAllowed(item.file.path)) {
       setStatus("\u5B89\u5168\u63D0\u793A\uFF1A\u654F\u611F\u6587\u4EF6\u8349\u7A3F\u4E0D\u4F1A\u7F13\u5B58\u5728\u6D4F\u89C8\u5668\u4E2D\uFF1B\u8BF7\u53CA\u65F6\u4FDD\u5B58\u5230\u78C1\u76D8\u3002");
       return;
     }
-    setPendingPersistence((count2) => count2 + 1);
-    void draftCache.persist(scope, item.file.hash, value).then((result) => {
-      if (result.ok) {
-        const current = openFilesRef.current.find((open) => open.file.path === draftPath);
-        if (current?.draft === value && current.file.content === value) {
-          void draftCache.clearSaved(scope, result.revision).catch((error) => {
-            setStatus(`\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
-          });
-        } else {
-          setOpenFiles((items) => items.map((open) => open.file.path === draftPath && open.draft === value ? { ...open, draftRevision: result.revision } : open));
-        }
-      } else {
-        setStatus(`\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${result.error.message} \u8BF7\u4FDD\u5B58\u5230\u78C1\u76D8\u540E\u518D\u5173\u95ED\u3002`);
-      }
-    }).finally(() => setPendingPersistence((count2) => Math.max(0, count2 - 1)));
+    void persistDocument(next).then((error) => {
+      if (error !== null && currentDocument(next) !== void 0) setStatus(`\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${error} \u8BF7\u4FDD\u5B58\u5230\u78C1\u76D8\u540E\u518D\u5173\u95ED\u3002`);
+    });
   }
   async function writeFile(item, baseHash = item.file.hash) {
-    const savedContent = item.draft;
-    const savedRevision = item.draftRevision;
+    if (sourceDocumentReadOnly(item)) return;
+    const version = documentVersion(item);
+    const savedContent = sourceDocumentRaw(item);
     setBusy(true);
     try {
       const file = await apiJson(await fetch(
-        `${PAGECRAFT_WORKSPACE_FILE_PATH}?${apiQuery(sessionId)}`,
+        `${PAGECRAFT_WORKSPACE_FILE_PATH}?${apiQuery(item.scope.sessionId)}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ selectedFolder, path: item.file.path, content: item.draft, baseHash })
+          body: JSON.stringify({ selectedFolder: item.scope.selectedFolder, path: item.file.path, content: savedContent, baseHash })
         }
       ));
-      const latestAtWrite = openFilesRef.current.find((open) => open.file.path === file.path);
-      const hadNewerEdit = latestAtWrite !== void 0 && latestAtWrite.draft !== savedContent;
-      setOpenFiles((items) => items.map((open) => open.file.path === file.path ? hadNewerEdit ? { ...open, file, conflict: null } : { file, draft: file.content, conflict: null, draftRevision: null } : open));
-      const scope = draftScope(file.path);
-      let persistenceWarning = null;
-      const afterCleanup = await draftAfterQueuedOperation(
-        savedContent,
-        () => scope !== null && savedRevision !== null ? draftCache.clearSaved(scope, savedRevision) : Promise.resolve(),
-        () => openFilesRef.current.find((open) => open.file.path === file.path)?.draft
-      );
-      if (afterCleanup.error !== null) {
-        persistenceWarning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${afterCleanup.error.message}`;
+      const latest = currentDocument(item);
+      if (!sameDocumentVersion(latest, version, true)) return;
+      setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, file, conflict: null } : open));
+      let warning = null;
+      try {
+        if (version.cacheRevision !== null) await draftCache.clearSaved(item.scope, version.cacheRevision);
+        else await draftCache.clearMatching(item.scope, version.baseHash, savedContent);
+      } catch (error) {
+        warning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`;
       }
-      if (scope !== null && afterCleanup.newerDraft !== null) {
-        const newestDraft = afterCleanup.newerDraft;
-        const persisted = await draftCache.persist(scope, file.hash, newestDraft);
-        if (persisted.ok) {
-          setOpenFiles((items) => items.map((open) => open.file.path === file.path && open.draft === newestDraft ? { ...open, draftRevision: persisted.revision } : open));
-        } else persistenceWarning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u8F83\u65B0\u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${persisted.error.message} \u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002`;
+      const current = currentDocument(item);
+      if (current === void 0 || current.resetRevision !== version.resetRevision || current.file.hash !== file.hash) return;
+      if (sourceDocumentDirty(current)) {
+        const error = await persistDocument(current);
+        if (error !== null) warning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u8F83\u65B0\u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${error} \u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002`;
+      } else {
+        try {
+          await draftCache.clearMatching(item.scope, version.baseHash, savedContent);
+          await draftCache.clearMatching(item.scope, file.hash, savedContent);
+        } catch (error) {
+          warning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`;
+        }
+        setOpenFiles((items) => items.map((open) => sameDocumentVersion(open, documentVersion(current)) ? { ...open, draftRevision: null } : open));
       }
-      setConflict(null);
-      setStatus(diskSaveStatus(file.path, afterCleanup.newerDraft !== null, persistenceWarning));
+      setConflict((value) => value?.documentId === item.documentId ? null : value);
+      const newest = currentDocument(item);
+      setStatus(diskSaveStatus(file.path, newest !== void 0 && sourceDocumentDirty(newest), warning));
       window.setTimeout(onRefresh, 450);
     } catch (error) {
+      const latest = currentDocument(item);
+      if (!sameDocumentVersion(latest, version, true)) return;
       if (error instanceof WorkspaceApiError) {
         const current = conflictCurrent(error);
-        if (current !== null) setConflict({ mine: item.draft, current });
+        if (current !== null) {
+          setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, conflict: current } : open));
+          setConflict({ documentId: item.documentId, current });
+        }
       }
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -32685,38 +32801,35 @@ function WorkspaceExplorer({
     }
   }
   async function saveActive() {
-    if (active === null || !dirty || busy) return;
+    if (active === null || !dirty || busy || active.conflict !== null || sourceDocumentReadOnly(active)) return;
     await writeFile(active);
   }
   function handleClose2() {
-    if (openFiles.some((item) => item.draft !== item.file.content) && !window.confirm("\u8FD8\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u786E\u5B9A\u5173\u95ED\u6587\u4EF6\u5DE5\u4F5C\u533A\u5417\uFF1F")) return;
+    if (openFilesRef.current.some(sourceDocumentDirty) && !window.confirm("\u8FD8\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u786E\u5B9A\u5173\u95ED\u6587\u4EF6\u5DE5\u4F5C\u533A\u5417\uFF1F")) return;
     onClose();
   }
-  async function discardActiveDraft() {
-    if (active === null || !window.confirm(`\u4E22\u5F03 ${active.file.path} \u7684\u672A\u4FDD\u5B58\u4FEE\u6539\u5417\uFF1F`)) return;
-    const discardedDraft = active.draft;
-    const scope = draftScope(active.file.path);
+  async function discardDocument(item, disk = item.conflict ?? item.file) {
+    const version = documentVersion(item);
     setBusy(true);
     try {
-      const afterDiscard = await draftAfterQueuedOperation(
-        discardedDraft,
-        () => scope === null ? Promise.resolve() : draftCache.discard(scope),
-        () => openFilesRef.current.find((item) => item.file.path === active.file.path)?.draft
-      );
-      if (afterDiscard.error !== null) {
-        setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${afterDiscard.error.message}`);
+      await draftCache.discard(item.scope);
+      const current = currentDocument(item);
+      if (!sameDocumentVersion(current, version)) {
+        if (current !== void 0) setStatus(`${item.file.path} \u5728\u4E22\u5F03\u671F\u95F4\u6709\u65B0\u7684\u4FEE\u6539\uFF1B\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u4E14\u4ECD\u672A\u4FDD\u5B58\u3002`);
         return;
       }
-      if (afterDiscard.newerDraft !== null) {
-        setStatus(`${active.file.path} \u5728\u4E22\u5F03\u671F\u95F4\u6709\u65B0\u7684\u4FEE\u6539\uFF1B\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u4E14\u4ECD\u672A\u4FDD\u5B58\u3002`);
-        return;
-      }
-      setOpenFiles((items) => items.map((item) => item.file.path === active.file.path ? { ...item, draft: item.file.content, conflict: null, draftRevision: null } : item));
-      setConflict(null);
-      setStatus(`\u5DF2\u4E22\u5F03 ${active.file.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u3002`);
+      setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? resetSourceDocument(open, disk) : open));
+      setConflict((value) => value?.documentId === item.documentId ? null : value);
+      setStatus(`\u5DF2\u4E22\u5F03 ${item.file.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u5E76\u8F7D\u5165\u78C1\u76D8\u7248\u672C\u3002`);
+    } catch (error) {
+      if (currentDocument(item) !== void 0) setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusy(false);
     }
+  }
+  async function discardActiveDraft() {
+    if (active === null || busy || !window.confirm(`\u4E22\u5F03 ${active.file.path} \u7684\u672A\u4FDD\u5B58\u4FEE\u6539\u5417\uFF1F`)) return;
+    await discardDocument(active);
   }
   async function toggleEntry(entry) {
     const willExpand = !treeRef.current.expanded.has(entry.path);
@@ -32784,30 +32897,53 @@ function WorkspaceExplorer({
   }
   async function loadHistory() {
     if (active === null) return;
+    const version = documentVersion(active);
     try {
       const query2 = apiQuery(sessionId, { selectedFolder, path: active.file.path });
-      setHistory(await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_HISTORY_PATH}?${query2}`, { cache: "no-store" })));
+      const entries = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_HISTORY_PATH}?${query2}`, { cache: "no-store" }));
+      if (!sameDocumentVersion(currentDocument(active), version)) return;
+      setHistoryDocumentId(active.documentId);
+      setHistory(entries);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }
   async function restore(entry) {
-    if (active === null || !window.confirm(`\u6062\u590D ${new Date(entry.createdAt).toLocaleString()} \u7684\u7248\u672C\u5417\uFF1F`)) return;
+    if (active === null || active.documentId !== historyDocumentId || busy || !window.confirm(`\u6062\u590D ${new Date(entry.createdAt).toLocaleString()} \u7684\u7248\u672C\u5417\uFF1F`)) return;
+    const item = active;
+    const version = documentVersion(item);
+    setBusy(true);
     try {
       const file = await apiJson(await fetch(
-        `${PAGECRAFT_WORKSPACE_RESTORE_PATH}?${apiQuery(sessionId)}`,
+        `${PAGECRAFT_WORKSPACE_RESTORE_PATH}?${apiQuery(item.scope.sessionId)}`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ selectedFolder, path: active.file.path, historyId: entry.id, baseHash: active.file.hash })
+          body: JSON.stringify({ selectedFolder: item.scope.selectedFolder, path: item.file.path, historyId: entry.id, baseHash: item.file.hash })
         }
       ));
-      setOpenFiles((items) => items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item));
+      const current = currentDocument(item);
+      if (!sameDocumentVersion(current, version, true)) return;
+      if (sameDocumentVersion(current, version)) {
+        await discardDocument(current, file);
+        const afterCleanup = currentDocument(item);
+        if (sameDocumentVersion(afterCleanup, version, true)) {
+          setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, file } : open));
+          const error = await persistDocument(currentDocument(item));
+          setStatus(error === null ? "\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF1B\u4FDD\u7559\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002" : `\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF0C\u4F46\u8349\u7A3F\u7F13\u5B58\u5931\u8D25\uFF1A${error}`);
+        }
+      } else {
+        setOpenFiles((items) => items.map((open) => open.documentId === item.documentId ? { ...open, file, conflict: null } : open));
+        const latest = currentDocument(item);
+        const error = await persistDocument(latest);
+        setStatus(error === null ? "\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF1B\u6062\u590D\u671F\u95F4\u7684\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u3002" : `\u5386\u53F2\u7248\u672C\u5DF2\u5199\u5165\u78C1\u76D8\uFF0C\u4F46\u65B0\u8349\u7A3F\u7F13\u5B58\u5931\u8D25\uFF1A${error}`);
+      }
       setHistory([]);
-      setStatus("\u5386\u53F2\u7248\u672C\u5DF2\u6062\u590D\u3002");
       window.setTimeout(onRefresh, 450);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   }
   async function browseFolders(path) {
@@ -32834,36 +32970,28 @@ function WorkspaceExplorer({
       setBusy(false);
     }
   }
-  const refreshOpenFiles = (0, import_react3.useCallback)(async () => {
-    const snapshots = openFilesRef.current;
-    for (const item of snapshots) {
+  const refreshOpenFiles = (0, import_react4.useCallback)(async () => {
+    for (const item of openFilesRef.current) {
+      const version = documentVersion(item);
       try {
-        const query2 = apiQuery(sessionId, { selectedFolder, path: item.file.path });
+        const query2 = apiQuery(item.scope.sessionId, { selectedFolder: item.scope.selectedFolder, path: item.file.path });
         const disk = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
         setOpenFiles((files) => files.map((open) => {
-          if (open.file.path !== disk.path) return open;
-          const reconciled = reconcileOpenFile({
-            path: open.file.path,
-            file: open.file,
-            draft: open.draft,
-            conflict: open.conflict
-          }, disk);
-          if (reconciled.conflict !== null) setConflict({ mine: open.draft, current: disk });
-          return {
-            file: reconciled.file.hash === disk.hash ? disk : open.file,
-            draft: reconciled.draft,
-            conflict: reconciled.conflict === null ? null : disk
-          };
+          if (!sameDocumentVersion(open, version, true) || disk.hash === open.file.hash) return open;
+          if (sourceDocumentDirty(open) || open.editRevision !== version.editRevision) {
+            setConflict({ documentId: open.documentId, current: disk });
+            return { ...open, conflict: disk };
+          }
+          return resetSourceDocument(open, disk);
         }));
       } catch (error) {
         if (error instanceof WorkspaceApiError && error.status === 404) {
-          setOpenFiles((files) => files.filter((open) => open.file.path !== item.file.path));
-          if (activePath === item.file.path) setActivePath(null);
+          setOpenFiles((files) => files.filter((open) => !sameDocumentVersion(open, version)));
         }
       }
     }
-  }, [activePath, selectedFolder, sessionId]);
-  (0, import_react3.useEffect)(() => {
+  }, [setOpenFiles]);
+  (0, import_react4.useEffect)(() => {
     if (summary === null) return;
     const query2 = apiQuery(sessionId, { selectedFolder });
     const events = new EventSource(`${PAGECRAFT_WORKSPACE_EVENTS_PATH}?${query2}`);
@@ -32899,7 +33027,7 @@ function WorkspaceExplorer({
     events.onerror = () => setStatus("\u81EA\u52A8\u540C\u6B65\u6682\u65F6\u4E2D\u65AD\uFF0C\u53EF\u70B9\u51FB\u201C\u5237\u65B0\u76EE\u5F55\u201D\u91CD\u65B0\u68C0\u67E5\u6587\u4EF6\u3002");
     return () => events.close();
   }, [loadDirectory, refreshOpenFiles, selectedFolder, sessionId, summary?.selectedPath]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     function reconcileOnFocus() {
       for (const path of treeRef.current.expanded) void loadDirectory(path, true);
       void refreshOpenFiles();
@@ -32933,77 +33061,82 @@ function WorkspaceExplorer({
     textEditable: false,
     imagePreviewable: false
   };
+  const conflictDocument = conflict === null ? void 0 : openFiles.find((item) => item.documentId === conflict.documentId);
+  const canSave = active !== null && dirty && active.conflict === null && !sourceDocumentReadOnly(active);
   const currentEntry = selectedEntry ?? (activePath === null ? null : workspaceEntryByPath(tree, activePath));
   const imageSource = currentEntry?.imagePreviewable ? `${PAGECRAFT_WORKSPACE_BLOB_PATH}?${apiQuery(sessionId, { selectedFolder, path: currentEntry.path })}` : null;
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { ref: shellRef, "data-pagecraft-source-workspace": "", style: sourceStyles.root, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("header", { style: sourceStyles.toolbar, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.brand, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: "PageCraft \u6587\u4EF6\u5DE5\u4F5C\u533A" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { title: summary?.selectedPath, children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { ref: shellRef, "data-pagecraft-source-workspace": "", style: sourceStyles.root, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("header", { style: sourceStyles.toolbar, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.brand, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: "PageCraft \u6587\u4EF6\u5DE5\u4F5C\u533A" }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { title: summary?.selectedPath, children: [
           selectedFolder,
           " \xB7 \u4E0E\u672C\u5730\u76EE\u5F55\u5B9E\u65F6\u540C\u6B65"
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
         void openFolderPicker();
       }, style: sourceStyles.toolbarButton, children: "\u6253\u5F00\u6587\u4EF6\u5939" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
         for (const path of treeRef.current.expanded) void loadDirectory(path, true);
         void refreshOpenFiles();
       }, style: sourceStyles.toolbarButton, children: "\u5237\u65B0\u76EE\u5F55" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setTreeVisible((value) => !value), style: { ...sourceStyles.toolbarButton, ...treeVisible ? sourceStyles.toolbarButtonActive : {} }, children: "\u2630 \u6587\u4EF6\u6811" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setFocus("split"), style: { ...sourceStyles.toolbarButton, ...focus === "split" ? sourceStyles.toolbarButtonActive : {} }, children: "\u5206\u680F" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setFocus("editor"), style: { ...sourceStyles.toolbarButton, ...focus === "editor" ? sourceStyles.toolbarButtonActive : {} }, children: "\u4EE3\u7801\u6700\u5927\u5316" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setFocus("preview"), style: { ...sourceStyles.toolbarButton, ...focus === "preview" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9884\u89C8\u6700\u5927\u5316" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("input", { ref: fileInputRef, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: true, hidden: true, onChange: (event) => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setTreeVisible((value) => !value), style: { ...sourceStyles.toolbarButton, ...treeVisible ? sourceStyles.toolbarButtonActive : {} }, children: "\u2630 \u6587\u4EF6\u6811" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setFocus("split"), style: { ...sourceStyles.toolbarButton, ...focus === "split" ? sourceStyles.toolbarButtonActive : {} }, children: "\u5206\u680F" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setFocus("editor"), style: { ...sourceStyles.toolbarButton, ...focus === "editor" ? sourceStyles.toolbarButtonActive : {} }, children: "\u4EE3\u7801\u6700\u5927\u5316" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setFocus("preview"), style: { ...sourceStyles.toolbarButton, ...focus === "preview" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9884\u89C8\u6700\u5927\u5316" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { ref: fileInputRef, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: true, hidden: true, onChange: (event) => {
         void uploadImages(event.target.files);
       } }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => fileInputRef.current?.click(), style: sourceStyles.toolbarButton, children: "\u4E0A\u4F20\u56FE\u7247" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: !dirty || busy, onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => fileInputRef.current?.click(), style: sourceStyles.toolbarButton, children: "\u4E0A\u4F20\u56FE\u7247" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: !canSave || busy, onClick: () => {
         void saveActive();
-      }, style: { ...sourceStyles.saveButton, ...!dirty || busy ? sourceStyles.disabled : {} }, children: busy ? "\u5904\u7406\u4E2D\u2026" : dirty ? "\u4FDD\u5B58 Ctrl+S" : "\u5DF2\u4FDD\u5B58" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", "aria-label": "\u5173\u95ED\u6587\u4EF6\u5DE5\u4F5C\u533A", onClick: handleClose2, style: sourceStyles.closeButton, children: "\xD7" })
+      }, style: { ...sourceStyles.saveButton, ...!canSave || busy ? sourceStyles.disabled : {} }, children: busy ? "\u5904\u7406\u4E2D\u2026" : dirty ? "\u4FDD\u5B58 Ctrl+S" : "\u5DF2\u4FDD\u5B58" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", "aria-label": "\u5173\u95ED\u6587\u4EF6\u5DE5\u4F5C\u533A", onClick: handleClose2, style: sourceStyles.closeButton, children: "\xD7" })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { ...sourceStyles.body, gridTemplateColumns: treeVisible ? "190px minmax(0, 1fr)" : "0 minmax(0, 1fr)" }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("aside", { style: sourceStyles.treePane, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.treeActions, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", title: "\u65B0\u5EFA\u6587\u4EF6", onClick: () => {
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: { ...sourceStyles.body, gridTemplateColumns: treeVisible ? "190px minmax(0, 1fr)" : "0 minmax(0, 1fr)" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("aside", { style: sourceStyles.treePane, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.treeActions, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", title: "\u65B0\u5EFA\u6587\u4EF6", onClick: () => {
             void createFile("file");
           }, style: sourceStyles.tinyButton, children: "\uFF0B\u6587\u4EF6" }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", title: "\u65B0\u5EFA\u76EE\u5F55", onClick: () => {
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", title: "\u65B0\u5EFA\u76EE\u5F55", onClick: () => {
             void createFile("directory");
           }, style: sourceStyles.tinyButton, children: "\uFF0B\u76EE\u5F55" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.treeScroller, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(TreeNode2, { entry: rootEntry, depth: 0, activePath, tree, onOpen: (node) => {
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.treeScroller, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(TreeNode2, { entry: rootEntry, depth: 0, activePath, tree, onOpen: (node) => {
           void openEntry(node);
         }, onToggle: (node) => {
           void toggleEntry(node);
         } }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.fileActions, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: selectedEntry === null || selectedEntry.path === selectedFolder, onClick: () => {
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.fileActions, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: selectedEntry === null || selectedEntry.path === selectedFolder, onClick: () => {
             void renameActive();
           }, style: sourceStyles.tinyButton, children: "\u91CD\u547D\u540D" }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: selectedEntry === null || selectedEntry.path === selectedFolder, onClick: () => {
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: selectedEntry === null || selectedEntry.path === selectedFolder, onClick: () => {
             void deleteActive();
           }, style: sourceStyles.dangerTinyButton, children: "\u5220\u9664" })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("main", { style: { ...sourceStyles.main, gridTemplateColumns: mainColumns }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { style: sourceStyles.editorPane, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.tabs, children: openFiles.map((item) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("button", { type: "button", onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("main", { style: { ...sourceStyles.main, gridTemplateColumns: mainColumns }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { style: sourceStyles.editorPane, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.tabs, children: openFiles.map((item) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("button", { type: "button", onClick: () => {
             setActivePath(item.file.path);
             setSelectedEntry(workspaceEntryByPath(tree, item.file.path));
           }, style: { ...sourceStyles.tab, ...activePath === item.file.path ? sourceStyles.tabActive : {} }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: item.file.path.split("/").at(-1) }),
-            item.draft !== item.file.content ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("b", { children: "\u25CF" }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { role: "button", "aria-label": `\u5173\u95ED ${item.file.path}`, onClick: (event) => {
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: item.file.path.split("/").at(-1) }),
+            sourceDocumentDirty(item) ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("b", { children: "\u25CF" }) : null,
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { role: "button", "aria-label": `\u5173\u95ED ${item.file.path}`, onClick: (event) => {
               event.stopPropagation();
               closeTab(item.file.path);
             }, style: sourceStyles.tabClose, children: "\xD7" })
           ] }, item.file.path)) }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.editorBody, children: active !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.editorBody, children: active !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
             CodeEditor,
             {
+              documentId: active.documentId,
+              resetRevision: active.resetRevision,
+              readOnly: sourceDocumentReadOnly(active),
               path: active.file.path,
               value: active.draft,
               revealLine: revealLocation?.path === active.file.path ? revealLocation.line : void 0,
@@ -33011,42 +33144,41 @@ function WorkspaceExplorer({
               onSave: () => {
                 void saveActive();
               }
-            },
-            `${active.file.path}:${active.file.hash}:${revealLocation?.path === active.file.path ? revealLocation.revision : 0}`
-          ) : imageSource !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.imagePreview, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("img", { src: imageSource, alt: currentEntry?.name ?? "\u9879\u76EE\u56FE\u7247", style: sourceStyles.imagePreviewContent }) }) : currentEntry !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.binaryInfo, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: currentEntry.name }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: currentEntry.path }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: currentEntry.bytes === void 0 ? "\u6587\u4EF6\u5939" : `${Math.ceil(currentEntry.bytes / 1024)} KB` }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: "\u6B64\u6587\u4EF6\u4E0D\u4F5C\u4E3A\u6587\u672C\u6253\u5F00\u3002" })
-          ] }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.noFile, children: "\u4ECE\u5DE6\u4FA7\u9009\u62E9\u771F\u5B9E\u9879\u76EE\u6587\u4EF6" }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("footer", { style: sourceStyles.editorStatus, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: status }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.statusActions, children: [
-              active !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+            }
+          ) : imageSource !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.imagePreview, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("img", { src: imageSource, alt: currentEntry?.name ?? "\u9879\u76EE\u56FE\u7247", style: sourceStyles.imagePreviewContent }) }) : currentEntry !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.binaryInfo, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: currentEntry.name }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: currentEntry.path }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: currentEntry.bytes === void 0 ? "\u6587\u4EF6\u5939" : `${Math.ceil(currentEntry.bytes / 1024)} KB` }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: "\u6B64\u6587\u4EF6\u4E0D\u4F5C\u4E3A\u6587\u672C\u6253\u5F00\u3002" })
+          ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.noFile, children: "\u4ECE\u5DE6\u4FA7\u9009\u62E9\u771F\u5B9E\u9879\u76EE\u6587\u4EF6" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("footer", { style: sourceStyles.editorStatus, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: active !== null && sourceDocumentReadOnly(active) ? "\u6B64\u6587\u4EF6\u53EA\u8BFB\uFF1A\u4E0D\u81EA\u52A8\u7EDF\u4E00\u6DF7\u5408\u6362\u884C\u3002" : status }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.statusActions, children: [
+              active !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
                 void loadHistory();
               }, style: sourceStyles.statusButton, children: "\u5386\u53F2\u7248\u672C" }) : null,
-              dirty ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+              dirty ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: busy, onClick: () => {
                 void discardActiveDraft();
               }, style: sourceStyles.statusButton, children: "\u4E22\u5F03\u4FEE\u6539" }) : null,
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { children: [
                 active?.file.language ?? "",
                 dirty ? " \xB7 \u672A\u4FDD\u5B58" : active === null ? "" : " \xB7 \u5DF2\u4FDD\u5B58"
               ] })
             ] })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { onPointerDown: beginResize, style: sourceStyles.divider, children: "\u22EE" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { style: sourceStyles.previewPane, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.previewHeader, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: "\u5B9E\u65F6\u9884\u89C8" }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.previewActions, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("text"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "text" ? sourceStyles.textModeButtonActive : {} }, children: "\u9009\u62E9\u6587\u5B57" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("element"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "element" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9009\u62E9\u5143\u7D20" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("area"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "area" ? sourceStyles.areaModeButtonActive : {} }, children: "\u6846\u9009\u533A\u57DF" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: onRefresh, style: sourceStyles.statusButton, children: "\u5237\u65B0" })
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { onPointerDown: beginResize, style: sourceStyles.divider, children: "\u22EE" }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { style: sourceStyles.previewPane, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.previewHeader, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: "\u5B9E\u65F6\u9884\u89C8" }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.previewActions, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("text"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "text" ? sourceStyles.textModeButtonActive : {} }, children: "\u9009\u62E9\u6587\u5B57" }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("element"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "element" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9009\u62E9\u5143\u7D20" }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("area"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "area" ? sourceStyles.areaModeButtonActive : {} }, children: "\u6846\u9009\u533A\u57DF" }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: onRefresh, style: sourceStyles.statusButton, children: "\u5237\u65B0" })
             ] })
           ] }),
-          previewSrc === null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { "data-pagecraft-workspace-empty-preview": "", style: sourceStyles.emptyPreview, children: "\u5C1A\u672A\u8BBE\u7F6E\u9884\u89C8\u5730\u5740\uFF1B\u53EF\u7EE7\u7EED\u6D4F\u89C8\u548C\u7F16\u8F91\u9879\u76EE\u6587\u4EF6\u3002" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          previewSrc === null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { "data-pagecraft-workspace-empty-preview": "", style: sourceStyles.emptyPreview, children: "\u5C1A\u672A\u8BBE\u7F6E\u9884\u89C8\u5730\u5740\uFF1B\u53EF\u7EE7\u7EED\u6D4F\u89C8\u548C\u7F16\u8F91\u9879\u76EE\u6587\u4EF6\u3002" }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
             "iframe",
             {
               ref: previewRef,
@@ -33057,24 +33189,24 @@ function WorkspaceExplorer({
               onLoad: () => postPreviewMode(previewSelectionMode)
             }
           ),
-          textSelection !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.textEditPanel, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.textEditHeader, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: "\u76F4\u63A5\u4FEE\u6539\u663E\u793A\u6587\u5B57" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+          textSelection !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.textEditPanel, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.textEditHeader, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: "\u76F4\u63A5\u4FEE\u6539\u663E\u793A\u6587\u5B57" }),
+                /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { children: [
                   textSelection.tagName,
                   " \xB7 ",
                   textSelection.displayedText.slice(0, 80)
                 ] })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
                 previewRef.current?.contentWindow?.postMessage({
                   type: "dsh-pagecraft-convert-text-selection",
                   selection: textSelection
                 }, "*");
               }, style: sourceStyles.secondaryTextButton, children: "\u8F6C\u4E3A\u8BC4\u6CE8" })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
               "textarea",
               {
                 autoFocus: true,
@@ -33085,13 +33217,13 @@ function WorkspaceExplorer({
                 style: sourceStyles.textEditInput
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.textEditActions, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: "\u53EA\u4F1A\u5728\u627E\u5230\u552F\u4E00\u3001\u5B89\u5168\u7684\u672C\u5730\u6E90\u7801\u4F4D\u7F6E\u65F6\u5199\u5165\uFF1B\u5931\u8D25\u4F1A\u81EA\u52A8\u6062\u590D\u3002" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: textEditBusy, onClick: () => {
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.textEditActions, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: "\u53EA\u4F1A\u5728\u627E\u5230\u552F\u4E00\u3001\u5B89\u5168\u7684\u672C\u5730\u6E90\u7801\u4F4D\u7F6E\u65F6\u5199\u5165\uFF1B\u5931\u8D25\u4F1A\u81EA\u52A8\u6062\u590D\u3002" }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: textEditBusy, onClick: () => {
                 setTextSelection(null);
                 setReplacementText("");
               }, style: sourceStyles.secondaryTextButton, children: "\u53D6\u6D88" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
                 "button",
                 {
                   type: "button",
@@ -33108,65 +33240,55 @@ function WorkspaceExplorer({
         ] })
       ] })
     ] }),
-    history2.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.historyPanel, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.historyHeader, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: "\u6700\u8FD1\u4FDD\u5B58\u7248\u672C" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setHistory([]), style: sourceStyles.statusButton, children: "\u5173\u95ED" })
+    history2.length > 0 && active?.documentId === historyDocumentId ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.historyPanel, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.historyHeader, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: "\u6700\u8FD1\u4FDD\u5B58\u7248\u672C" }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setHistory([]), style: sourceStyles.statusButton, children: "\u5173\u95ED" })
       ] }),
-      history2.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("button", { type: "button", onClick: () => {
+      history2.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("button", { type: "button", onClick: () => {
         void restore(entry);
       }, style: sourceStyles.historyItem, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: new Date(entry.createdAt).toLocaleString() }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("code", { children: entry.hash.slice(0, 8) }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: new Date(entry.createdAt).toLocaleString() }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("code", { children: entry.hash.slice(0, 8) }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { children: [
           Math.ceil(entry.bytes / 1024),
           " KB"
         ] })
       ] }, entry.id))
     ] }) : null,
-    conflict !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.conflictDialog, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: sourceStyles.conflictTitle, children: "\u6587\u4EF6\u5DF2\u88AB Agent \u6216\u5176\u4ED6\u7F16\u8F91\u5668\u4FEE\u6539" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { style: sourceStyles.conflictText, children: "\u4E3A\u907F\u514D\u8986\u76D6\u6700\u65B0\u4EE3\u7801\uFF0CPageCraft \u5DF2\u505C\u6B62\u4FDD\u5B58\u3002\u53EF\u4EE5\u8F7D\u5165\u78C1\u76D8\u7248\u672C\uFF0C\u6216\u8005\u660E\u786E\u7528\u4F60\u7684\u5185\u5BB9\u8986\u76D6\u5F53\u524D\u7248\u672C\u3002" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.diffGrid, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("b", { children: "\u6211\u7684\u7248\u672C" }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("pre", { children: conflict.mine.slice(0, 3e3) })
+    conflict !== null && conflictDocument !== void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictDialog, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: sourceStyles.conflictTitle, children: "\u6587\u4EF6\u5DF2\u88AB Agent \u6216\u5176\u4ED6\u7F16\u8F91\u5668\u4FEE\u6539" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { style: sourceStyles.conflictText, children: "\u4E3A\u907F\u514D\u8986\u76D6\u6700\u65B0\u4EE3\u7801\uFF0CPageCraft \u5DF2\u505C\u6B62\u4FDD\u5B58\u3002\u53EF\u4EE5\u8F7D\u5165\u78C1\u76D8\u7248\u672C\uFF0C\u6216\u8005\u660E\u786E\u7528\u4F60\u7684\u5185\u5BB9\u8986\u76D6\u5F53\u524D\u7248\u672C\u3002" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.diffGrid, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("b", { children: "\u6211\u7684\u7248\u672C" }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("pre", { children: sourceDocumentRaw(conflictDocument).slice(0, 3e3) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("b", { children: "\u78C1\u76D8\u6700\u65B0\u7248\u672C" }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("pre", { children: conflict.current.content.slice(0, 3e3) })
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("b", { children: "\u78C1\u76D8\u6700\u65B0\u7248\u672C" }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("pre", { children: conflict.current.content.slice(0, 3e3) })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.conflictActions, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
-          const current = conflict.current;
-          const scope = draftScope(current.path);
-          void (async () => {
-            try {
-              if (scope !== null) await draftCache.discard(scope);
-              setOpenFiles((items) => items.map((item) => item.file.path === current.path ? { file: current, draft: current.content, conflict: null, draftRevision: null } : item));
-              setConflict(null);
-              setStatus(`\u5DF2\u8F7D\u5165 ${current.path} \u7684\u78C1\u76D8\u7248\u672C\u5E76\u4E22\u5F03\u5BF9\u5E94\u6D4F\u89C8\u5668\u8349\u7A3F\u3002`);
-            } catch (error) {
-              setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
-            }
-          })();
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictActions, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
+          if (busy) return;
+          void discardDocument(conflictDocument, conflict.current);
         }, style: sourceStyles.secondaryButton, children: "\u8F7D\u5165\u6700\u65B0\u7248\u672C" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
-          if (active === null) return;
-          void writeFile({ ...active, draft: conflict.mine }, conflict.current.hash);
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: busy || sourceDocumentReadOnly(conflictDocument), onClick: () => {
+          if (busy) return;
+          void writeFile(conflictDocument, conflict.current.hash);
         }, style: sourceStyles.dangerButton, children: "\u7528\u6211\u7684\u7248\u672C\u8986\u76D6" })
       ] })
     ] }) }) : null,
-    folderPickerOpen ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.folderDialog, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: sourceStyles.conflictTitle, children: "\u9009\u62E9\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u4E2D\u7684\u6587\u4EF6\u5939" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("code", { style: sourceStyles.folderPath, children: folderBrowsePath }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.folderList, children: [
-        folderBrowsePath !== "." ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+    folderPickerOpen ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sourceStyles.conflictOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.folderDialog, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: sourceStyles.conflictTitle, children: "\u9009\u62E9\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u4E2D\u7684\u6587\u4EF6\u5939" }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("code", { style: sourceStyles.folderPath, children: folderBrowsePath }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.folderList, children: [
+        folderBrowsePath !== "." ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
           const parent = folderBrowsePath.includes("/") ? folderBrowsePath.slice(0, folderBrowsePath.lastIndexOf("/")) : ".";
           void browseFolders(parent);
         }, style: sourceStyles.folderItem, children: "\u21A9 \u4E0A\u4E00\u7EA7" }) : null,
-        folderEntries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("button", { type: "button", onDoubleClick: () => {
+        folderEntries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("button", { type: "button", onDoubleClick: () => {
           void browseFolders(entry.path);
         }, onClick: () => {
           void browseFolders(entry.path);
@@ -33175,9 +33297,9 @@ function WorkspaceExplorer({
           entry.name
         ] }, entry.path))
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.conflictActions, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => setFolderPickerOpen(false), style: sourceStyles.secondaryButton, children: "\u53D6\u6D88" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: sourceStyles.conflictActions, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => setFolderPickerOpen(false), style: sourceStyles.secondaryButton, children: "\u53D6\u6D88" }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: () => {
           void chooseFolder();
         }, style: sourceStyles.primaryButton, children: "\u6253\u5F00\u5F53\u524D\u6587\u4EF6\u5939" })
       ] })
@@ -33252,7 +33374,7 @@ var sourceStyles = {
 };
 
 // src/client/project-assets.tsx
-var import_react4 = require("react");
+var import_react5 = require("react");
 
 // src/presentation-workspace.ts
 var PRESENTATION_WORKSPACE_PATH = "/api/frontend-feedback/presentation-workspace";
@@ -33261,7 +33383,7 @@ var PRESENTATION_WORKSPACE_ASSET_PATH = "/api/frontend-feedback/presentation-wor
 var PRESENTATION_WORKSPACE_BIND_ASSET_PATH = "/api/frontend-feedback/presentation-workspace/bind-asset";
 
 // src/client/project-assets.tsx
-var import_jsx_runtime4 = require("react/jsx-runtime");
+var import_jsx_runtime5 = require("react/jsx-runtime");
 async function readJson(response) {
   const value = await response.json().catch(() => null);
   if (!response.ok) throw new Error(value?.error?.message ?? `\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09`);
@@ -33282,14 +33404,14 @@ function ProjectAssetLibraryDialog({
   onClose,
   onRefresh
 }) {
-  const [summary, setSummary] = (0, import_react4.useState)(null);
-  const [assets, setAssets] = (0, import_react4.useState)([]);
-  const [selectedPath, setSelectedPath] = (0, import_react4.useState)(null);
-  const [fit, setFit] = (0, import_react4.useState)("cover");
-  const [focalPoint, setFocalPoint] = (0, import_react4.useState)({ x: 0.5, y: 0.5 });
-  const [status, setStatus] = (0, import_react4.useState)("\u6B63\u5728\u8BFB\u53D6\u9879\u76EE\u56FE\u7247\u2026");
-  const [busy, setBusy] = (0, import_react4.useState)(false);
-  const uploadRef = (0, import_react4.useRef)(null);
+  const [summary, setSummary] = (0, import_react5.useState)(null);
+  const [assets, setAssets] = (0, import_react5.useState)([]);
+  const [selectedPath, setSelectedPath] = (0, import_react5.useState)(null);
+  const [fit, setFit] = (0, import_react5.useState)("cover");
+  const [focalPoint, setFocalPoint] = (0, import_react5.useState)({ x: 0.5, y: 0.5 });
+  const [status, setStatus] = (0, import_react5.useState)("\u6B63\u5728\u8BFB\u53D6\u9879\u76EE\u56FE\u7247\u2026");
+  const [busy, setBusy] = (0, import_react5.useState)(false);
+  const uploadRef = (0, import_react5.useRef)(null);
   const selectedAsset = assets.find((asset) => asset.path === selectedPath) ?? null;
   async function load() {
     setBusy(true);
@@ -33316,7 +33438,7 @@ function ProjectAssetLibraryDialog({
       setBusy(false);
     }
   }
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     void load();
   }, [sessionId]);
   async function upload(files) {
@@ -33394,38 +33516,38 @@ function ProjectAssetLibraryDialog({
     }
   }
   const canBind = selectedAsset !== null && selectedSlot?.imageKey !== void 0 && summary?.available === true;
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": "\u9879\u76EE\u56FE\u7247\u7BA1\u7406", style: projectAssetStyles.overlay, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: projectAssetStyles.dialog, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("header", { style: projectAssetStyles.header, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: projectAssetStyles.title, children: "\u9879\u76EE\u56FE\u7247" }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: projectAssetStyles.subtitle, children: "\u56FE\u7247\u4F1A\u4FDD\u5B58\u5230 PPT \u9879\u76EE\u76EE\u5F55\uFF0C\u6D4F\u89C8\u5668\u76F4\u63A5\u6253\u5F00\u4E5F\u80FD\u663E\u793A" })
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": "\u9879\u76EE\u56FE\u7247\u7BA1\u7406", style: projectAssetStyles.overlay, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.dialog, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("header", { style: projectAssetStyles.header, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: projectAssetStyles.title, children: "\u9879\u76EE\u56FE\u7247" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: projectAssetStyles.subtitle, children: "\u56FE\u7247\u4F1A\u4FDD\u5B58\u5230 PPT \u9879\u76EE\u76EE\u5F55\uFF0C\u6D4F\u89C8\u5668\u76F4\u63A5\u6253\u5F00\u4E5F\u80FD\u663E\u793A" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", onClick: onClose, style: projectAssetStyles.closeButton, children: "\xD7" })
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: onClose, style: projectAssetStyles.closeButton, children: "\xD7" })
     ] }),
-    selectedSlot !== null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: projectAssetStyles.slotNotice, children: [
+    selectedSlot !== null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.slotNotice, children: [
       "\u5F53\u524D\u69FD\u4F4D\uFF1A",
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: selectedSlot.label ?? selectedSlot.slotId }),
-      selectedSlot.imageKey === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: " \xB7 \u65E7\u69FD\u4F4D\u7F3A\u5C11\u6E90\u7801\u952E\uFF0C\u53EA\u80FD\u4F7F\u7528\u65E7\u7248\u4E34\u65F6\u7ED1\u5B9A" }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: selectedSlot.label ?? selectedSlot.slotId }),
+      selectedSlot.imageKey === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: " \xB7 \u65E7\u69FD\u4F4D\u7F3A\u5C11\u6E90\u7801\u952E\uFF0C\u53EA\u80FD\u4F7F\u7528\u65E7\u7248\u4E34\u65F6\u7ED1\u5B9A" }) : null
     ] }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: projectAssetStyles.body, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("aside", { style: projectAssetStyles.assetGrid, children: [
-        assets.map((asset) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.body, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("aside", { style: projectAssetStyles.assetGrid, children: [
+        assets.map((asset) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
           "button",
           {
             type: "button",
             onClick: () => setSelectedPath(asset.path),
             style: { ...projectAssetStyles.assetCard, ...selectedPath === asset.path ? projectAssetStyles.assetCardActive : {} },
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("img", { src: assetPreviewUrl(sessionId, asset.path), alt: asset.name, style: projectAssetStyles.thumbnail }),
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: projectAssetStyles.assetName, children: asset.name }),
-              /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { style: projectAssetStyles.assetMeta, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("img", { src: assetPreviewUrl(sessionId, asset.path), alt: asset.name, style: projectAssetStyles.thumbnail }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: projectAssetStyles.assetName, children: asset.name }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: projectAssetStyles.assetMeta, children: [
                 asset.width,
                 "\xD7",
                 asset.height,
                 " \xB7 ",
                 describeBytes(asset.bytes)
               ] }),
-              asset.references.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { style: projectAssetStyles.reference, children: [
+              asset.references.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: projectAssetStyles.reference, children: [
                 "\u7528\u4E8E ",
                 asset.references.join("\u3001")
               ] }) : null
@@ -33433,10 +33555,10 @@ function ProjectAssetLibraryDialog({
           },
           asset.path
         )),
-        assets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: projectAssetStyles.empty, children: "\u8FD8\u6CA1\u6709\u9879\u76EE\u56FE\u7247" }) : null
+        assets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: projectAssetStyles.empty, children: "\u8FD8\u6CA1\u6709\u9879\u76EE\u56FE\u7247" }) : null
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("section", { style: projectAssetStyles.inspector, children: selectedAsset === null ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: projectAssetStyles.empty, children: "\u4E0A\u4F20\u6216\u9009\u62E9\u4E00\u5F20\u56FE\u7247" }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_jsx_runtime4.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: projectAssetStyles.previewBox, children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("section", { style: projectAssetStyles.inspector, children: selectedAsset === null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: projectAssetStyles.empty, children: "\u4E0A\u4F20\u6216\u9009\u62E9\u4E00\u5F20\u56FE\u7247" }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: projectAssetStyles.previewBox, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "img",
           {
             src: assetPreviewUrl(sessionId, selectedAsset.path),
@@ -33444,33 +33566,33 @@ function ProjectAssetLibraryDialog({
             style: { ...projectAssetStyles.previewImage, objectFit: fit, objectPosition: `${focalPoint.x * 100}% ${focalPoint.y * 100}%` }
           }
         ) }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { style: projectAssetStyles.field, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: projectAssetStyles.field, children: [
           "\u9002\u914D\u65B9\u5F0F",
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("select", { value: fit, onChange: (event) => setFit(event.target.value === "contain" ? "contain" : "cover"), style: projectAssetStyles.select, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: "cover", children: "\u94FA\u6EE1\u69FD\u4F4D" }),
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: "contain", children: "\u5B8C\u6574\u663E\u793A" })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("select", { value: fit, onChange: (event) => setFit(event.target.value === "contain" ? "contain" : "cover"), style: projectAssetStyles.select, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "cover", children: "\u94FA\u6EE1\u69FD\u4F4D" }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "contain", children: "\u5B8C\u6574\u663E\u793A" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { style: projectAssetStyles.field, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: projectAssetStyles.field, children: [
           "\u6C34\u5E73\u7126\u70B9",
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { type: "range", min: "0", max: "1", step: "0.01", value: focalPoint.x, onChange: (event) => setFocalPoint((point) => ({ ...point, x: Number(event.target.value) })) })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("input", { type: "range", min: "0", max: "1", step: "0.01", value: focalPoint.x, onChange: (event) => setFocalPoint((point) => ({ ...point, x: Number(event.target.value) })) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { style: projectAssetStyles.field, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: projectAssetStyles.field, children: [
           "\u5782\u76F4\u7126\u70B9",
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { type: "range", min: "0", max: "1", step: "0.01", value: focalPoint.y, onChange: (event) => setFocalPoint((point) => ({ ...point, y: Number(event.target.value) })) })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("input", { type: "range", min: "0", max: "1", step: "0.01", value: focalPoint.y, onChange: (event) => setFocalPoint((point) => ({ ...point, y: Number(event.target.value) })) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: selectedAsset.references.length > 0 || busy, onClick: () => {
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", disabled: selectedAsset.references.length > 0 || busy, onClick: () => {
           void removeSelected();
         }, style: projectAssetStyles.deleteButton, children: "\u5220\u9664\u672A\u4F7F\u7528\u56FE\u7247" })
       ] }) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("footer", { style: projectAssetStyles.footer, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: projectAssetStyles.status, children: status }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { ref: uploadRef, hidden: true, multiple: true, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", onChange: (event) => {
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("footer", { style: projectAssetStyles.footer, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: projectAssetStyles.status, children: status }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("input", { ref: uploadRef, hidden: true, multiple: true, type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", onChange: (event) => {
         void upload(event.target.files);
       } }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: busy || summary?.available !== true, onClick: () => uploadRef.current?.click(), style: projectAssetStyles.secondaryButton, children: "\u4E0A\u4F20\u5230\u9879\u76EE" }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("button", { type: "button", disabled: !canBind || busy, onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", disabled: busy || summary?.available !== true, onClick: () => uploadRef.current?.click(), style: projectAssetStyles.secondaryButton, children: "\u4E0A\u4F20\u5230\u9879\u76EE" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", disabled: !canBind || busy, onClick: () => {
         void bindSelected();
       }, style: projectAssetStyles.primaryButton, children: busy ? "\u5904\u7406\u4E2D\u2026" : selectedSlot === null ? "\u9009\u62E9\u4E00\u4E2A\u56FE\u7247\u69FD\u4F4D" : "\u66FF\u6362\u6B64\u69FD\u4F4D" })
     ] })
@@ -33506,7 +33628,7 @@ var projectAssetStyles = {
 };
 
 // src/client/index.tsx
-var import_jsx_runtime5 = require("react/jsx-runtime");
+var import_jsx_runtime6 = require("react/jsx-runtime");
 var inject = ["slots", "sessions"];
 var colors = {
   panel: "#121816",
@@ -33521,10 +33643,10 @@ function describeError2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function useSessionRunning(activity) {
-  const subscribe = (0, import_react5.useCallback)((listener) => activity?.subscribe(listener) ?? (() => {
+  const subscribe = (0, import_react6.useCallback)((listener) => activity?.subscribe(listener) ?? (() => {
   }), [activity]);
-  const getSnapshot = (0, import_react5.useCallback)(() => activity?.getSnapshot().running === true, [activity]);
-  return (0, import_react5.useSyncExternalStore)(subscribe, getSnapshot, () => false);
+  const getSnapshot = (0, import_react6.useCallback)(() => activity?.getSnapshot().running === true, [activity]);
+  return (0, import_react6.useSyncExternalStore)(subscribe, getSnapshot, () => false);
 }
 var AREA_OPERATIONS = [
   { value: "insert", label: "\u63D2\u5165", description: "\u4F7F\u7528\u6B63\u5E38\u5E03\u5C40\uFF0C\u5E76\u63A8\u5F00\u540E\u7EED\u5185\u5BB9" },
@@ -33609,48 +33731,48 @@ function FrontendFeedbackPanel({
   const hasSession = sendFeedback !== null;
   const storageId = `${sessionId}:${workspaceMode}`;
   const agentRunning = useSessionRunning(sessionActivity);
-  const iframeRef = (0, import_react5.useRef)(null);
-  const previousAgentRunningRef = (0, import_react5.useRef)(agentRunning);
-  const refreshNoticeRef = (0, import_react5.useRef)(null);
-  const initialNavigation = (0, import_react5.useMemo)(() => readPersistedPreviewNavigation(storageId), [storageId]);
-  const initialDraft = (0, import_react5.useMemo)(() => readPersistedFeedbackDraft(storageId), [storageId]);
-  const navigationRef = (0, import_react5.useRef)(initialNavigation);
+  const iframeRef = (0, import_react6.useRef)(null);
+  const previousAgentRunningRef = (0, import_react6.useRef)(agentRunning);
+  const refreshNoticeRef = (0, import_react6.useRef)(null);
+  const initialNavigation = (0, import_react6.useMemo)(() => readPersistedPreviewNavigation(storageId), [storageId]);
+  const initialDraft = (0, import_react6.useMemo)(() => readPersistedFeedbackDraft(storageId), [storageId]);
+  const navigationRef = (0, import_react6.useRef)(initialNavigation);
   const initialPreviewUrl = currentPreviewUrl(initialNavigation);
-  const [urlDraft, setUrlDraft] = (0, import_react5.useState)(initialPreviewUrl ?? "");
-  const [navigation, setNavigation] = (0, import_react5.useState)(initialNavigation);
-  const [revision, setRevision] = (0, import_react5.useState)(0);
-  const [selectionMode, setSelectionMode] = (0, import_react5.useState)(initialDraft.selection?.kind ?? null);
-  const [selection2, setSelection] = (0, import_react5.useState)(initialDraft.selection);
-  const [areaOperation, setAreaOperation] = (0, import_react5.useState)(initialDraft.areaOperation);
-  const [comment2, setComment] = (0, import_react5.useState)(initialDraft.comment);
-  const [queued, setQueued] = (0, import_react5.useState)(initialDraft.queued);
-  const [status, setStatus] = (0, import_react5.useState)(
+  const [urlDraft, setUrlDraft] = (0, import_react6.useState)(initialPreviewUrl ?? "");
+  const [navigation, setNavigation] = (0, import_react6.useState)(initialNavigation);
+  const [revision, setRevision] = (0, import_react6.useState)(0);
+  const [selectionMode, setSelectionMode] = (0, import_react6.useState)(initialDraft.selection?.kind ?? null);
+  const [selection2, setSelection] = (0, import_react6.useState)(initialDraft.selection);
+  const [areaOperation, setAreaOperation] = (0, import_react6.useState)(initialDraft.areaOperation);
+  const [comment2, setComment] = (0, import_react6.useState)(initialDraft.comment);
+  const [queued, setQueued] = (0, import_react6.useState)(initialDraft.queued);
+  const [status, setStatus] = (0, import_react6.useState)(
     !isFeedbackDraftEmpty(initialDraft) ? `\u5DF2\u6062\u590D\u81EA\u52A8\u4FDD\u5B58\u7684\u8BC4\u6CE8\u8349\u7A3F\uFF08\u961F\u5217 ${initialDraft.queued.length} \u6761\uFF09\u3002` : hasSession ? workspaceMode === "presentation" ? "\u53EF\u4EE5\u65B0\u5EFA\u6F14\u793A\u6587\u7A3F\uFF0C\u6216\u6253\u5F00\u5DF2\u6709 HTML \u6F14\u793A\u6587\u7A3F\u7684\u9884\u89C8\u5730\u5740\u3002" : "\u6253\u5F00\u9875\u9762\u540E\uFF0C\u53EF\u9009\u62E9\u5DF2\u6709 DOM \u5143\u7D20\uFF0C\u4E5F\u53EF\u4EE5\u6846\u9009\u7A7A\u767D\u533A\u57DF\u65B0\u589E\u5185\u5BB9\u3002" : "\u5F53\u524D\u662F\u7A7A\u767D\u4F1A\u8BDD\uFF0C\u9875\u9762\u9884\u89C8\u548C\u8BC4\u6CE8\u53EF\u5148\u884C\u4F7F\u7528\uFF1B\u82E5\u8981\u53D1\u9001\u7ED9 Agent\uFF0C\u8BF7\u5148\u53D1\u8D77\u4E00\u6761\u6D88\u606F\u521B\u5EFA\u4F1A\u8BDD\u3002"
   );
-  const [sending, setSending] = (0, import_react5.useState)(false);
-  const [slides, setSlides] = (0, import_react5.useState)([]);
-  const [activeSlideId, setActiveSlideId] = (0, import_react5.useState)(null);
-  const [showPresentationBrief, setShowPresentationBrief] = (0, import_react5.useState)(false);
-  const [creatingPresentation, setCreatingPresentation] = (0, import_react5.useState)(false);
-  const [presentationJobId, setPresentationJobId] = (0, import_react5.useState)(() => {
+  const [sending, setSending] = (0, import_react6.useState)(false);
+  const [slides, setSlides] = (0, import_react6.useState)([]);
+  const [activeSlideId, setActiveSlideId] = (0, import_react6.useState)(null);
+  const [showPresentationBrief, setShowPresentationBrief] = (0, import_react6.useState)(false);
+  const [creatingPresentation, setCreatingPresentation] = (0, import_react6.useState)(false);
+  const [presentationJobId, setPresentationJobId] = (0, import_react6.useState)(() => {
     const stored = readStoredValue(presentationJobStorageKey(sessionId));
     return isPresentationJobId(stored) ? stored : null;
   });
-  const [assetManifest, setAssetManifest] = (0, import_react5.useState)(emptyPresentationAssetManifest);
-  const [showAssetLibrary, setShowAssetLibrary] = (0, import_react5.useState)(false);
-  const [showProjectAssetLibrary, setShowProjectAssetLibrary] = (0, import_react5.useState)(false);
-  const [showSourceWorkspace, setShowSourceWorkspace] = (0, import_react5.useState)(false);
-  const [selectedImageSlot, setSelectedImageSlot] = (0, import_react5.useState)(null);
+  const [assetManifest, setAssetManifest] = (0, import_react6.useState)(emptyPresentationAssetManifest);
+  const [showAssetLibrary, setShowAssetLibrary] = (0, import_react6.useState)(false);
+  const [showProjectAssetLibrary, setShowProjectAssetLibrary] = (0, import_react6.useState)(false);
+  const [showSourceWorkspace, setShowSourceWorkspace] = (0, import_react6.useState)(false);
+  const [selectedImageSlot, setSelectedImageSlot] = (0, import_react6.useState)(null);
   const loadedUrl = currentPreviewUrl(navigation);
   const canGoBack = navigation.index > 0;
   const canGoForward = navigation.index < navigation.entries.length - 1;
-  const previewFrame = (0, import_react5.useMemo)(() => {
+  const previewFrame = (0, import_react6.useMemo)(() => {
     return loadedUrl === null ? null : resolvePreviewFrameLocation(loadedUrl, window.location.href, revision);
   }, [loadedUrl, revision]);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     persistFeedbackDraft(storageId, { selection: selection2, areaOperation, comment: comment2, queued });
   }, [areaOperation, comment2, queued, selection2, storageId]);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     if (presentationJobId === null) {
       setAssetManifest(emptyPresentationAssetManifest());
       setShowAssetLibrary(false);
@@ -33667,7 +33789,7 @@ function FrontendFeedbackPanel({
       cancelled = true;
     };
   }, [presentationJobId, sessionId]);
-  const postAssetBindings = (0, import_react5.useCallback)((manifest) => {
+  const postAssetBindings = (0, import_react6.useCallback)((manifest) => {
     if (workspaceMode !== "presentation" || presentationJobId === null) return;
     iframeRef.current?.contentWindow?.postMessage({
       type: "dsh-pagecraft-asset-bindings",
@@ -33677,10 +33799,10 @@ function FrontendFeedbackPanel({
       }))
     }, "*");
   }, [presentationJobId, sessionId, workspaceMode]);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     postAssetBindings(assetManifest);
   }, [assetManifest, postAssetBindings]);
-  const commitNavigation = (0, import_react5.useCallback)((next, nextStatus) => {
+  const commitNavigation = (0, import_react6.useCallback)((next, nextStatus) => {
     refreshNoticeRef.current = null;
     navigationRef.current = next;
     persistPreviewNavigation(storageId, next);
@@ -33697,7 +33819,7 @@ function FrontendFeedbackPanel({
     }
     setStatus(nextStatus);
   }, [storageId, workspaceMode]);
-  const navigatePreview = (0, import_react5.useCallback)((rawUrl, nextStatus = "\u6B63\u5728\u52A0\u8F7D\u9884\u89C8\u2026") => {
+  const navigatePreview = (0, import_react6.useCallback)((rawUrl, nextStatus = "\u6B63\u5728\u52A0\u8F7D\u9884\u89C8\u2026") => {
     try {
       const targetUrl = normalizePreviewUrl(rawUrl);
       if (targetUrl === null) throw new Error("\u53EA\u652F\u6301\u6709\u6548\u7684 http \u6216 https \u5730\u5740");
@@ -33707,12 +33829,12 @@ function FrontendFeedbackPanel({
       setStatus(`\u5730\u5740\u65E0\u6548\uFF1A${describeError2(error)}`);
     }
   }, [commitNavigation]);
-  const moveInHistory = (0, import_react5.useCallback)((delta) => {
+  const moveInHistory = (0, import_react6.useCallback)((delta) => {
     const next = movePreviewNavigation(navigationRef.current, delta);
     if (next === null) return;
     commitNavigation(next, delta < 0 ? "\u6B63\u5728\u8FD4\u56DE\u4E0A\u4E00\u9875\u2026" : "\u6B63\u5728\u524D\u5F80\u4E0B\u4E00\u9875\u2026");
   }, [commitNavigation]);
-  const refreshPreview = (0, import_react5.useCallback)((loadingStatus, readyStatus) => {
+  const refreshPreview = (0, import_react6.useCallback)((loadingStatus, readyStatus) => {
     if (currentPreviewUrl(navigationRef.current) === null) {
       setStatus("\u5C1A\u672A\u8BBE\u7F6E\u9884\u89C8\u5730\u5740\u3002\u6587\u4EF6\u5DE5\u4F5C\u533A\u4ECD\u53EF\u72EC\u7ACB\u4F7F\u7528\u3002");
       return;
@@ -33725,7 +33847,7 @@ function FrontendFeedbackPanel({
     setStatus(loadingStatus);
     setRevision((value) => value + 1);
   }, []);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     const wasRunning = previousAgentRunningRef.current;
     previousAgentRunningRef.current = agentRunning;
     if (!wasRunning || agentRunning) return;
@@ -33735,7 +33857,7 @@ function FrontendFeedbackPanel({
     }
     refreshPreview("Agent \u5DF2\u5B8C\u6210\uFF0C\u6B63\u5728\u540C\u6B65\u6700\u65B0\u9875\u9762\u2026", "Agent \u4FEE\u6539\u5B8C\u6210\uFF0C\u9875\u9762\u8BC4\u6CE8\u5DF2\u81EA\u52A8\u52A0\u8F7D\u6700\u65B0\u9875\u9762\u3002");
   }, [agentRunning, queued.length, refreshPreview, selection2]);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     const listener = (event) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.data?.type === "dsh-frontend-feedback-ready") {
@@ -33931,17 +34053,17 @@ function FrontendFeedbackPanel({
       setSending(false);
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.root, "data-conversation-composer-overlay": "", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.toolbar, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.brand, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.brandDot }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: styles2.title, children: "PageCraft" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.subtitle, children: workspaceMode === "presentation" ? "\u6F14\u793A\u6587\u7A3F \xB7 \u5E7B\u706F\u7247\u8BC4\u6CE8" : "\u7F51\u9875\u9884\u89C8 \xB7 DOM \u4E0E\u533A\u57DF\u8BC4\u6CE8" })
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.root, "data-conversation-composer-overlay": "", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.toolbar, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.brand, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.brandDot }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { style: styles2.title, children: "PageCraft" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.subtitle, children: workspaceMode === "presentation" ? "\u6F14\u793A\u6587\u7A3F \xB7 \u5E7B\u706F\u7247\u8BC4\u6CE8" : "\u7F51\u9875\u9884\u89C8 \xB7 DOM \u4E0E\u533A\u57DF\u8BC4\u6CE8" })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { role: "tablist", "aria-label": "PageCraft \u5DE5\u4F5C\u6A21\u5F0F", style: styles2.workspaceModeGroup, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { role: "tablist", "aria-label": "PageCraft \u5DE5\u4F5C\u6A21\u5F0F", style: styles2.workspaceModeGroup, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -33952,7 +34074,7 @@ function FrontendFeedbackPanel({
             children: "\u7F51\u9875"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -33964,8 +34086,8 @@ function FrontendFeedbackPanel({
           }
         )
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.addressBar, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.addressBar, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -33977,7 +34099,7 @@ function FrontendFeedbackPanel({
             children: "\u2190"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -33989,7 +34111,7 @@ function FrontendFeedbackPanel({
             children: "\u2192"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "input",
           {
             "aria-label": "\u9884\u89C8\u5730\u5740",
@@ -34002,10 +34124,10 @@ function FrontendFeedbackPanel({
             placeholder: "http://localhost:5173"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: openPreview, style: styles2.secondaryButton, children: "\u6253\u5F00" }),
-        workspaceMode === "presentation" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: () => setShowPresentationBrief(true), style: styles2.createPresentationButton, children: "\u4E0A\u4F20\u6587\u6863\u751F\u6210" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { type: "button", onClick: openPreview, style: styles2.secondaryButton, children: "\u6253\u5F00" }),
+        workspaceMode === "presentation" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { type: "button", onClick: () => setShowPresentationBrief(true), style: styles2.createPresentationButton, children: "\u4E0A\u4F20\u6587\u6863\u751F\u6210" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             "button",
             {
               type: "button",
@@ -34020,7 +34142,7 @@ function FrontendFeedbackPanel({
             }
           )
         ] }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -34031,7 +34153,7 @@ function FrontendFeedbackPanel({
             children: "\u6587\u4EF6"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -34043,8 +34165,8 @@ function FrontendFeedbackPanel({
             children: "\u21BB"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.modeGroup, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.modeGroup, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             "button",
             {
               type: "button",
@@ -34055,7 +34177,7 @@ function FrontendFeedbackPanel({
               children: "\u9009\u62E9\u5143\u7D20"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             "button",
             {
               type: "button",
@@ -34067,12 +34189,12 @@ function FrontendFeedbackPanel({
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", "aria-label": "\u5173\u95ED\u9875\u9762\u8BC4\u6CE8", title: "\u5173\u95ED", onClick: onClose, style: styles2.closeButton, children: "\xD7" })
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { type: "button", "aria-label": "\u5173\u95ED\u9875\u9762\u8BC4\u6CE8", title: "\u5173\u95ED", onClick: onClose, style: styles2.closeButton, children: "\xD7" })
       ] }),
-      !hasSession ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: styles2.sessionHint, children: "\u5148\u53D1\u4E00\u6761\u6D88\u606F\u540E\uFF0C\u53F3\u4FA7\u201C\u53D1\u9001\u7ED9 Agent\u201D\u624D\u53EF\u63D0\u4EA4\u3002" }) : null
+      !hasSession ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: styles2.sessionHint, children: "\u5148\u53D1\u4E00\u6761\u6D88\u606F\u540E\uFF0C\u53F3\u4FA7\u201C\u53D1\u9001\u7ED9 Agent\u201D\u624D\u53EF\u63D0\u4EA4\u3002" }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { ...styles2.workspace, ...workspaceMode === "presentation" ? styles2.presentationWorkspace : {} }, children: [
-      workspaceMode === "presentation" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: { ...styles2.workspace, ...workspaceMode === "presentation" ? styles2.presentationWorkspace : {} }, children: [
+      workspaceMode === "presentation" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
         SlideRail,
         {
           slides,
@@ -34081,10 +34203,10 @@ function FrontendFeedbackPanel({
           onSelect: selectPresentationSlide
         }
       ) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: styles2.previewShell, children: previewFrame === null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { "data-pagecraft-empty-preview": "", style: styles2.emptyPreview, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: "\u5C1A\u672A\u6253\u5F00\u9884\u89C8" }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: "\u8F93\u5165 http \u6216 https \u5730\u5740\u540E\u6253\u5F00\uFF1B\u6587\u4EF6\u5DE5\u4F5C\u533A\u65E0\u9700\u9884\u89C8\u5730\u5740\u5373\u53EF\u4F7F\u7528\u3002" })
-      ] }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: styles2.previewShell, children: previewFrame === null ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { "data-pagecraft-empty-preview": "", style: styles2.emptyPreview, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: "\u5C1A\u672A\u6253\u5F00\u9884\u89C8" }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: "\u8F93\u5165 http \u6216 https \u5730\u5740\u540E\u6253\u5F00\uFF1B\u6587\u4EF6\u5DE5\u4F5C\u533A\u65E0\u9700\u9884\u89C8\u5730\u5740\u5373\u53EF\u4F7F\u7528\u3002" })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
         "iframe",
         {
           ref: iframeRef,
@@ -34109,29 +34231,29 @@ function FrontendFeedbackPanel({
           }
         }
       ) }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("aside", { style: styles2.sidebar, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.sidebarHeader, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: "\u8BC4\u6CE8\u961F\u5217" }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.count, children: queued.length })
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("aside", { style: styles2.sidebar, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.sidebarHeader, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: "\u8BC4\u6CE8\u961F\u5217" }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.count, children: queued.length })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.sidebarHeaderActions, children: [
-            !isFeedbackDraftEmpty({ selection: selection2, areaOperation, comment: comment2, queued }) ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: clearDraft, style: styles2.clearDraftButton, children: "\u6E05\u7A7A\u8349\u7A3F" }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { ...styles2.statePill, ...selectionMode !== null ? styles2.statePillActive : {} }, children: selectionMode === "element" ? "\u5143\u7D20\u9009\u62E9" : selectionMode === "area" ? "\u533A\u57DF\u6846\u9009" : "\u6D4F\u89C8\u6A21\u5F0F" })
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.sidebarHeaderActions, children: [
+            !isFeedbackDraftEmpty({ selection: selection2, areaOperation, comment: comment2, queued }) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { type: "button", onClick: clearDraft, style: styles2.clearDraftButton, children: "\u6E05\u7A7A\u8349\u7A3F" }) : null,
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { ...styles2.statePill, ...selectionMode !== null ? styles2.statePillActive : {} }, children: selectionMode === "element" ? "\u5143\u7D20\u9009\u62E9" : selectionMode === "area" ? "\u533A\u57DF\u6846\u9009" : "\u6D4F\u89C8\u6A21\u5F0F" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.sidebarScroller, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.scrollArea, children: [
-            queued.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.commentCard, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.cardIndex, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.sidebarScroller, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.scrollArea, children: [
+            queued.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.commentCard, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.cardIndex, children: [
                 "#",
                 index + 1
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.cardBody, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: styles2.cardTitle, children: cardTitle(item) }),
-                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.cardComment, children: item.comment })
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.cardBody, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { style: styles2.cardTitle, children: cardTitle(item) }),
+                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.cardComment, children: item.comment })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
                 "button",
                 {
                   type: "button",
@@ -34142,21 +34264,21 @@ function FrontendFeedbackPanel({
                 }
               )
             ] }, `${item.kind === "area" ? `area-${item.rect.x}-${item.rect.y}` : item.selector}-${index}`)),
-            queued.length === 0 && selection2 === null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.emptyQueue, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.emptyIcon, children: "\u2301" }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: "\u8FD8\u6CA1\u6709\u8BC4\u6CE8" }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: workspaceMode === "presentation" ? "\u4ECE\u5DE6\u4FA7\u9009\u62E9\u4E00\u5F20\u5E7B\u706F\u7247\uFF0C\u518D\u9009\u62E9\u5DF2\u6709\u5143\u7D20\u6216\u6846\u9009\u9700\u8981\u65B0\u589E\u5185\u5BB9\u7684\u533A\u57DF\u3002" : "\u9009\u62E9\u5DF2\u6709\u5143\u7D20\uFF0C\u6216\u5728\u7A7A\u767D\u4F4D\u7F6E\u62D6\u52A8\u6846\u9009\u9700\u8981\u65B0\u589E\u5185\u5BB9\u7684\u533A\u57DF\u3002" })
+            queued.length === 0 && selection2 === null ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.emptyQueue, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.emptyIcon, children: "\u2301" }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: "\u8FD8\u6CA1\u6709\u8BC4\u6CE8" }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: workspaceMode === "presentation" ? "\u4ECE\u5DE6\u4FA7\u9009\u62E9\u4E00\u5F20\u5E7B\u706F\u7247\uFF0C\u518D\u9009\u62E9\u5DF2\u6709\u5143\u7D20\u6216\u6846\u9009\u9700\u8981\u65B0\u589E\u5185\u5BB9\u7684\u533A\u57DF\u3002" : "\u9009\u62E9\u5DF2\u6709\u5143\u7D20\uFF0C\u6216\u5728\u7A7A\u767D\u4F4D\u7F6E\u62D6\u52A8\u6846\u9009\u9700\u8981\u65B0\u589E\u5185\u5BB9\u7684\u533A\u57DF\u3002" })
             ] }) : null
           ] }),
-          selection2 !== null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.composer, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.selectedMeta, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { ...styles2.tag, ...selection2.kind === "area" ? styles2.areaTag : {} }, children: selection2.kind === "area" ? "AREA" : selection2.tagName }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("code", { style: styles2.selector, children: selectionCode(selection2) })
+          selection2 !== null ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.composer, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.selectedMeta, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { ...styles2.tag, ...selection2.kind === "area" ? styles2.areaTag : {} }, children: selection2.kind === "area" ? "AREA" : selection2.tagName }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { style: styles2.selector, children: selectionCode(selection2) })
             ] }),
-            selectionSummary(selection2) ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: styles2.selectedText, children: selectionSummary(selection2) }) : null,
-            selection2.kind === "area" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.operationField, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.operationLabel, children: "\u65B0\u589E\u5185\u5BB9\u5982\u4F55\u5F71\u54CD\u5F53\u524D\u5E03\u5C40" }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "group", "aria-label": "\u533A\u57DF\u4FEE\u6539\u65B9\u5F0F", style: styles2.operationGroup, children: AREA_OPERATIONS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            selectionSummary(selection2) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { style: styles2.selectedText, children: selectionSummary(selection2) }) : null,
+            selection2.kind === "area" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.operationField, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.operationLabel, children: "\u65B0\u589E\u5185\u5BB9\u5982\u4F55\u5F71\u54CD\u5F53\u524D\u5E03\u5C40" }),
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { role: "group", "aria-label": "\u533A\u57DF\u4FEE\u6539\u65B9\u5F0F", style: styles2.operationGroup, children: AREA_OPERATIONS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
                 "button",
                 {
                   type: "button",
@@ -34171,9 +34293,9 @@ function FrontendFeedbackPanel({
                 },
                 option.value
               )) }),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.operationHelp, children: AREA_OPERATIONS.find((option) => option.value === areaOperation)?.description })
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.operationHelp, children: AREA_OPERATIONS.find((option) => option.value === areaOperation)?.description })
             ] }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               "textarea",
               {
                 autoFocus: true,
@@ -34186,8 +34308,8 @@ function FrontendFeedbackPanel({
                 style: styles2.textarea
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.composerActions, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.composerActions, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
                 "button",
                 {
                   type: "button",
@@ -34201,12 +34323,12 @@ function FrontendFeedbackPanel({
                   children: "\u53D6\u6D88"
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", disabled: comment2.trim().length === 0, onClick: queueCurrent, style: styles2.primaryButton, children: "\u52A0\u5165\u961F\u5217" })
+              /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { type: "button", disabled: comment2.trim().length === 0, onClick: queueCurrent, style: styles2.primaryButton, children: "\u52A0\u5165\u961F\u5217" })
             ] })
           ] }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: styles2.footer, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: styles2.status, children: status }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { style: styles2.footer, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: styles2.status, children: status }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               "button",
               {
                 type: "button",
@@ -34222,7 +34344,7 @@ function FrontendFeedbackPanel({
         ] })
       ] })
     ] }),
-    showPresentationBrief ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    showPresentationBrief ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
       PresentationDocumentDialog,
       {
         sessionId,
@@ -34234,7 +34356,7 @@ function FrontendFeedbackPanel({
         onJobChange: setPresentationJobId
       }
     ) : null,
-    showAssetLibrary && presentationJobId !== null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    showAssetLibrary && presentationJobId !== null ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
       AssetLibraryDialog,
       {
         sessionId,
@@ -34251,7 +34373,7 @@ function FrontendFeedbackPanel({
         }
       }
     ) : null,
-    showSourceWorkspace ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    showSourceWorkspace ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
       WorkspaceExplorer,
       {
         sessionId,
@@ -34275,7 +34397,7 @@ function FrontendFeedbackPanel({
         }
       }
     ) : null,
-    showProjectAssetLibrary ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    showProjectAssetLibrary ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
       ProjectAssetLibraryDialog,
       {
         sessionId,
@@ -34301,9 +34423,9 @@ function feedbackInjected(ctx, sessionId) {
   };
 }
 function FrontendFeedbackLauncher(props) {
-  const [open, setOpen] = (0, import_react5.useState)(false);
-  const [workspaceMode, setWorkspaceMode] = (0, import_react5.useState)("webpage");
-  (0, import_react5.useEffect)(() => {
+  const [open, setOpen] = (0, import_react6.useState)(false);
+  const [workspaceMode, setWorkspaceMode] = (0, import_react6.useState)("webpage");
+  (0, import_react6.useEffect)(() => {
     if (!open) return;
     const onKeyDown = (event) => {
       if (event.key === "Escape" && document.querySelector("[data-pagecraft-source-workspace]") === null) setOpen(false);
@@ -34311,8 +34433,8 @@ function FrontendFeedbackLauncher(props) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
       "button",
       {
         type: "button",
@@ -34321,13 +34443,13 @@ function FrontendFeedbackLauncher(props) {
         onClick: () => setOpen(true),
         style: styles2.launcherButton,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { "aria-hidden": "true", style: styles2.launcherIcon, children: "\u25A3" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: "PageCraft" })
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { "aria-hidden": "true", style: styles2.launcherIcon, children: "\u25A3" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: "PageCraft" })
         ]
       }
     ),
     open ? (0, import_react_dom.createPortal)(
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": "PageCraft", style: styles2.launcherOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: styles2.launcherPanel, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": "PageCraft", style: styles2.launcherOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: styles2.launcherPanel, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
         FrontendFeedbackPanel,
         {
           ...props,

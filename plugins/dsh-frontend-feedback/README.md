@@ -45,6 +45,10 @@ Open the Harness URL printed in the terminal, select a workspace, and choose **P
 
 ## Use PageCraft
 
+The file editor preserves UTF-8 BOM and homogeneous LF, CRLF, or CR line endings when saving, including whether the file has a trailing newline. Files with mixed line endings are read-only and show an explicit warning; PageCraft does not automatically normalize them. Undoing an edit back to the disk content returns the file to its saved state.
+
+Discarding a draft and accepting a disk version reset the visible editor and its undo history after browser-cache cleanup succeeds. Ordinary typing and saves preserve the editor view, selection, and undo history. Edits made during a save remain unsaved and are cached against the new disk version; edits made during discard are retained. Cache failures are shown separately from disk-save success. Existing browser draft keys and raw content remain compatible; legacy drafts use the base file's format when its hash matches, and otherwise require conflict resolution.
+
 ### Refine a web page
 
 1. Start the frontend project and open its local URL in PageCraft, for example `http://localhost:5173`.

@@ -32,7 +32,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test tests/**/*.test.ts tests/**/*.test.tsx",
     "check": "npm run build && npm test && npm pack --dry-run --cache .npm-cache"
   },
   "dependencies": {
@@ -83,6 +83,10 @@
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
+    "fake-indexeddb": "6.2.4",
+    "jsdom": "29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "tsx": "^4.20.0"
   },
   "repository": {

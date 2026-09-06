@@ -11,6 +11,18 @@ import {
 
 const scope = { sessionId: 'session-a', rootPath: 'C:\\Work\\Site', selectedFolder: 'app', path: 'src/main.ts' }
 
+test('optional text format retains raw content and legacy keys while conditional cleanup preserves newer content', async () => {
+  const storage = new MemoryDraftStorage()
+  const cache = new SourceDraftCache(storage)
+  const format = { eol: 'crlf', bom: true } as const
+  await cache.persist(scope, 'disk', '\uFEFFa\r\n', format)
+  assert.deepEqual(await cache.restore(scope, 'disk'), { kind: 'recovered', content: '\uFEFFa\r\n', revision: 1, format })
+  await cache.persist(scope, 'disk', '\uFEFFb\r\n', format)
+  assert.equal(await cache.clearMatching(scope, 'disk', '\uFEFFa\r\n'), false)
+  assert.equal((await storage.get(sourceDraftKey(scope)))?.revision, 2)
+  assert.equal(await cache.clearMatching(scope, 'disk', '\uFEFFb\r\n'), true)
+})
+
 test('draft keys isolate session, canonical root, folder, and relative path', () => {
   assert.equal(sourceDraftKey(scope), sourceDraftKey({ ...scope, rootPath: 'c:/work/site/' }))
   assert.notEqual(sourceDraftKey(scope), sourceDraftKey({ ...scope, sessionId: 'session-b' }))

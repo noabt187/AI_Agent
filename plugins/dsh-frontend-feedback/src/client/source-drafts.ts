@@ -1,3 +1,5 @@
+import type { TextFormat } from './text-format.ts'
+
 export interface SourceDraftScope {
   sessionId: string
   rootPath: string
@@ -9,6 +11,7 @@ export interface SourceDraftRecord extends SourceDraftScope {
   key: string
   baseHash: string
   content: string
+  format?: TextFormat
   revision: number
   updatedAt: number
 }
@@ -23,8 +26,8 @@ export interface SourceDraftStorage {
 
 export type DraftRestore =
   | { kind: 'none' }
-  | { kind: 'recovered'; content: string; revision: number }
-  | { kind: 'conflict'; content: string; revision: number; baseHash: string; diskHash: string }
+  | { kind: 'recovered'; content: string; revision: number; format?: TextFormat }
+  | { kind: 'conflict'; content: string; revision: number; baseHash: string; diskHash: string; format?: TextFormat }
 
 export type DraftPersistResult =
   | { ok: true; revision: number }
@@ -94,7 +97,7 @@ export class SourceDraftCache {
     }
   }
 
-  async persist(scope: SourceDraftScope, baseHash: string, content: string): Promise<DraftPersistResult> {
+  async persist(scope: SourceDraftScope, baseHash: string, content: string, format?: TextFormat): Promise<DraftPersistResult> {
     const key = sourceDraftKey(scope)
     try {
       return await this.queued(key, async () => {
@@ -104,7 +107,7 @@ export class SourceDraftCache {
         const records = await this.storage.list()
         if (previous === undefined && records.length >= MAX_DRAFTS) throw new Error('浏览器中已有 100 份未保存草稿；请先保存或丢弃一份。')
         const revision = (previous?.revision ?? 0) + 1
-        await this.storage.put({ ...scope, key, baseHash, content, revision, updatedAt: Date.now() })
+        await this.storage.put({ ...scope, key, baseHash, content, ...(format === undefined ? {} : { format }), revision, updatedAt: Date.now() })
         return { ok: true, revision }
       })
     } catch (error) {
@@ -117,14 +120,25 @@ export class SourceDraftCache {
     return this.queued(sourceDraftKey(scope), async () => {
       const record = await this.storage.get(sourceDraftKey(scope))
       if (record === undefined) return { kind: 'none' }
-      if (record.baseHash === diskHash) return { kind: 'recovered', content: record.content, revision: record.revision }
-      return { kind: 'conflict', content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash }
+      const format = record.format === undefined ? {} : { format: record.format }
+      if (record.baseHash === diskHash) return { kind: 'recovered', content: record.content, revision: record.revision, ...format }
+      return { kind: 'conflict', content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash, ...format }
     })
   }
 
   clearSaved(scope: SourceDraftScope, revision: number): Promise<boolean> {
     const key = sourceDraftKey(scope)
     return this.queued(key, () => this.storage.deleteIfRevision(key, revision))
+  }
+
+  // Also covers a write queued before save whose revision is not known to the UI yet.
+  clearMatching(scope: SourceDraftScope, baseHash: string, content: string): Promise<boolean> {
+    const key = sourceDraftKey(scope)
+    return this.queued(key, async () => {
+      const record = await this.storage.get(key)
+      if (record === undefined || record.baseHash !== baseHash || record.content !== content) return false
+      return this.storage.deleteIfRevision(key, record.revision)
+    })
   }
 
   discard(scope: SourceDraftScope): Promise<void> {

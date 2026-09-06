@@ -1526,7 +1526,7 @@ async function readWorkspaceFile(cwd, selectedFolder, path, options = {}) {
   if (body.includes(0)) throw new WorkspaceExplorerError("\u6587\u4EF6\u5305\u542B\u4E8C\u8FDB\u5236\u5185\u5BB9\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u6587\u672C\u7F16\u8F91", 415, "WORKSPACE_BINARY_FILE");
   let content;
   try {
-    content = new TextDecoder("utf-8", { fatal: true }).decode(body);
+    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
   } catch {
     throw new WorkspaceExplorerError("\u6587\u4EF6\u4E0D\u662F\u6709\u6548\u7684 UTF-8 \u6587\u672C\uFF0C\u4E0D\u80FD\u7F16\u8F91", 415, "WORKSPACE_BINARY_FILE");
   }

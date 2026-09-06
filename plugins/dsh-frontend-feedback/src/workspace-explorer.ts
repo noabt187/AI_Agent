@@ -259,7 +259,7 @@ export async function readWorkspaceFile(
   if (body.includes(0)) throw new WorkspaceExplorerError('文件包含二进制内容，不能作为文本编辑', 415, 'WORKSPACE_BINARY_FILE')
   let content: string
   try {
-    content = new TextDecoder('utf-8', { fatal: true }).decode(body)
+    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body)
   } catch {
     throw new WorkspaceExplorerError('文件不是有效的 UTF-8 文本，不能编辑', 415, 'WORKSPACE_BINARY_FILE')
   }

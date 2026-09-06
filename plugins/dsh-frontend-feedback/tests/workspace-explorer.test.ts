@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +26,21 @@ async function createWorkspaceFixture(t: TestContext): Promise<string> {
   await writeFile(join(cwd, 'slides', 'assets', 'machine.png'), Buffer.from([137, 80, 78, 71]))
   return cwd
 }
+
+test('UTF-8 BOM and line endings survive real read/write snapshots byte for byte', async (t) => {
+  const cwd = await createWorkspaceFixture(t)
+  for (const raw of ['\uFEFF中文\r\n😀\r\n', 'a\rb', '', 'a\n', '\uFEFF']) {
+    const path = join(cwd, 'source.txt')
+    await writeFile(path, raw)
+    const opened = await readWorkspaceFile(cwd, '.', 'source.txt')
+    assert.equal(opened.content, raw)
+    assert.equal(opened.bytes, Buffer.byteLength(raw))
+    assert.equal(opened.hash, createHash('sha256').update(Buffer.from(raw)).digest('hex'))
+    const saved = await saveWorkspaceFile(cwd, '.', 'source.txt', opened.content, opened.hash)
+    assert.deepEqual(await readFile(path), Buffer.from(raw))
+    assert.equal(saved.hash, opened.hash)
+  }
+})
 
 test('real workspace listing preserves physical image directories', async (t) => {
   const cwd = await createWorkspaceFixture(t)
