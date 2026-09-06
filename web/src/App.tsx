@@ -71,6 +71,7 @@ import {
 import { browserDraftStore } from './sessionDrafts'
 import { SessionRuntime, recoverSession } from './sessionRuntime'
 import { readSelectedSession, saveSelectedSession, selectExistingSession } from './sessionSelection'
+import { readThemeMode, saveThemeMode, type ThemeMode } from './theme'
 import { SlotOutlet } from './plugins/SlotOutlet'
 import type { BrowserPluginRuntime } from './plugins/runtime'
 import type { PromptResult } from './plugins/types'
@@ -90,7 +91,6 @@ type ActivityItem = {
 
 type ViewMode = 'chat' | 'metrics'
 type MetricsViewMode = 'detail' | 'trend' | 'anomaly' | 'composition'
-type ThemeMode = 'dark' | 'light'
 type NegativeFeedbackDraft = {
   itemId: string
   content: string
@@ -121,12 +121,6 @@ const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做',
 const modelThinkingStatus = '模型思考中'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
-const themeStorageKey = 'agent-console-theme'
-
-function getInitialThemeMode(): ThemeMode {
-  if (typeof window === 'undefined') return 'dark'
-  return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
-}
 
 function formatTime(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -276,7 +270,7 @@ export function App({ pluginRuntime }: AppProps) {
   const [editingSessionId, setEditingSessionId] = useState('')
 
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
-  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode())
 
   const selectedSessionSummary = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -384,7 +378,7 @@ export function App({ pluginRuntime }: AppProps) {
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(themeStorageKey, themeMode)
+    saveThemeMode(themeMode)
   }, [themeMode])
 
   useEffect(() => {
@@ -1195,9 +1189,12 @@ export function App({ pluginRuntime }: AppProps) {
     <main className={appShellClassName}>
       <aside className="sidebar">
         <section className="brandBlock">
-          <div>
-            <h1>Agent Console</h1>
-            <p>{statusLabel}</p>
+          <div className="brandIdentity">
+            <span className="inkMark" aria-hidden="true" />
+            <div>
+              <h1>Agent</h1>
+              <p>智能工作台</p>
+            </div>
           </div>
           <div className="brandActions">
             <button
@@ -1217,12 +1214,14 @@ export function App({ pluginRuntime }: AppProps) {
           </div>
         </section>
 
-        <section className="panel">
+        <button className="newSessionButton" onClick={() => void handleNewSession()}>
+          <Plus size={17} /> 新建会话
+        </button>
+
+        <section className="panel sessionsPanel">
           <div className="panelHeader">
             <span>会话</span>
-            <button className="iconButton" title="新建会话" onClick={() => void handleNewSession()}>
-              <Plus size={18} />
-            </button>
+            <small>{sessions.length}</small>
           </div>
           <div className="sessionList">
             {sessions.map((item) => (
@@ -1333,7 +1332,7 @@ export function App({ pluginRuntime }: AppProps) {
 
         <section className="panel skillPanel">
           <div className="panelHeader">
-            <span>SKILL</span>
+            <span>技能</span>
             <small>{enabledSkillCount}/{skills.length}</small>
           </div>
           <div className="skillPanelSummary">
@@ -1416,12 +1415,17 @@ export function App({ pluginRuntime }: AppProps) {
 
             <div className="controlGroup modeControl">
               <div className="modeStack">
-                <button className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'} onClick={() => setViewMode('chat')}>
+                <button
+                  className={viewMode === 'chat' ? 'modeButton active' : 'modeButton'}
+                  aria-pressed={viewMode === 'chat'}
+                  onClick={() => setViewMode('chat')}
+                >
                   <MessageSquare size={17} />
                   对话
                 </button>
                 <button
                   className={viewMode === 'metrics' ? 'modeButton active' : 'modeButton'}
+                  aria-pressed={viewMode === 'metrics'}
                   disabled={!selectedSessionId}
                   onClick={() => {
                     setViewMode('metrics')
@@ -1431,6 +1435,10 @@ export function App({ pluginRuntime }: AppProps) {
                   <Gauge size={17} />
                   监控
                 </button>
+              </div>
+              <div className="workspaceStatus" role="status">
+                <span className={running ? 'statusDot running' : 'statusDot'} aria-hidden="true" />
+                {statusLabel}
               </div>
             </div>
           </section>
@@ -1622,11 +1630,21 @@ export function App({ pluginRuntime }: AppProps) {
         ) : (
           <div className="timeline" ref={timelineRef}>
             {timeline.length === 0 && activityItems.length === 0 && !running ? (
-              <div className="emptyState">新会话已准备好</div>
+              <div className="emptyState welcomeState">
+                <span className="inkMark" aria-hidden="true" />
+                <p className="welcomeEyebrow">AGENT · 智能工作台</p>
+                <h2>从一个想法开始</h2>
+                <p>新会话已准备好。描述需求、检查代码，或一起解决一个问题。</p>
+              </div>
             ) : (
               <>
                 {timeline.map((item, index) => (
                   <article key={item.id} className={`bubble ${item.role}`}>
+                    {item.role === 'assistant' ? (
+                      <div className="responseAuthor">
+                        <span className="inkMark" aria-hidden="true" />Agent
+                      </div>
+                    ) : null}
                     <pre>{item.content}</pre>
                     {item.role === 'assistant' ? (
                       <div className="responseActions" aria-label="模型回复操作" onMouseLeave={() => setCopiedResponseId('')}>
@@ -1763,14 +1781,14 @@ export function App({ pluginRuntime }: AppProps) {
         ) : null}
 
         {session?.state.task?.approvedProposal ? (
-          <details>
+          <details className="approvedProposal">
             <summary>已确认方案{session.state.task.approvedProposal.selection ? `：${session.state.task.approvedProposal.selection}` : ''}</summary>
             <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{session.state.task.approvedProposal.prompt}</div>
           </details>
         ) : null}
 
         {!running && session?.state.task?.phase === 'paused' ? (
-          <button onClick={() => {
+          <button className="resumeTaskButton" onClick={() => {
             const task = session.state.task!
             void sendPrompt('继续', { kind: 'resume', taskId: task.id, taskRevision: task.revision })
           }}>继续任务</button>
@@ -1796,6 +1814,7 @@ export function App({ pluginRuntime }: AppProps) {
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="输入需求或问题"
+            aria-label="输入需求或问题"
             disabled={session?.id !== selectedSessionId || !selectedSessionId || running}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -1804,6 +1823,7 @@ export function App({ pluginRuntime }: AppProps) {
               }
             }}
           />
+          <span className="composerHint">Ctrl / ⌘ + Enter 发送 · Enter 换行</span>
           {running ? (
             <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting} onClick={() => void handleAbort()}>
               <CircleStop size={19} />
