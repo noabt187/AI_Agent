@@ -16,6 +16,22 @@ function job(sessionId: string, prompt: string): PromptJob {
   return { sessionId, prompt, onEvent() {} }
 }
 
+test('a stale run-specific stop never aborts its successor', async () => {
+  const gate = deferred()
+  let signal: AbortSignal | undefined
+  let aborted = 0
+  const queue = new SessionPromptQueue(async item => { signal = item.signal; await gate.promise }, () => { aborted++; gate.resolve() })
+  const active = queue.enqueue({ ...job('s', 'second'), binding: { runId: 'second', userMessageId: 'u', input: 'second', workspaceKey: 'w' } })
+  await immediate()
+  try {
+    await assert.rejects(queue.abort('s', 'first'), /运行已改变/)
+    assert.equal(aborted, 0)
+    assert.equal(signal?.aborted, false)
+  } finally { gate.resolve(); await active }
+  await immediate()
+  await assert.rejects(queue.abort('s', 'second'), /运行已改变/)
+})
+
 test('prompt jobs for one session execute FIFO while sessions remain independent', async () => {
   const order: string[] = []
   const gates = { a: deferred(), b: deferred(), c: deferred() }

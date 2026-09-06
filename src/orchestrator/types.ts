@@ -100,6 +100,7 @@ export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>
 
 export interface ConfirmationRef { taskId: string; taskRevision: number; confirmationId: string }
 export type TaskInputControl =
+  | { kind: 'followup'; taskId: string; taskRevision: number; sourceRunId: string }
   | ({ kind: 'confirm'; selection?: string } & ConfirmationRef)
   | ({ kind: 'revise' } & ConfirmationRef)
   | { kind: 'resume'; taskId: string; taskRevision: number }

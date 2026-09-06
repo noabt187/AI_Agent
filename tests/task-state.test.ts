@@ -16,6 +16,24 @@ function proposal(s: WorldState) {
   return turn
 }
 
+test('host followup revises the same task without inheriting execution authority', () => {
+  const s = state(); proposal(s)
+  const approved = beginTaskTurn(s, bindTaskInput(s, '确认'))
+  const control = { kind: 'followup', taskId: approved.taskId, taskRevision: approved.taskRevision, sourceRunId: approved.runId } as const
+  assert.throws(() => beginTaskTurn(s, bindTaskInput(s, '说明', { ...control, sourceRunId: 'stale' })), /运行/)
+  const binding = bindTaskInput(s, '只重新整理方案，先不执行', control)
+  const changed = structuredClone(s); changed.allowedPaths = [resolve('elsewhere')]
+  assert.throws(() => beginTaskTurn(changed, binding), /目录/)
+  const next = beginTaskTurn(s, binding)
+  assert.equal(next.taskId, approved.taskId)
+  assert.equal(next.taskRevision, approved.taskRevision + 1)
+  assert.equal(canWriteTask(s, next), false)
+  assert.equal(s.task!.approvedProposal, undefined)
+  assert.equal(s.task!.pendingConfirmation, undefined)
+  assert.equal(s.task!.previousContext.at(-1)?.objective, 'A')
+  assert.throws(() => beginTaskTurn(s, binding), /任务版本/)
+})
+
 test('approval is version/workspace/run owned, pause disables it and explicit same-version resume restores it', () => {
   const s = state(); proposal(s)
   const confirm = bindTaskInput(s, '确认')

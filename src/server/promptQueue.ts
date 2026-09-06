@@ -1,4 +1,6 @@
 import type { AgentEvent, TaskRequestBinding } from '../orchestrator/types.js'
+import type { RunOrigin } from '../state/runStore.js'
+import { TaskStateError } from '../orchestrator/taskInput.js'
 
 export interface PromptJob {
   sessionId: string
@@ -6,6 +8,7 @@ export interface PromptJob {
   userMessageId?: string
   control?: unknown
   binding?: TaskRequestBinding
+  origin?: RunOrigin
   onStart?(): void | Promise<void>
   onEvent(event: AgentEvent): void | Promise<void>
   signal?: AbortSignal
@@ -47,8 +50,12 @@ export class SessionPromptQueue {
     return promise
   }
 
-  async abort(sessionId: string): Promise<void> {
+  async abort(sessionId: string, expectedRunId?: string): Promise<void> {
     const current = this.active.get(sessionId)
+    // No await between identity validation and aborting this captured entry.
+    if (expectedRunId !== undefined && (!current || current.prompt.job.binding?.runId !== expectedRunId)) {
+      throw new TaskStateError('stale_run', '运行已改变，请重新查看当前状态')
+    }
     if (!current) return
     if (!current.finalizing) {
       current.controller.abort()

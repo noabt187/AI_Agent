@@ -26,8 +26,9 @@ export function parseTaskControl(value: unknown): TaskInputControl | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TaskStateError('malformed_control', '无效控制信息', 400)
   const v = value as Record<string, unknown>
-  if (!['confirm', 'revise', 'resume'].includes(String(v.kind)) || typeof v.taskId !== 'string' || !v.taskId.trim() || !Number.isSafeInteger(v.taskRevision) || Number(v.taskRevision) < 1
-    || (v.kind !== 'resume' && (typeof v.confirmationId !== 'string' || !v.confirmationId.trim()))
+  if (!['confirm', 'revise', 'resume', 'followup'].includes(String(v.kind)) || typeof v.taskId !== 'string' || !v.taskId.trim() || !Number.isSafeInteger(v.taskRevision) || Number(v.taskRevision) < 1
+    || (['confirm', 'revise'].includes(String(v.kind)) && (typeof v.confirmationId !== 'string' || !v.confirmationId.trim()))
+    || (v.kind === 'followup' && (typeof v.sourceRunId !== 'string' || !v.sourceRunId.trim()))
     || (v.selection !== undefined && (v.kind !== 'confirm' || typeof v.selection !== 'string'))) {
     throw new TaskStateError('malformed_control', '无效任务版本或确认信息', 400)
   }

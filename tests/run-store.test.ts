@@ -35,3 +35,19 @@ test('concurrent creates and updates do not overwrite runs', async t => {
   await Promise.all(runs.map(run => store.update('s2', run.id, { status: 'completed' })))
   assert.equal((await store.list('s2')).filter(run => run.status === 'completed').length, 10)
 })
+
+test('optional display metadata survives reload without overriding terminal results', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-runs-meta-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const store = new RunStore(dir)
+  const run = await store.create('s', 'plan')
+  await store.update('s', run.id, { origin: 'plugin', resultMeta: { action: 'chat', protocolFallback: true } })
+  await store.update('s', run.id, { status: 'completed' })
+  await store.update('s', run.id, { resultMeta: { action: 'done' } })
+  const loaded = (await new RunStore(dir).list('s'))[0]
+  assert.equal(loaded.origin, 'plugin')
+  assert.deepEqual(loaded.resultMeta, { action: 'chat', protocolFallback: true })
+  const legacy = await store.create('s', 'legacy')
+  assert.equal(legacy.origin, undefined)
+  assert.equal(legacy.resultMeta, undefined)
+})

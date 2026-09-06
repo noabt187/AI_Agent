@@ -42,6 +42,9 @@ export function beginTaskTurn(state: WorldState, binding: TaskRequestBinding): T
   validateControlInput(binding.input, c)
   if (c) {
     if (!task || task.id !== c.taskId || task.revision !== c.taskRevision) throw new TaskStateError('stale_task', '任务版本已改变')
+    if (c.kind === 'followup' && (task.lastRunId !== c.sourceRunId || !['active', 'awaiting_input'].includes(task.phase))) {
+      throw new TaskStateError('stale_followup', '任务或运行已改变，请重新查看')
+    }
     if (c.kind === 'confirm' || c.kind === 'revise') requireConfirmation(state, c)
     if (c.kind === 'confirm') {
       const p = task.pendingConfirmation!
@@ -63,12 +66,12 @@ export function beginTaskTurn(state: WorldState, binding: TaskRequestBinding): T
       intent = 'resume'
     }
   }
-  if (!c || c.kind === 'revise') {
+  if (!c || c.kind === 'revise' || c.kind === 'followup') {
     if (isCancelInput(binding.input) && !c) {
       if (!task) throw new TaskStateError('no_task', '当前没有可取消的任务')
       task.phase = 'cancelled'; task.approval = undefined; task.approvedProposal = undefined; task.pendingConfirmation = undefined; intent = 'cancel'
     } else {
-      const revise = !!task && (c?.kind === 'revise' || task.phase === 'awaiting_input')
+      const revise = !!task && (c?.kind === 'revise' || c?.kind === 'followup' || task.phase === 'awaiting_input')
       const previousContext = task ? [...task.previousContext, { objective: task.objective, proposal: task.pendingConfirmation?.prompt, questions: task.questions }] : []
       task = { id: revise ? task!.id : randomUUID(), revision: revise ? task!.revision + 1 : 1,
         objective: binding.input, phase: 'active', previousContext,

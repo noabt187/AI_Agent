@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import type { TaskRequestBinding, TaskState } from '../orchestrator/types.js'
+import type { AgentResult, TaskRequestBinding, TaskState } from '../orchestrator/types.js'
 
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+export type RunOrigin = 'composer' | 'plugin'
+export type RunResultMeta = { action: AgentResult['action']; protocolFallback?: true }
 export type RunRecord = {
   id: string
   sessionId: string
@@ -20,6 +22,8 @@ export type RunRecord = {
   taskId?: string
   taskRevision?: number
   taskPhase?: TaskState['phase']
+  origin?: RunOrigin
+  resultMeta?: RunResultMeta
 }
 export const isTerminalRun = (status: RunStatus): boolean => !['queued', 'running'].includes(status)
 
@@ -82,7 +86,7 @@ export class RunStore {
       return structuredClone(record)
     })
   }
-  update(sessionId: string, id: string, patch: Partial<Pick<RunRecord, 'status' | 'messageIds' | 'partialOutput' | 'error' | 'binding' | 'taskId' | 'taskRevision' | 'taskPhase'>>): Promise<RunRecord> {
+  update(sessionId: string, id: string, patch: Partial<Pick<RunRecord, 'status' | 'messageIds' | 'partialOutput' | 'error' | 'binding' | 'taskId' | 'taskRevision' | 'taskPhase' | 'origin' | 'resultMeta'>>): Promise<RunRecord> {
     return this.serial(sessionId, async records => {
       const record = records.find(item => item.id === id)
       if (!record) throw new Error('Run not found')

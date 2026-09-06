@@ -6,11 +6,12 @@ import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { legacyAgentRuntime, type AgentRuntime } from '../orchestrator/runtime.js'
 import { SessionPromptQueue, type PromptJob } from './promptQueue.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
-import { sessionRunStore as runStore, type RunStatus } from '../state/runStore.js'
+import { sessionRunStore as runStore, isTerminalRun, type RunStatus } from '../state/runStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 import { beginTaskTurn } from '../orchestrator/taskState.js'
-import type { ConfirmationRef } from '../orchestrator/types.js'
+import type { ConfirmationRef, TaskRequestBinding } from '../orchestrator/types.js'
+import { TaskStateError } from '../orchestrator/taskInput.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const orchestrators = new Map<string, Orchestrator>()
@@ -80,13 +81,15 @@ export function configureSessionRuntime(runtime: AgentRuntime, queue: SessionPro
 }
 
 export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
+  if (job.origin !== undefined && job.origin !== 'composer' && job.origin !== 'plugin') throw new TaskStateError('malformed_origin', '无效请求来源', 400)
   const orchestrator = await getOrchestrator(job.sessionId)
   // Capture intent, proposal identity and workspace before the first admission I/O.
   const binding = orchestrator.bindInput(job.prompt, job.control)
   if (binding.control) beginTaskTurn(structuredClone(orchestrator.state), binding)
+  await validateFollowup(job.sessionId, binding)
   const record = await runStore.create(job.sessionId, job.prompt, binding)
   try {
-    await runStore.update(job.sessionId, record.id, { binding })
+    await runStore.update(job.sessionId, record.id, { binding, origin: job.origin })
   } catch (error) {
     await runStore.update(job.sessionId, record.id, { status: 'failed', error: error instanceof Error ? error.message : String(error) })
     throw error
@@ -132,6 +135,12 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
       await runStore.update(job.sessionId, record.id, { taskId: event.task.id, taskRevision: event.task.revision, taskPhase: event.task.phase })
     }
     if (event.type === 'aborted') outcome = 'cancelled'
+    if (event.type === 'result') {
+      await runStore.update(job.sessionId, record.id, { resultMeta: {
+        action: event.result.action,
+        ...(event.result.action === 'chat' && event.result.protocolFallback ? { protocolFallback: true as const } : {}),
+      } })
+    }
     if (event.type === 'error' && !event.recoverable) { outcome = 'failed'; errorMessage = event.message }
     if (event.type === 'tool_call') { if (partial.trim()) previousPartial = partial; partial = '' }
     if (event.type === 'delta') {
@@ -155,6 +164,7 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
       binding,
       userMessageId: record.userMessageId,
       onStart: async () => {
+        await validateFollowup(job.sessionId, binding)
         before = new Set((await loadMessages(job.sessionId)).map(message => message.uuid))
         await runStore.update(job.sessionId, record.id, { status: 'running' })
         await emitRecord()
@@ -167,6 +177,21 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
     await finish(error, job.signal)
     throw error
   }
+}
+
+async function validateFollowup(sessionId: string, binding: TaskRequestBinding): Promise<void> {
+  const c = binding.control
+  if (c?.kind !== 'followup') return
+  const runs = await runStore.list(sessionId)
+  const source = runs.find(run => run.id === c.sourceRunId && run.sessionId === sessionId)
+  if (!source || !isTerminalRun(source.status) || source.taskId !== c.taskId || source.taskRevision !== c.taskRevision
+    || (source.binding && source.binding.workspaceKey !== binding.workspaceKey)
+    || runs.some(run => run.id !== binding.runId && run.status === 'running')) {
+    throw new TaskStateError('stale_followup', '来源运行未结束或已改变，请重新查看当前任务')
+  }
+  // Recheck state after the asynchronous read, at admission AND actual dequeue.
+  const orchestrator = await getOrchestrator(sessionId)
+  beginTaskTurn(structuredClone(orchestrator.state), binding)
 }
 
 async function readCommandValue(cwd: string, file: string, args: string[]): Promise<string | undefined> {
@@ -433,8 +458,8 @@ export async function revealMemoryItem(sessionId: string, layer: unknown, name: 
   return { ok: true, filePath: item.filePath }
 }
 
-export async function abortSession(sessionId: string): Promise<void> {
-  await promptQueue.abort(sessionId)
+export async function abortSession(sessionId: string, expectedRunId?: string): Promise<void> {
+  await promptQueue.abort(sessionId, expectedRunId)
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
