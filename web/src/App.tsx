@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent as ReactChangeEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   AlertTriangle,
-  CheckCircle2,
   CircleStop,
   Check,
   Copy,
@@ -70,6 +69,9 @@ import {
 } from './api'
 import { browserDraftStore } from './sessionDrafts'
 import { SessionRuntime, recoverSession } from './sessionRuntime'
+import { deriveTaskInteraction } from './taskInteraction'
+import { TaskInteractionHost } from './TaskInteractionHost'
+import { useTaskInteractionActions } from './useTaskInteractionActions'
 import { readSelectedSession, saveSelectedSession, selectExistingSession } from './sessionSelection'
 import { readThemeMode, saveThemeMode, type ThemeMode } from './theme'
 import { SlotOutlet } from './plugins/SlotOutlet'
@@ -120,7 +122,6 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 const modelThinkingStatus = '模型思考中'
 const composerMaxRows = 10
-const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 
 function formatTime(value: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -249,10 +250,9 @@ export function App({ pluginRuntime }: AppProps) {
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false)
   const [activeMemoryLayer, setActiveMemoryLayer] = useState<MemoryLayerId>('project')
   const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
-  const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
-  const [confirmDraft, setConfirmDraft] = useState('')
+  const [interactionOpenRequest, setInteractionOpenRequest] = useState(0)
   const [controlError, setControlError] = useState<{ owner: string; message: string } | null>(null)
-  const [selectedPlanKey, setSelectedPlanKey] = useState('')
+
   const [running, setRunning] = useState(false)
   const [aborting, setAbortingState] = useState(false)
   const [status, setStatus] = useState('未连接')
@@ -278,16 +278,28 @@ export function App({ pluginRuntime }: AppProps) {
   )
   const hasSelectedSession = Boolean(selectedSessionId && selectedSessionSummary)
 
-  const rawPendingConfirm = session?.state.task?.phase === 'awaiting_confirmation' ? session.state.task.pendingConfirmation : undefined
-  const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
-    ? `${selectedSessionId}:${rawPendingConfirm.taskId}:${rawPendingConfirm.taskRevision}:${rawPendingConfirm.id}`
-    : ''
-  const pendingConfirm = rawPendingConfirm
-  const pendingPlanOptions = useMemo(() => (
-    pendingConfirm?.selections?.map((value, index) => ({ key: String(index), label: value, value })) ?? []
-  ), [pendingConfirm])
-  const hasPlanChoices = pendingPlanOptions.length > 0
-  const selectedPlan = pendingPlanOptions.find((option) => option.key === selectedPlanKey)
+  function currentInteraction() {
+    const id = selectedSessionIdRef.current
+    return id ? deriveTaskInteraction(sessionRuntime.detail(id), sessionRuntime.interactionRuntime(id)) : null
+  }
+  const interaction = session?.id === selectedSessionId
+    ? deriveTaskInteraction(sessionRuntime.detail(selectedSessionId), sessionRuntime.interactionRuntime(selectedSessionId)) : null
+  const pendingConfirm = interaction?.confirmation
+  const interactionActions = useTaskInteractionActions({
+    interaction, getCurrent:currentInteraction,
+    submit:async (owner, text, control) => {
+      let rejection: unknown
+      const result = await submitPrompt(text, 'host', owner, control, error => { rejection = error })
+      if (!result.ok) throw rejection ?? new Error(result.error.message)
+    },
+    refresh:async owner => { await refreshSession(owner) },
+    revoke:clearPendingConfirm,
+    stop:async (owner, expectedRunId) => {
+      sessionRuntime.aborting(owner, true); syncRuntimeView(owner)
+      try { await abortSession(owner, expectedRunId) }
+      finally { sessionRuntime.aborting(owner, false); startRecovery(owner); syncRuntimeView(owner) }
+    },
+  })
   const operationRoot = session?.state.allowedPaths[0] || ''
   const repository = session?.state.repository || {}
   const enabledSkillCount = skills.filter((skill) => skill.enabled).length
@@ -317,6 +329,8 @@ export function App({ pluginRuntime }: AppProps) {
     pluginRuntime.sessions.notifyRunningChanged(sessionId)
     if (selectedSessionIdRef.current !== sessionId) return
     const view = sessionRuntime.view(sessionId)
+    const detail = sessionRuntime.detail(sessionId)
+    if (detail) setSession(detail)
     setTimeline(view.timeline)
     setActivityItems(view.activities)
     setRunning(sessionRuntime.isRunning(sessionId))
@@ -360,6 +374,7 @@ export function App({ pluginRuntime }: AppProps) {
         }
       },
       onError: () => {
+        sessionRuntime.syncing(owner)
         sessionRuntime.error(owner, '连接中断，正在重试同步…')
         syncRuntimeView(owner)
       },
@@ -382,11 +397,6 @@ export function App({ pluginRuntime }: AppProps) {
     saveThemeMode(themeMode)
   }, [themeMode])
 
-  useEffect(() => {
-    setSelectedPlanKey('')
-    setConfirmEditorOpen(false)
-    setConfirmDraft('')
-  }, [activePendingConfirmKey])
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId
@@ -394,6 +404,7 @@ export function App({ pluginRuntime }: AppProps) {
     setSession(null)
     if (selectedSessionId) {
       saveSelectedSession(selectedSessionId, window.sessionStorage)
+      sessionRuntime.syncing(selectedSessionId)
       syncRuntimeView(selectedSessionId)
       startRecovery(selectedSessionId)
     } else {
@@ -952,9 +963,6 @@ export function App({ pluginRuntime }: AppProps) {
   }
 
   function handleStreamEvent(sessionId: string, requestId: string, event: StreamEvent) {
-    if (event.type === 'task' && sessionId === selectedSessionIdRef.current) {
-      setSession(current => current?.id === sessionId ? { ...current, state: { ...current.state, task: event.task } } : current)
-    }
     const activity = event.type === 'tool_call'
       ? formatToolCall(event.name, event.arguments)
       : event.type === 'tool_result' ? formatToolResult(event.name, event.result) : undefined
@@ -962,7 +970,7 @@ export function App({ pluginRuntime }: AppProps) {
     syncRuntimeView(sessionId)
   }
 
-  async function submitPrompt(value: string, source: 'composer' | 'plugin', owner?: string, control?: TaskInputControl): Promise<PromptResult> {
+  async function submitPrompt(value: string, source: 'composer' | 'plugin' | 'host', owner?: string, control?: TaskInputControl, onRejected?: (error: unknown) => void): Promise<PromptResult> {
     const text = value.trim()
     const sessionId = owner || selectedSessionIdRef.current
     if (!text) return { ok: false, error: { message: 'Prompt is empty' } }
@@ -981,7 +989,7 @@ export function App({ pluginRuntime }: AppProps) {
           redrawDraft(n => n + 1)
         }
         resolve(result)
-      }, control)
+      }, control, source === 'plugin' ? 'plugin' : 'composer', onRejected)
     })
   }
 
@@ -990,6 +998,8 @@ export function App({ pluginRuntime }: AppProps) {
     text: string,
     resolveAcceptance: (result: PromptResult) => void,
     control?: TaskInputControl,
+    origin?: 'composer' | 'plugin',
+    onRejected?: (error: unknown) => void,
   ): Promise<void> {
     const requestId = crypto.randomUUID()
     let accepted = false
@@ -1002,13 +1012,13 @@ export function App({ pluginRuntime }: AppProps) {
         sessionId, text,
         event => handleStreamEvent(sessionId, requestId, event),
         () => { accepted = true; resolveAcceptance({ ok: true }) },
-        control,
+        control, origin,
       )
       // EOF alone is not evidence that the server run is terminal.
       recover = true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      if (!accepted) resolveAcceptance({ ok: false, error: { message } })
+      if (!accepted) { onRejected?.(err); resolveAcceptance({ ok: false, error: { message } }) }
       recover = accepted
       sessionRuntime.event(sessionId, requestId, { type: 'error', message })
     } finally {
@@ -1032,92 +1042,7 @@ export function App({ pluginRuntime }: AppProps) {
 
   submitPromptRef.current = submitPrompt
 
-  async function handleAbort() {
-    const owner = selectedSessionIdRef.current
-    if (!owner || !sessionRuntime.isRunning(owner) || sessionRuntime.view(owner).aborting) return
-    sessionRuntime.aborting(owner, true)
-    syncRuntimeView(owner)
-    try {
-      await abortSession(owner)
-      startRecovery(owner)
-    } catch (err) {
-      sessionRuntime.aborting(owner, false)
-      sessionRuntime.error(owner, `中断失败：${err instanceof Error ? err.message : String(err)}`)
-      syncRuntimeView(owner)
-    }
-  }
 
-  function handleConfirmAction() {
-    if (!pendingConfirm) return
-    void sendPrompt('确认', { kind: 'confirm', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id, ...(selectedPlan ? { selection: selectedPlan.value } : {}) })
-  }
-
-  async function handleCancelConfirm() {
-    const owner = selectedSessionIdRef.current
-    if (!owner || !pendingConfirm) return
-    setControlError(null)
-    const token = sessionRuntime.snapshotToken(owner)
-    try {
-      const detail = await clearPendingConfirm(owner, { taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
-      if (owner === selectedSessionIdRef.current && sessionRuntime.snapshot(owner, token, detail)) {
-        setSession(detail)
-        setConfirmEditorOpen(false)
-        setStatus('已取消确认，任务已暂停')
-      }
-    } catch (err) {
-      if (owner === selectedSessionIdRef.current) {
-        const message = err instanceof Error ? err.message : '取消确认失败'
-        setStatus(message)
-        setControlError({ owner, message })
-      }
-    }
-  }
-
-  function handleComparePlans() {
-    if (!pendingConfirm) return
-    void sendPrompt([
-      '请对比这些候选方案，简要说明各自优缺点、适用场景和推荐选择。',
-      `候选方案内容是：\n${pendingConfirm.prompt}`,
-      '先不要执行。',
-    ].join('\n\n'), { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
-  }
-
-  function handleEditConfirm() {
-    setConfirmEditorOpen(true)
-    setConfirmDraft('')
-  }
-
-  function buildConfirmEditPrompt(feedback: string): string {
-    if (!pendingConfirm) return feedback
-    const selectedPlanLine = selectedPlan
-      ? `用户当前选择的是：${selectedPlan.label}${selectedPlan.value ? `：${selectedPlan.value}` : ''}`
-      : ''
-    if (pendingConfirm.allowWrite) {
-      return [
-        '用户正在修改待确认的方案（含写权限）。',
-        `原待确认内容是：\n${pendingConfirm.prompt}`,
-        selectedPlanLine,
-        `用户修改意见是：\n${feedback}`,
-        '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
-        '不要写代码。',
-      ].filter(Boolean).join('\n\n')
-    }
-
-    return [
-      '用户正在修改待确认的内容。',
-      `原待确认内容是：\n${pendingConfirm.prompt}`,
-      selectedPlanLine,
-      `用户修改意见是：\n${feedback}`,
-      '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
-      '不要写代码。',
-    ].filter(Boolean).join('\n\n')
-  }
-
-  function handleSubmitConfirmEdit() {
-    if (!pendingConfirm || !confirmDraft.trim()) return
-    const editPrompt = buildConfirmEditPrompt(confirmDraft.trim())
-    void sendPrompt(editPrompt, { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
-  }
 
   const statusLabel = useMemo(() => {
     if (aborting) return status || '正在中断'
@@ -1189,6 +1114,10 @@ export function App({ pluginRuntime }: AppProps) {
 
   return (
     <main className={appShellClassName}>
+      <TaskInteractionHost interaction={interaction} actions={interactionActions} onRefresh={async owner => {
+        sessionRuntime.syncing(owner); syncRuntimeView(owner)
+        try { await refreshSession(owner) } catch (error) { startRecovery(owner); throw error }
+      }} openRequest={interactionOpenRequest} />
       <aside className="sidebar">
         <section className="brandBlock">
           <div className="brandIdentity">
@@ -1719,74 +1648,7 @@ export function App({ pluginRuntime }: AppProps) {
         )}
 
         {controlError?.owner === selectedSessionId ? <div role="alert">{controlError.message}</div> : null}
-        {pendingConfirm ? (
-          <div className="confirmBar">
-            <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{pendingConfirm.prompt}</div>
-            {pendingConfirm.allowWrite ? (
-              <div className="confirmWarning" role="alert">
-                {allowWriteConfirmWarning}
-              </div>
-            ) : null}
-            {confirmEditorOpen ? (
-              <div className="confirmEditRow">
-                <textarea
-                  value={confirmDraft}
-                  onChange={(event) => setConfirmDraft(event.target.value)}
-                  placeholder={`输入你想调整的内容`}
-                  autoFocus
-                />
-                <div className="confirmActions">
-                  <button className="primary" disabled={!confirmDraft.trim()} onClick={handleSubmitConfirmEdit}>
-                    提交修改
-                  </button>
-                  <button className="secondary" onClick={() => {
-                    setConfirmEditorOpen(false)
-                    setConfirmDraft('')
-                  }}>
-                    返回
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {hasPlanChoices && !selectedPlan ? (
-                  <div className="confirmChoiceRow">
-                    <span>选择一个方案继续</span>
-                    <div className="confirmActions">
-                      {pendingPlanOptions.map((option) => (
-                        <button
-                          key={option.key}
-                          className="primary"
-                          onClick={() => setSelectedPlanKey(option.key)}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                      <button className="secondary" onClick={handleComparePlans}>让 Agent 对比</button>
-                      <button className="secondary" onClick={handleEditConfirm}>我想调整</button>
-                      <button className="secondary" onClick={handleCancelConfirm}>取消</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="confirmChoiceRow">
-                    {selectedPlan ? <span>已选择 {selectedPlan.label}</span> : null}
-                    <div className="confirmActions">
-                      <button className="primary" onClick={handleConfirmAction}>
-                        <CheckCircle2 size={18} />
-                        确认执行
-                      </button>
-                      {selectedPlan ? (
-                        <button className="secondary" onClick={() => setSelectedPlanKey('')}>重选方案</button>
-                      ) : null}
-                      <button className="secondary" onClick={handleEditConfirm}>继续调整</button>
-                      <button className="secondary" onClick={handleCancelConfirm}>取消</button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        ) : null}
+        {interaction?.actionable ? <div className="confirmBar"><span>{interaction.label}</span><button onClick={() => setInteractionOpenRequest(n => n + 1)}>查看并处理</button></div> : null}
 
         {session?.state.task?.approvedProposal ? (
           <details className="approvedProposal">
@@ -1795,12 +1657,7 @@ export function App({ pluginRuntime }: AppProps) {
           </details>
         ) : null}
 
-        {!running && session?.state.task?.phase === 'paused' ? (
-          <button className="resumeTaskButton" onClick={() => {
-            const task = session.state.task!
-            void sendPrompt('继续', { kind: 'resume', taskId: task.id, taskRevision: task.revision })
-          }}>继续任务</button>
-        ) : null}
+        {interaction?.canResume ? <button className="resumeTaskButton" disabled={interactionActions.busy} onClick={() => void interactionActions.resume()}>继续任务</button> : null}
 
         <form
           className="composer"
@@ -1833,7 +1690,7 @@ export function App({ pluginRuntime }: AppProps) {
           />
           <span className="composerHint">Ctrl / ⌘ + Enter 发送 · Enter 换行</span>
           {running ? (
-            <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting} onClick={() => void handleAbort()}>
+            <button className="sendButton abort" title={aborting ? '正在停止' : '停止'} type="button" disabled={aborting || !interaction?.canStop || interactionActions.busy} onClick={() => void interactionActions.stop()}>
               <CircleStop size={19} />
             </button>
           ) : (

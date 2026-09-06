@@ -1,5 +1,63 @@
 /* Ink workspace: one neutral palette shared by all host surfaces. */
 
+/* These portals live outside .appShell and above ordinary plugin overlays. */
+.host-task-status, .host-task-dialog {
+  --host-surface: #fafafa;
+  --host-soft: #f0f0f0;
+  --host-text: #292929;
+  --host-muted: #686868;
+  --host-line: #d6d6d6;
+  color: var(--host-text);
+  background: var(--host-surface);
+  font: 14px/1.6 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color-scheme: light;
+}
+body:has(.appShell.themeDark) :is(.host-task-status, .host-task-dialog) {
+  --host-surface: #252525; --host-soft: #303030; --host-text: #e3e3e3;
+  --host-muted: #b0b0b0; --host-line: #505050; color-scheme: dark;
+}
+.host-task-status {
+  position: fixed; z-index: 11000; bottom: 18px; left: 18px;
+  display: flex; align-items: center; gap: 14px;
+  width: min(440px, calc(100vw - 36px)); padding: 14px 16px;
+  border: 1px solid var(--host-line); border-top: 2px solid #9b9585; border-radius: 10px;
+  box-shadow: 0 8px 32px #0002;
+}
+.host-task-status > div { min-width: 0; flex: 1; }
+.host-task-status strong { display: block; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
+.host-task-status small, .host-task-eyebrow { color: var(--host-muted); font-size: 11px; letter-spacing: .04em; overflow-wrap: anywhere; }
+.host-task-dialog {
+  width: min(700px, calc(100vw - 32px)); max-height: calc(100dvh - 40px);
+  padding: 0; border: 1px solid var(--host-line); border-radius: 12px;
+  box-shadow: 0 24px 100px #0004; overflow-y: auto; overscroll-behavior: contain;
+}
+.host-task-dialog::backdrop { background: #18181866; backdrop-filter: blur(2px); }
+.host-task-dialog header { display: flex; align-items: start; justify-content: space-between; gap: 24px; padding: 22px 26px; border-bottom: 1px solid var(--host-line); }
+.host-task-dialog h2 { font-size: 21px; font-weight: 600; line-height: 1.5; margin: 4px 0 0; overflow-wrap: anywhere; }
+.host-task-dialog h2:focus { outline: none; }
+.host-task-content { padding: 22px 26px; display: grid; gap: 18px; }
+.host-task-objective { color: var(--host-muted); max-height: 120px; overflow-y: auto; overflow-wrap: anywhere; }
+.host-task-prose { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 0; padding: 16px; background: var(--host-soft); border-radius: 6px; }
+.host-task-note { padding-left: 12px; border-left: 2px solid #9b9585; color: var(--host-muted); font-size: 13px; }
+.host-task-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.host-task-content form { display: grid; gap: 10px; }
+.host-task-content textarea { width: 100%; min-height: 110px; resize: vertical; border: 1px solid var(--host-line); background: var(--host-surface); color: var(--host-text); padding: 12px; border-radius: 6px; }
+.host-task-options { border: 1px solid var(--host-line); display: grid; gap: 8px; padding: 12px; }
+.host-task-options label { display: flex; align-items: baseline; gap: 8px; overflow-wrap: anywhere; }
+.host-task-options input { flex-shrink: 0; accent-color: #555; }
+:is(.host-task-dialog, .host-task-status) button { padding: 7px 12px; border: 1px solid var(--host-line); border-radius: 5px; background: var(--host-surface); color: var(--host-text); flex-shrink: 0; }
+:is(.host-task-dialog, .host-task-status) button:hover:not(:disabled) { background: var(--host-soft); }
+.host-task-dialog .host-task-primary { background: #363636; color: #fff; border-color: #363636; }
+.host-task-dialog .host-task-primary:hover:not(:disabled) { background: #505050; }
+:is(.host-task-dialog, .host-task-status) :is(button, input, textarea):focus-visible { outline: 2px solid #9b9585; outline-offset: 3px; }
+.host-task-error { color: #a4433e; }
+.host-task-reconnect { padding: 0 26px 22px; display: grid; gap: 12px; }
+@media (max-width: 480px) {
+  .host-task-status { bottom: 10px; left: 10px; width: calc(100vw - 20px); gap: 8px; padding: 10px; }
+  .host-task-dialog header, .host-task-content { padding: 18px; }
+  .host-task-dialog h2 { font-size: 18px; }
+}
+
 :root {
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   color: #292929;
