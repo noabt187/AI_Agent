@@ -19,6 +19,12 @@
 
 ## DSH 兼容插件架构
 
+网页与 CLI 的普通新请求会建立当前任务，不继承旧方案的写权限；历史和已执行结果保留。任务等待补充信息时，回答会修订当前任务版本。确认、修改方案和继续任务均绑定任务及方案版本；旧页面确认、重复确认或已排队但目录/方案变化的请求会被拒绝。带新约束的“确认”应作为新请求或方案修改提交。
+
+网页使用停止按钮暂停当前运行，保留后继排队请求。CLI 的 Esc 同样暂停并返回输入循环。明确输入“继续”或点击“继续任务”可恢复当前任务；只有同任务、同版本、同目录的已批准方案可恢复其写权限。“取消”结束当前任务，历史保留；取消待确认方案则暂停任务。网页 Esc 只属于所在界面，不停止 Agent。“本轮运行结束”不等于“任务完成”：等待补充、等待确认、暂停和任务完成分别显示。
+
+普通 `/api/sessions/:id/stream` 的 `{ prompt }` 契约及 PageCraft `session.prompt(content, 'queue')` 不变。宿主界面可附加 `control: { kind: 'confirm' | 'revise', taskId, taskRevision, confirmationId }`，确认候选时额外传精确 `selection`；继续使用 `{ kind: 'resume', taskId, taskRevision }`。`DELETE /pending-confirm` 需提交 `{ expected: { taskId, taskRevision, confirmationId } }`。接收前的版本冲突返回 409、非法控制返回 400；已开始流式响应的排队请求若过期，则发送错误事件并将该运行持久化为 failed。
+
 AI Agent 现在使用与 DeepSeek Harness 同风格的 Cordis 插件宿主。一个 profile 由 bundle 的 `cordis.patch.yml` 与用户覆写层组成；安装包的 `dsh.bundle.patch` 会自动加入 profile，`dsh.client` 产物会由宿主生成清单并在浏览器中激活。
 
 仓库内的 [`dsh-frontend-feedback`](plugins/dsh-frontend-feedback/README.md) 就是同一份 PageCraft 包：它既能安装到 DeepSeek Harness，也能原样安装到本 AI Agent，不需要 AI Agent 专用分支或适配代码。

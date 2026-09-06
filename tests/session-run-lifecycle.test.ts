@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { mkdir, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { resolve } from 'node:path'
 
 test('session submission persists cancellation and partial output before the FIFO successor starts', async t => {
-  const previousCwd = process.cwd()
-  const dir = await mkdtemp(join(tmpdir(), 'agent-lifecycle-'))
-  process.chdir(dir)
-  t.after(async () => { process.chdir(previousCwd); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
+  const sessionId = `session-lifecycle-${randomUUID()}`
+  const dir = resolve('state', sessionId)
+  await mkdir(dir, { recursive: true })
   const api = await import('../src/server/sessionApi.js')
   const { SessionPromptQueue } = await import('../src/server/promptQueue.js')
   const { RunStore } = await import('../src/state/runStore.js')
@@ -30,20 +29,20 @@ test('session submission persists cancellation and partial output before the FIF
     }
   })
   const restore = api.configureSessionRuntime(legacyAgentRuntime, queue)
-  t.after(restore)
+  t.after(async () => { await api.deleteSession(sessionId); restore(); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
   const events: string[] = []
   const onEvent: import('../src/orchestrator/types.js').AgentEventHandler = event => {
     if (event.type === 'run') events.push(`${event.run.prompt}:${event.run.status}`)
   }
-  const first = api.enqueueSessionPrompt({ sessionId: 'session-qa', prompt: 'first', onEvent })
+  const first = api.enqueueSessionPrompt({ sessionId, prompt: 'first', onEvent })
   await start
   const { readFile } = await import('node:fs/promises')
-  const liveRuns = JSON.parse(await readFile(join(dir, 'state/session-qa/runs.json'), 'utf8'))
+  const liveRuns = JSON.parse(await readFile(resolve(dir, 'runs.json'), 'utf8'))
   assert.deepEqual(liveRuns[0].messageIds, [liveRuns[0].userMessageId], 'running snapshots already link the saved prompt')
-  const second = api.enqueueSessionPrompt({ sessionId: 'session-qa', prompt: 'second', onEvent })
-  await api.abortSession('session-qa')
+  const second = api.enqueueSessionPrompt({ sessionId, prompt: 'second', onEvent })
+  await api.abortSession(sessionId)
   await Promise.all([first, second])
-  const runs = await new RunStore(join(dir, 'state')).list('session-qa')
+  const runs = await new RunStore(resolve('state')).list(sessionId)
   assert.deepEqual(runs.map(run => run.status), ['cancelled', 'completed'])
   assert.deepEqual(runs.map(run => run.messageIds), runs.map(run => [run.userMessageId]))
   assert.notEqual(runs[0].userMessageId, runs[1].userMessageId)

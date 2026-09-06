@@ -1,9 +1,11 @@
-import type { AgentEvent } from '../orchestrator/types.js'
+import type { AgentEvent, TaskRequestBinding } from '../orchestrator/types.js'
 
 export interface PromptJob {
   sessionId: string
   prompt: string
   userMessageId?: string
+  control?: unknown
+  binding?: TaskRequestBinding
   onStart?(): void | Promise<void>
   onEvent(event: AgentEvent): void | Promise<void>
   signal?: AbortSignal

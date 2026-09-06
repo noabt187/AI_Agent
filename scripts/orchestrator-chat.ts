@@ -84,7 +84,14 @@ async function main() {
     if (!prompt) continue
     if (prompt === '/exit') break
 
-    await orchestrator.handleUserInput(prompt)
+    try {
+      // handleUserInput binds synchronously at entry, including CLI-generated
+      // run/message IDs, and finalizes the same task before the next question.
+      await orchestrator.handleUserInput(prompt)
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') console.log('[已暂停] 输入“继续”恢复当前任务，或发送新请求。')
+      else console.error(error instanceof Error ? error.message : String(error))
+    }
   }
 
   rl.close()

@@ -31,6 +31,8 @@ import {
   uploadManagedSkill,
 } from '../skills/registry.js'
 import { getSessionId, HttpError, readJson, sendJson } from './http.js'
+import { TaskStateError } from '../orchestrator/taskInput.js'
+import type { ConfirmationRef } from '../orchestrator/types.js'
 
 const stateDir = 'state'
 
@@ -176,7 +178,8 @@ export async function handleCoreRequest(
     }
 
     if (sessionId && method === 'DELETE' && pathname.endsWith('/pending-confirm')) {
-      sendJson(res, 200, await clearPendingConfirm(sessionId))
+      const body = await readJson(req)
+      sendJson(res, 200, await clearPendingConfirm(sessionId, body.expected as ConfirmationRef))
       return
     }
 
@@ -238,7 +241,7 @@ export async function handleCoreRequest(
 
     sendJson(res, 404, { error: 'Not found' })
   } catch (error) {
-    sendJson(res, errorStatus(error), { error: error instanceof Error ? error.message : String(error) })
+    sendJson(res, errorStatus(error), { error: error instanceof Error ? error.message : String(error), code: error instanceof TaskStateError ? error.code : undefined })
   }
 }
 
@@ -263,7 +266,7 @@ function buildDownloadFileName(sessionId: string, title?: string): string {
 }
 
 function errorStatus(error: unknown): number {
-  if (error instanceof HttpError || error instanceof SkillRegistryError) return error.statusCode
+  if (error instanceof HttpError || error instanceof SkillRegistryError || error instanceof TaskStateError) return error.statusCode
   return 500
 }
 
@@ -278,6 +281,7 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
     await enqueueSessionPrompt({
       sessionId,
       prompt,
+      control: body.control,
       onAccepted: () => { startJsonStream(res) },
       onStart: () => { writeStreamEvent(res, { type: 'start', sessionId }) },
       onEvent: async event => { writeStreamEvent(res, event) },
@@ -285,7 +289,7 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
     writeStreamEvent(res, { type: 'done', sessionId })
   } catch (error) {
     if (!res.headersSent) {
-      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      sendJson(res, errorStatus(error), { error: error instanceof Error ? error.message : String(error), code: error instanceof TaskStateError ? error.code : undefined })
       return
     }
     writeStreamEvent(res, {

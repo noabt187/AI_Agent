@@ -2,7 +2,7 @@ import type { Message, RunRecord } from './api'
 import { messageContent } from './messageContent'
 
 export type TimelineItem = { id: string; role: 'user' | 'assistant' | 'activity' | 'error'; content: string }
-const runLabels = { queued: '请求排队中', running: '正在执行', completed: '执行完成', failed: '执行失败', cancelled: '操作已取消', interrupted: '运行意外中断（服务重启）' }
+const runLabels = { queued: '请求排队中', running: '正在执行', completed: '本轮运行结束', failed: '执行失败', cancelled: '操作已取消', interrupted: '运行意外中断（服务重启）' }
 
 export function partialOutputText(raw: string): string {
   if (!raw.trimStart().startsWith('{')) return raw

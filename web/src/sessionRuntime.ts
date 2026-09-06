@@ -1,5 +1,8 @@
 import type { SessionDetail, StreamEvent } from './api'
 import { partialOutputText, sessionTimeline, type TimelineItem } from './sessionTimeline'
+import type { TaskState } from './api'
+
+const taskLabels: Record<TaskState['phase'], string> = { active: '本轮运行结束', awaiting_input: '等待补充信息', awaiting_confirmation: '等待确认', paused: '任务已暂停', completed: '任务完成', cancelled: '任务已取消' }
 
 type RequestState = { promptId: string; raw: string; assistantId?: string; segment: number; terminal: boolean }
 type SessionView = {
@@ -63,7 +66,7 @@ export class SessionRuntime {
       s.activities = []
       s.deltaCount = 0
       s.aborting = false
-      s.status = detail.running ? '正在执行（恢复同步）' : '就绪'
+      s.status = detail.running ? '正在执行（恢复同步）' : detail.state.task ? taskLabels[detail.state.task.phase] : '就绪'
     }
     return true
   }

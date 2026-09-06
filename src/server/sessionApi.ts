@@ -9,10 +9,13 @@ import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/session
 import { RunStore, type RunStatus } from '../state/runStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
+import { beginTaskTurn } from '../orchestrator/taskState.js'
+import type { ConfirmationRef } from '../orchestrator/types.js'
 
 const stateDir = resolve(process.cwd(), 'state')
 const runStore = new RunStore(stateDir)
 const orchestrators = new Map<string, Orchestrator>()
+const loadingOrchestrators = new Map<string, Promise<Orchestrator>>()
 const liveCreatedAt = new Map<string, number>()
 const activeRuns = new Set<string>()
 const execFileAsync = promisify(execFile)
@@ -54,7 +57,7 @@ export function createSessionPromptQueue(): SessionPromptQueue {
       const orchestrator = await getOrchestrator(job.sessionId)
       markSessionRunning(job.sessionId)
       try {
-        await orchestrator.handleUserInput(job.prompt, job.onEvent, job.signal, job.userMessageId)
+        await orchestrator.handleUserInput(job.prompt, job.onEvent, job.signal, job.userMessageId, job.binding)
       } finally {
         markSessionIdle(job.sessionId)
       }
@@ -78,7 +81,19 @@ export function configureSessionRuntime(runtime: AgentRuntime, queue: SessionPro
 }
 
 export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
+  const orchestrator = await getOrchestrator(job.sessionId)
   const record = await runStore.create(job.sessionId, job.prompt)
+  let binding: import('../orchestrator/types.js').TaskRequestBinding
+  try {
+    binding = orchestrator.bindInput(job.prompt, job.control, { runId: record.id, userMessageId: record.userMessageId! })
+    // Validate controls against admission state without consuming the proposal.
+    // The real transition repeats validation when this exact binding executes.
+    if (binding.control) beginTaskTurn(structuredClone(orchestrator.state), binding)
+    await runStore.update(job.sessionId, record.id, { binding })
+  } catch (error) {
+    await runStore.update(job.sessionId, record.id, { status: 'failed', error: error instanceof Error ? error.message : String(error) })
+    throw error
+  }
   // Delivery failure is not an execution failure: reconnecting clients recover
   // durable state through the session endpoint.
   const deliver: PromptJob['onEvent'] = async event => { try { await job.onEvent(event) } catch {} }
@@ -111,6 +126,11 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
     await emitRecord()
   }
   const originalExecute = async (event: Parameters<PromptJob['onEvent']>[0]) => {
+    if (finished) return
+    if (event.type === 'task') {
+      if (event.runId !== record.id || event.task.lastRunId !== record.id) return
+      await runStore.update(job.sessionId, record.id, { taskId: event.task.id, taskRevision: event.task.revision, taskPhase: event.task.phase })
+    }
     if (event.type === 'aborted') outcome = 'cancelled'
     if (event.type === 'error' && !event.recoverable) { outcome = 'failed'; errorMessage = event.message }
     if (event.type === 'tool_call') { if (partial.trim()) previousPartial = partial; partial = '' }
@@ -132,6 +152,7 @@ export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
     await emitRecord()
     await promptQueue.enqueue({
       ...job,
+      binding,
       userMessageId: record.userMessageId,
       onStart: async () => {
         before = new Set((await loadMessages(job.sessionId)).map(message => message.uuid))
@@ -199,7 +220,16 @@ export async function getOrchestrator(sessionId: string): Promise<Orchestrator> 
     if (orchestrators.has(sessionId)) return existing
   }
 
+  const loading = loadingOrchestrators.get(sessionId)
+  if (loading) return loading
+  const task = loadOrchestrator(sessionId)
+  loadingOrchestrators.set(sessionId, task)
+  try { return await task } finally { loadingOrchestrators.delete(sessionId) }
+}
+
+async function loadOrchestrator(sessionId: string): Promise<Orchestrator> {
   const orchestrator = await Orchestrator.load(sessionId, agentRuntime)
+  await orchestrator.reconcileRuns(await runStore.list(sessionId))
   orchestrators.set(sessionId, orchestrator)
   let createdAt = Date.now()
   try {
@@ -313,8 +343,7 @@ export async function updateAllowedPaths(sessionId: string, allowedPaths: string
     if (!isAbsolute(path) || !(await stat(path)).isDirectory()) throw new Error('操作目录必须是存在的绝对目录路径')
   }
   const orchestrator = await getOrchestrator(sessionId)
-  orchestrator.state.allowedPaths = allowedPaths
-  await orchestrator.persist()
+  await orchestrator.setAllowedPaths(allowedPaths)
   return loadSession(sessionId)
 }
 
@@ -358,11 +387,9 @@ export async function loadRepositoryIdentity(sessionId: string): Promise<unknown
   }
 }
 
-export async function clearPendingConfirm(sessionId: string): Promise<unknown> {
+export async function clearPendingConfirm(sessionId: string, expected: ConfirmationRef): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
-  orchestrator.state.pendingConfirm = undefined
-  orchestrator.state.designConfirmed = false
-  await orchestrator.persist()
+  await orchestrator.clearConfirmation(expected)
   return loadSession(sessionId)
 }
 

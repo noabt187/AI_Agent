@@ -66,6 +66,7 @@ import {
   type SessionDetail,
   type SessionSummary,
   type StreamEvent,
+  type TaskInputControl,
 } from './api'
 import { browserDraftStore } from './sessionDrafts'
 import { SessionRuntime, recoverSession } from './sessionRuntime'
@@ -86,16 +87,6 @@ type ActivityItem = {
   sessionId: string
 }
 
-type PendingConfirm = {
-  allowWrite: boolean
-  message: string
-}
-
-type PlanOption = {
-  key: string
-  label: string
-  value?: string
-}
 
 type ViewMode = 'chat' | 'metrics'
 type MetricsViewMode = 'detail' | 'trend' | 'anomaly' | 'composition'
@@ -131,7 +122,6 @@ const modelThinkingStatus = '模型思考中'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 const themeStorageKey = 'agent-console-theme'
-const dismissedConfirmStoragePrefix = 'agent-console-dismissed-confirm:'
 
 function getInitialThemeMode(): ThemeMode {
   if (typeof window === 'undefined') return 'dark'
@@ -209,89 +199,6 @@ function formatToolResult(name: string, result: string): string {
   return `${name} 完成`
 }
 
-function inferPendingConfirm(timeline: TimelineItem[], running: boolean): PendingConfirm | undefined {
-  if (running) return undefined
-  const latestVisible = [...timeline].reverse().find((item) => item.role === 'assistant' || item.role === 'user')
-  if (latestVisible?.role !== 'assistant') return undefined
-  const latestAssistant = latestVisible
-  if (!latestAssistant) return undefined
-  const content = latestAssistant.content.trim()
-  if (!content || /任务完成|已完成|验证通过/.test(content)) return undefined
-
-  const hasAllowWriteWarning = content.includes(allowWriteConfirmWarning)
-    || /获得文件写入权限|增\/删\/改/.test(content)
-  const waitingForChoice = /请选择|选择.*方案|选择.*选项|A\/B\/C|A\/B\/C\/D|A\/B\/C\/D\/E/.test(content)
-  const waitingForConfirm = hasAllowWriteWarning
-    || waitingForChoice
-    || /确认后|等待确认|请确认|是否确认|确认以上|确认这个|需要确认以下|我需要确认/.test(content)
-    || (/确认/.test(content) && /是否|吗|？|\?/.test(content))
-  if (!waitingForConfirm) return undefined
-
-  return {
-    allowWrite: hasAllowWriteWarning || /方案|设计|任务顺序|待执行/.test(content),
-    message: content,
-  }
-}
-
-function pendingConfirmKey(sessionId: string, confirm: PendingConfirm): string {
-  return [sessionId, confirm.allowWrite ? 'write' : 'read', confirm.message].join('\n')
-}
-
-function loadDismissedPendingConfirmKey(sessionId: string): string {
-  if (typeof window === 'undefined' || !sessionId) return ''
-  return window.localStorage.getItem(`${dismissedConfirmStoragePrefix}${sessionId}`) || ''
-}
-
-function saveDismissedPendingConfirmKey(sessionId: string, key: string): void {
-  if (typeof window === 'undefined' || !sessionId) return
-  window.localStorage.setItem(`${dismissedConfirmStoragePrefix}${sessionId}`, key)
-}
-
-function uniquePlanOptions(options: PlanOption[]): PlanOption[] {
-  const seen = new Set<string>()
-  return options.filter((option) => {
-    if (seen.has(option.key)) return false
-    seen.add(option.key)
-    return true
-  })
-}
-
-function detectPlanOptions(content: string): PlanOption[] {
-  const matches: PlanOption[] = []
-  const optionLetters = 'ABCDEFGH'
-
-  for (const line of content.split('\n')) {
-    const tableMatch = line.match(/^\s*\|\s*([A-Ha-h])\s*\|\s*(.+?)\s*\|/)
-    if (!tableMatch) continue
-    const key = tableMatch[1].toUpperCase()
-    const value = tableMatch[2].replace(/^["“”]+|["“”]+$/g, '').trim()
-    matches.push({
-      key,
-      label: key,
-      value,
-    })
-  }
-
-  const patterns = [
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([A-Ha-h]))(?:[：:、\s.)）-]|$)/g,
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(方案\s*([一二三四五六七八]))(?:[：:、\s.)）-]|$)/g,
-    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:([A-Ha-h])\s*[.)）]\s*)(?=\S)/g,
-  ]
-
-  for (const pattern of patterns) {
-    for (const match of content.matchAll(pattern)) {
-      const raw = match[2] || match[1]
-      const normalized = raw.trim().toUpperCase()
-      const key = optionLetters.includes(normalized) ? normalized : raw.trim()
-      matches.push({
-        key,
-        label: optionLetters.includes(key) ? `方案 ${key}` : `方案${key}`,
-      })
-    }
-  }
-
-  return uniquePlanOptions(matches).slice(0, 8)
-}
 
 export interface AppProps {
   pluginRuntime: BrowserPluginRuntime
@@ -350,6 +257,7 @@ export function App({ pluginRuntime }: AppProps) {
   const [activeMemoryType, setActiveMemoryType] = useState<MemoryType>('project')
   const [confirmEditorOpen, setConfirmEditorOpen] = useState(false)
   const [confirmDraft, setConfirmDraft] = useState('')
+  const [controlError, setControlError] = useState<{ owner: string; message: string } | null>(null)
   const [selectedPlanKey, setSelectedPlanKey] = useState('')
   const [running, setRunning] = useState(false)
   const [aborting, setAbortingState] = useState(false)
@@ -368,7 +276,6 @@ export function App({ pluginRuntime }: AppProps) {
   const [editingSessionId, setEditingSessionId] = useState('')
 
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
-  const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
 
   const selectedSessionSummary = useMemo(
@@ -376,17 +283,15 @@ export function App({ pluginRuntime }: AppProps) {
     [selectedSessionId, sessions],
   )
 
-  const rawPendingConfirm = session?.state.pendingConfirm
+  const rawPendingConfirm = session?.state.task?.phase === 'awaiting_confirmation' ? session.state.task.pendingConfirmation : undefined
   const activePendingConfirmKey = selectedSessionId && rawPendingConfirm
-    ? pendingConfirmKey(selectedSessionId, rawPendingConfirm)
+    ? `${selectedSessionId}:${rawPendingConfirm.taskId}:${rawPendingConfirm.taskRevision}:${rawPendingConfirm.id}`
     : ''
-  const pendingConfirm = activePendingConfirmKey && activePendingConfirmKey === dismissedPendingConfirmKey
-    ? undefined
-    : rawPendingConfirm
+  const pendingConfirm = rawPendingConfirm
   const pendingPlanOptions = useMemo(() => (
-    pendingConfirm ? detectPlanOptions(pendingConfirm.message) : []
+    pendingConfirm?.selections?.map((value, index) => ({ key: String(index), label: value, value })) ?? []
   ), [pendingConfirm])
-  const hasPlanChoices = pendingPlanOptions.length > 1
+  const hasPlanChoices = pendingPlanOptions.length > 0
   const selectedPlan = pendingPlanOptions.find((option) => option.key === selectedPlanKey)
   const operationRoot = session?.state.allowedPaths[0] || ''
   const repository = session?.state.repository || {}
@@ -399,25 +304,6 @@ export function App({ pluginRuntime }: AppProps) {
     ? skills.find((skill) => skill.id === skillContextMenu.skillId) || null
     : null
 
-  function clearPendingConfirmLocal(options: { dismiss?: boolean } = {}) {
-    if (options.dismiss && selectedSessionId && pendingConfirm) {
-      const key = pendingConfirmKey(selectedSessionId, pendingConfirm)
-      saveDismissedPendingConfirmKey(selectedSessionId, key)
-      setDismissedPendingConfirmKey(key)
-    }
-    setSession((current) => current
-      ? {
-          ...current,
-          state: {
-            ...current.state,
-            pendingConfirm: undefined,
-          },
-        }
-      : current)
-    setConfirmEditorOpen(false)
-    setConfirmDraft('')
-    setSelectedPlanKey('')
-  }
 
   async function refreshSessions(preferredId?: string | null) {
     const request = ++sessionListRequest.current
@@ -473,9 +359,10 @@ export function App({ pluginRuntime }: AppProps) {
       },
       apply: ({ detail, token }) => {
         if (owner !== selectedSessionIdRef.current) return
-        // Metadata is still needed when a live delta invalidates the timeline snapshot.
-        setSession(detail)
-        if (sessionRuntime.snapshot(owner, token, detail)) syncRuntimeView(owner)
+        if (sessionRuntime.snapshot(owner, token, detail)) {
+          setSession(detail)
+          syncRuntimeView(owner)
+        }
       },
       onError: () => {
         sessionRuntime.error(owner, '连接中断，正在重试同步…')
@@ -502,6 +389,8 @@ export function App({ pluginRuntime }: AppProps) {
 
   useEffect(() => {
     setSelectedPlanKey('')
+    setConfirmEditorOpen(false)
+    setConfirmDraft('')
   }, [activePendingConfirmKey])
 
   useEffect(() => {
@@ -515,7 +404,6 @@ export function App({ pluginRuntime }: AppProps) {
     } else {
       setTimeline([]); setActivityItems([]); setRunning(false); setAbortingState(false); setStatus('就绪')
     }
-    setDismissedPendingConfirmKey(loadDismissedPendingConfirmKey(selectedSessionId))
     setActivityExpanded(false)
     setRepositoryError('')
     return () => stopRecovery(selectedSessionId)
@@ -1069,6 +957,9 @@ export function App({ pluginRuntime }: AppProps) {
   }
 
   function handleStreamEvent(sessionId: string, requestId: string, event: StreamEvent) {
+    if (event.type === 'task' && sessionId === selectedSessionIdRef.current) {
+      setSession(current => current?.id === sessionId ? { ...current, state: { ...current.state, task: event.task } } : current)
+    }
     const activity = event.type === 'tool_call'
       ? formatToolCall(event.name, event.arguments)
       : event.type === 'tool_result' ? formatToolResult(event.name, event.result) : undefined
@@ -1076,7 +967,7 @@ export function App({ pluginRuntime }: AppProps) {
     syncRuntimeView(sessionId)
   }
 
-  async function submitPrompt(value: string, source: 'composer' | 'plugin', owner?: string): Promise<PromptResult> {
+  async function submitPrompt(value: string, source: 'composer' | 'plugin', owner?: string, control?: TaskInputControl): Promise<PromptResult> {
     const text = value.trim()
     const sessionId = owner || selectedSessionIdRef.current
     if (!text) return { ok: false, error: { message: 'Prompt is empty' } }
@@ -1095,7 +986,7 @@ export function App({ pluginRuntime }: AppProps) {
           redrawDraft(n => n + 1)
         }
         resolve(result)
-      })
+      }, control)
     })
   }
 
@@ -1103,6 +994,7 @@ export function App({ pluginRuntime }: AppProps) {
     sessionId: string,
     text: string,
     resolveAcceptance: (result: PromptResult) => void,
+    control?: TaskInputControl,
   ): Promise<void> {
     const requestId = crypto.randomUUID()
     let accepted = false
@@ -1115,6 +1007,7 @@ export function App({ pluginRuntime }: AppProps) {
         sessionId, text,
         event => handleStreamEvent(sessionId, requestId, event),
         () => { accepted = true; resolveAcceptance({ ok: true }) },
+        control,
       )
       // EOF alone is not evidence that the server run is terminal.
       recover = true
@@ -1131,8 +1024,15 @@ export function App({ pluginRuntime }: AppProps) {
     }
   }
 
-  async function sendPrompt(value: string): Promise<void> {
-    await submitPrompt(value, 'composer')
+  async function sendPrompt(value: string, control?: TaskInputControl): Promise<void> {
+    const owner = selectedSessionIdRef.current
+    if (control) setControlError(null)
+    const result = await submitPrompt(value, 'composer', owner, control)
+    if (owner === selectedSessionIdRef.current && !result.ok) {
+      const message = result.error?.message || '请求未被接受'
+      setStatus(message)
+      if (control) setControlError({ owner, message })
+    }
   }
 
   submitPromptRef.current = submitPrompt
@@ -1153,35 +1053,38 @@ export function App({ pluginRuntime }: AppProps) {
   }
 
   function handleConfirmAction() {
-    const selectedPlanText = selectedPlan
-      ? selectedPlan.value
-        ? `我选择 ${selectedPlan.label}：${selectedPlan.value}，确认执行。`
-        : `我选择${selectedPlan.label}，确认执行。`
-      : '确认'
-    clearPendingConfirmLocal()
-    void sendPrompt(selectedPlanText)
+    if (!pendingConfirm) return
+    void sendPrompt('确认', { kind: 'confirm', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id, ...(selectedPlan ? { selection: selectedPlan.value } : {}) })
   }
 
   async function handleCancelConfirm() {
-    clearPendingConfirmLocal({ dismiss: true })
-    if (!selectedSessionId) return
+    const owner = selectedSessionIdRef.current
+    if (!owner || !pendingConfirm) return
+    setControlError(null)
+    const token = sessionRuntime.snapshotToken(owner)
     try {
-      const detail = await clearPendingConfirm(selectedSessionId)
-      setSession(detail)
-      setStatus('已取消确认')
+      const detail = await clearPendingConfirm(owner, { taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
+      if (owner === selectedSessionIdRef.current && sessionRuntime.snapshot(owner, token, detail)) {
+        setSession(detail)
+        setConfirmEditorOpen(false)
+        setStatus('已取消确认，任务已暂停')
+      }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : '取消确认失败')
+      if (owner === selectedSessionIdRef.current) {
+        const message = err instanceof Error ? err.message : '取消确认失败'
+        setStatus(message)
+        setControlError({ owner, message })
+      }
     }
   }
 
   function handleComparePlans() {
     if (!pendingConfirm) return
-    clearPendingConfirmLocal()
     void sendPrompt([
       '请对比这些候选方案，简要说明各自优缺点、适用场景和推荐选择。',
-      `候选方案内容是：\n${pendingConfirm.message}`,
+      `候选方案内容是：\n${pendingConfirm.prompt}`,
       '先不要执行。',
-    ].join('\n\n'))
+    ].join('\n\n'), { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
   }
 
   function handleEditConfirm() {
@@ -1197,7 +1100,7 @@ export function App({ pluginRuntime }: AppProps) {
     if (pendingConfirm.allowWrite) {
       return [
         '用户正在修改待确认的方案（含写权限）。',
-        `原待确认内容是：\n${pendingConfirm.message}`,
+        `原待确认内容是：\n${pendingConfirm.prompt}`,
         selectedPlanLine,
         `用户修改意见是：\n${feedback}`,
         '请根据修改意见重新设计方案；如果修改意见改变了任务范围，先 confirm() 对齐理解，否则返回新的 confirm(allow_write)。',
@@ -1207,7 +1110,7 @@ export function App({ pluginRuntime }: AppProps) {
 
     return [
       '用户正在修改待确认的内容。',
-      `原待确认内容是：\n${pendingConfirm.message}`,
+      `原待确认内容是：\n${pendingConfirm.prompt}`,
       selectedPlanLine,
       `用户修改意见是：\n${feedback}`,
       '请根据修改意见重新调整；如信息足够，返回新的 confirm；如信息不足，ask_user。',
@@ -1218,8 +1121,7 @@ export function App({ pluginRuntime }: AppProps) {
   function handleSubmitConfirmEdit() {
     if (!pendingConfirm || !confirmDraft.trim()) return
     const editPrompt = buildConfirmEditPrompt(confirmDraft.trim())
-    clearPendingConfirmLocal()
-    void sendPrompt(editPrompt)
+    void sendPrompt(editPrompt, { kind: 'revise', taskId: pendingConfirm.taskId, taskRevision: pendingConfirm.taskRevision, confirmationId: pendingConfirm.id })
   }
 
   const statusLabel = useMemo(() => {
@@ -1790,8 +1692,10 @@ export function App({ pluginRuntime }: AppProps) {
           </div>
         )}
 
+        {controlError?.owner === selectedSessionId ? <div role="alert">{controlError.message}</div> : null}
         {pendingConfirm ? (
           <div className="confirmBar">
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{pendingConfirm.prompt}</div>
             {pendingConfirm.allowWrite ? (
               <div className="confirmWarning" role="alert">
                 {allowWriteConfirmWarning}
@@ -1856,6 +1760,20 @@ export function App({ pluginRuntime }: AppProps) {
               </>
             )}
           </div>
+        ) : null}
+
+        {session?.state.task?.approvedProposal ? (
+          <details>
+            <summary>已确认方案{session.state.task.approvedProposal.selection ? `：${session.state.task.approvedProposal.selection}` : ''}</summary>
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto', overflowWrap: 'anywhere' }}>{session.state.task.approvedProposal.prompt}</div>
+          </details>
+        ) : null}
+
+        {!running && session?.state.task?.phase === 'paused' ? (
+          <button onClick={() => {
+            const task = session.state.task!
+            void sendPrompt('继续', { kind: 'resume', taskId: task.id, taskRevision: task.revision })
+          }}>继续任务</button>
         ) : null}
 
         <form

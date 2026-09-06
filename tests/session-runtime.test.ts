@@ -16,6 +16,16 @@ test('parallel sessions and stream buffers remain independent', () => {
   assert.equal(runtime.view('A').timeline.some(m => m.content.includes('B text')), false)
 })
 
+test('task phases determine idle status while completed runs only mean the turn ended', () => {
+  const runtime = new SessionRuntime()
+  const phases = { active: '本轮运行结束', awaiting_input: '等待补充信息', awaiting_confirmation: '等待确认', paused: '任务已暂停', completed: '任务完成', cancelled: '任务已取消' } as const
+  for (const [phase, label] of Object.entries(phases)) {
+    runtime.snapshot('A', runtime.snapshotToken('A'), { id: 'A', running: false, messages: [], state: { sessionId: 'A', allowedPaths: [], task: { id: 'task-A', revision: 1, objective: 'A', phase: phase as keyof typeof phases, previousContext: [], completedTaskIds: [], failedTaskIds: [] } } })
+    assert.equal(runtime.view('A').status, label)
+  }
+  assert.equal(sessionTimeline([], [{ id: 'r', sessionId: 'A', prompt: 'A', status: 'completed', createdAt: 1, messageIds: [] }]).at(-1)?.content, '本轮运行结束')
+})
+
 test('stale snapshots cannot replace new stream output or newer snapshots', () => {
   const runtime = new SessionRuntime()
   const old = runtime.snapshotToken('A')
