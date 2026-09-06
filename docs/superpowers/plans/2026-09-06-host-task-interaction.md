@@ -6,7 +6,7 @@
 
 **Architecture:** 服务端沿用 RunStore/TaskState，保存展示来源和结果摘要，并校验跟进及停止归属。前端以纯函数投影权威状态，通过一个共用动作控制器和宿主原生 dialog 完成交互，旧插件公开接口不变。
 
-**Tech Stack:** TypeScript、React 18、Node test runner、tsx、jsdom、现有 Cordis 插件宿主、HTMLDialogElement。
+**Tech Stack:** TypeScript、React 19、Node test runner、tsx、jsdom、现有 Cordis 插件宿主、HTMLDialogElement。
 
 **Spec:** `docs/superpowers/specs/2026-09-06-host-task-interaction-design.md`
 
@@ -37,7 +37,7 @@
 - Produces: `SessionPromptQueue.abort(sessionId: string, expectedRunId?: string): Promise<void>` 和相同的 `abortSession` 参数。
 - Consumes: 现有 `beginTaskTurn`, `RunStore.update`, `PromptJob.binding`, `ownsTurn`。
 
-- [ ] **Step 1: 添加失败测试。** 在现有测试 helper 上覆盖元数据重载、后续说明清权、旧 sourceRunId 拒绝和旧停止请求不影响后继运行。
+- [x] **Step 1: 添加失败测试。** 在现有测试 helper 上覆盖元数据重载、后续说明清权、旧 sourceRunId 拒绝和旧停止请求不影响后继运行。
 
 ```ts
 const s = state(); proposal(s)
@@ -50,8 +50,8 @@ assert.equal(canWriteTask(s, next), false)
 assert.throws(() => beginTaskTurn(s, bindTaskInput(s, '重复回复', control)), /任务|运行/)
 ```
 
-- [ ] **Step 2: 验证失败。** `node --import tsx --test tests/run-store.test.ts tests/task-state.test.ts tests/prompt-queue.test.ts tests/session-run-lifecycle.test.ts`，预期新增控制／参数尚未生效的断言失败。
-- [ ] **Step 3: 实现元数据。** 更新 RunStore 的类型及可更新字段；源自请求的 origin 严格枚举校验；resultMeta 只能由服务端 result 事件产生，在最终 terminal 更新前写入。
+- [x] **Step 2: 验证失败。** `node --import tsx --test tests/run-store.test.ts tests/task-state.test.ts tests/prompt-queue.test.ts tests/session-run-lifecycle.test.ts`，预期新增控制／参数尚未生效的断言失败。
+- [x] **Step 3: 实现元数据。** 更新 RunStore 的类型及可更新字段；源自请求的 origin 严格枚举校验；resultMeta 只能由服务端 result 事件产生，在最终 terminal 更新前写入。
 
 ```ts
 if (event.type === 'result') {
@@ -63,7 +63,7 @@ if (event.type === 'result') {
 }
 ```
 
-- [ ] **Step 4: 实现控制。** followup 在接收和执行时验证 taskId/revision/lastRunId；服务端核对来源 Run 已终止且无其他活动 Run。作为 revise 清空授权并递增 revision。停止在读取队列当前项后同步核对 expectedRunId，返回 409 冲突，不切到后继项。
+- [x] **Step 4: 实现控制。** followup 在接收和执行时验证 taskId/revision/lastRunId；服务端核对来源 Run 已终止且无其他活动 Run。作为 revise 清空授权并递增 revision。停止在读取队列当前项后同步核对 expectedRunId，返回 409 冲突，不切到后继项。
 
 ```ts
 if (c.kind === 'followup' && (task.lastRunId !== c.sourceRunId
@@ -72,8 +72,8 @@ if (c.kind === 'followup' && (task.lastRunId !== c.sourceRunId
 }
 ```
 
-- [ ] **Step 5: 运行测试与后端构建。** 重跑 Step 2，`npm run build`；旧调用不带元数据或 expectedRunId 仍通过。
-- [ ] **Step 6: 精确提交本任务服务端文件和测试。** `git commit -m "feat: bind host task followups and run controls"`。
+- [x] **Step 5: 运行测试与后端构建。** 重跑 Step 2，`npm run build`；旧调用不带元数据或 expectedRunId 仍通过。
+- [x] **Step 6: 精确提交本任务服务端文件和测试。** `git commit -m "feat: bind host task followups and run controls"`。
 
 ### Task 2: 权威状态投影与前端恢复
 
@@ -88,7 +88,7 @@ if (c.kind === 'followup' && (task.lastRunId !== c.sourceRunId
 - `TaskInteraction`: `key`, `sessionId`, `status`, `label`, `origin`, `run?`, `task?`, `confirmation?`, `reply`, `queued`, `actionable`, `autoOpen`, `canFollowup`, `canResume`, `canStop`。
 - Produces: `SessionRuntime.detail(id): SessionDetail | null`, `interactionRuntime(id): InteractionRuntime`。不替换原 timeline 和 running 接口。
 
-- [ ] **Step 1: 创建基于完整 SessionDetail 的失败测试。** 用一个 active Task 和 completed Run 模拟协议回退，不能生成确认按钮。
+- [x] **Step 1: 创建基于完整 SessionDetail 的失败测试。** 用一个 active Task 和 completed Run 模拟协议回退，不能生成确认按钮。
 
 ```ts
 const detail: SessionDetail = { id: 's', running: false, messages: [],
@@ -105,8 +105,8 @@ assert.equal(view.confirmation, undefined)
 assert.equal(view.canFollowup, true)
 ```
 
-- [ ] **Step 2: 运行新测试确认失败。** `node --import tsx --test tests/task-interaction.test.ts tests/session-runtime.test.ts`。
-- [ ] **Step 3: 实现纯投影。** 按当前 Task.lastRunId 选择关联运行，按运行状态展示活动项／队列；匹配 session/task/revision 才开放操作。对失败、取消、不同步、旧字段缺失使用设计表中的保守状态。
+- [x] **Step 2: 运行新测试确认失败。** `node --import tsx --test tests/task-interaction.test.ts tests/session-runtime.test.ts`。
+- [x] **Step 3: 实现纯投影。** 按当前 Task.lastRunId 选择关联运行，按运行状态展示活动项／队列；匹配 session/task/revision 才开放操作。对失败、取消、不同步、旧字段缺失使用设计表中的保守状态。
 
 ```ts
 const task = detail.state.task
@@ -117,9 +117,9 @@ const canFollowup = owned && terminal && !runtime.running && !runtime.syncing
   && (task?.phase === 'active' || task?.phase === 'awaiting_input')
 ```
 
-- [ ] **Step 4: 保存 SessionRuntime 的已核实 detail 和 run/task 事件。** begin 标记提交中；run 绑定服务端身份；流末尾进入核实；权威快照解除 syncing。乱序快照保护仍由现有 token 校验决定。
-- [ ] **Step 5: 扩展 HTTP 客户端可选 origin/expectedRunId、结构化 HTTP 错误 code/status。** 不改变 Plugin PromptResult。增加旧运行、队列后继、取消晚到、未知归属、其他会话事件的测试并重跑 Step 2。
-- [ ] **Step 6: 提交投影与恢复代码。** `git commit -m "feat: derive authoritative host task status"`。
+- [x] **Step 4: 保存 SessionRuntime 的已核实 detail 和 run/task 事件。** begin 标记提交中；run 绑定服务端身份；流末尾进入核实；权威快照解除 syncing。乱序快照保护仍由现有 token 校验决定。
+- [x] **Step 5: 扩展 HTTP 客户端可选 origin/expectedRunId、结构化 HTTP 错误 code/status。** 不改变 Plugin PromptResult。增加旧运行、队列后继、取消晚到、未知归属、其他会话事件的测试并重跑 Step 2。
+- [x] **Step 6: 提交投影与恢复代码。** `git commit -m "feat: derive authoritative host task status"`。
 
 ### Task 3: 共用操作和宿主顶层界面
 
@@ -134,7 +134,7 @@ const canFollowup = owned && terminal && !runtime.running && !runtime.syncing
 - Produces: `TaskInteractionContent({ interaction, actions })`；表单草稿按 interaction.key 隔离，主聊天和 dialog 只挂载一份活动表单。
 - Produces: `TaskInteractionHost({ interaction, actions, onRefresh })`；负责 status portal 与原生 dialog 生命周期，不持有服务端任务副本。
 
-- [ ] **Step 1: 创建真实 DOM 测试。** 模拟 showModal/close 仅供 jsdom，分别测试正式确认、无记录回复、重复按钮、迟到回调、收起和 Escape 不触发服务端控制。
+- [x] **Step 1: 创建真实 DOM 测试。** 模拟 showModal/close 仅供 jsdom，分别测试正式确认、无记录回复、重复按钮、迟到回调、收起和 Escape 不触发服务端控制。
 
 ```ts
 assert.equal(document.querySelector('[data-host-task-status]')?.textContent?.includes('等待确认'), true)
@@ -145,8 +145,8 @@ assert.equal(stopCalls.length, 0)
 assert.equal(revokeCalls.length, 0)
 ```
 
-- [ ] **Step 2: 运行新 DOM 测试确认失败。** `node --import tsx --test tests/task-interaction-ui.test.tsx`。
-- [ ] **Step 3: 实现动作控制器。** 捕获显示身份，以 ref 锁定交互键；409 或未知网络失败触发快照核实，不自动重试；跟进与停止携带 Task 1 的引用。重新整理请求由用户点击且使用无授权 followup。
+- [x] **Step 2: 运行新 DOM 测试确认失败。** `node --import tsx --test tests/task-interaction-ui.test.tsx`。
+- [x] **Step 3: 实现动作控制器。** 捕获显示身份，以 ref 锁定交互键；409 或未知网络失败触发快照核实，不自动重试；跟进与停止携带 Task 1 的引用。重新整理请求由用户点击且使用无授权 followup。
 
 ```ts
 await submit(view.sessionId, '确认', {
@@ -155,7 +155,7 @@ await submit(view.sessionId, '确认', {
 })
 ```
 
-- [ ] **Step 4: 实现 UI。** 状态卡 portal z-index 高于 10000 且只占自身区域；dialog 用 showModal，标题获得焦点，Escape 局部捕获阻止传播，cancel 仅收起。交互 key 首次可见才自动打开，隐藏页恢复先请求快照。
+- [x] **Step 4: 实现 UI。** 状态卡 portal z-index 高于 10000 且只占自身区域；dialog 用 showModal，标题获得焦点，Escape 局部捕获阻止传播，cancel 仅收起。交互 key 首次可见才自动打开，隐藏页恢复先请求快照。
 
 ```ts
 function onEscape(event: React.KeyboardEvent) {
@@ -166,11 +166,15 @@ function onEscape(event: React.KeyboardEvent) {
 }
 ```
 
-- [ ] **Step 5: App 接线。** submitPrompt 保留 source；宿主自己的控制提交不清空聊天草稿。移走重复确认表单，主区域改用同一入口；停止按钮共用精确停止动作，旧运行不明时禁用。PageCraft launcher 不卸载，旧 session facade 原样保留。
-- [ ] **Step 6: 重跑 DOM 测试、状态测试和 `npm run build:web`。** 测试选项、修订、回复、正常 chat 不自动弹出、异步任务切换、对话框草稿和 IME。
-- [ ] **Step 7: 提交 UI。** `git commit -m "feat: expose host task interactions above plugins"`。
+- [x] **Step 5: App 接线。** submitPrompt 保留 source；宿主自己的控制提交不清空聊天草稿。移走重复确认表单，主区域改用同一入口；停止按钮共用精确停止动作，旧运行不明时禁用。PageCraft launcher 不卸载，旧 session facade 原样保留。
+- [x] **Step 6: 重跑 DOM 测试、状态测试和 `npm run build:web`。** 测试选项、修订、回复、正常 chat 不自动弹出、异步任务切换、对话框草稿和 IME。
+- [x] **Step 7: 提交 UI。** `git commit -m "feat: expose host task interactions above plugins"`。
 
 ### Task 4: 同包回归与真实浏览器验收
+
+验收记录：`docs/testing/2026-09-06-host-task-interaction.md`。浏览器实测使用无模型、无项目读写的开发夹具；后台／多标签／真实断网和真实生成的未验证边界已明确记录，不把自动测试当作这些手工项目的实测。
+
+补充文件：`web/qa/task-interaction.html`、`web/qa/task-interaction.tsx`；仅供开发环境复现。
 
 **Files:**
 - Modify: `tests/pagecraft-client.integration.test.tsx`
@@ -180,7 +184,7 @@ function onEscape(event: React.KeyboardEvent) {
 - Consumes: 已有 `bootBrowserPluginRuntime`, `SlotOutlet` 和 Task 3 的宿主组件。
 - Produces: 实际执行的自动／浏览器检查记录，明确未验证项。
 
-- [ ] **Step 1: 补真实 bundle 的 DOM 集成。** 打开 PageCraft 后向宿主渲染可控的确认；检查插件 dialog 仍挂载、宿主确认可见，Escape 不退出插件且不停止运行。
+- [x] **Step 1: 补真实 bundle 的 DOM 集成。** 打开 PageCraft 后向宿主渲染可控的确认；检查插件 dialog 仍挂载、宿主确认可见，Escape 不退出插件且不停止运行。
 
 ```ts
 assert.ok(document.querySelector('[aria-label="PageCraft"]'))
@@ -188,9 +192,9 @@ assert.ok(document.querySelector('dialog[data-host-task-dialog]'))
 assert.equal(pluginPromptCalls.length, 0, 'opening/dismissing a host dialog never submits a plugin task')
 ```
 
-- [ ] **Step 2: 运行全量验证。** `npm test`、`npm run build`、`npm run build:web`、`npm run test:pagecraft-plugin`、在插件目录执行 `npm test`（不 build）。所有新增失败必须查明原因。
-- [ ] **Step 3: 浏览器验证。** 使用临时测试会话／可控事件夹具，覆盖确认、收起、异常回复、停止身份、插件草稿保留、窄屏、页面隐藏恢复；真实用户 session-012 只读检查，不提交生成任务。原生 dialog 叠层与焦点以浏览器结果为准。
-- [ ] **Step 4: 核对插件完全不变。**
+- [x] **Step 2: 运行全量验证。** `npm test`、`npm run build`、`npm run build:web`、`npm run test:pagecraft-plugin`、在插件目录执行 `npm test`（不 build）。所有新增失败必须查明原因。
+- [x] **Step 3: 浏览器验证。** 使用临时测试会话／可控事件夹具，覆盖确认、收起、异常回复、停止身份、插件草稿保留、窄屏、页面隐藏恢复；真实用户 session-012 只读检查，不提交生成任务。原生 dialog 叠层与焦点以浏览器结果为准。
+- [x] **Step 4: 核对插件完全不变。**
 
 ```powershell
 git diff ebf139fa5d5b0eec3eac2c05de00df8e19cd4e42 --exit-code -- plugins/dsh-frontend-feedback
@@ -199,7 +203,7 @@ Get-FileHash plugins/dsh-frontend-feedback/lib/client.js,plugins/dsh-frontend-fe
 
 预期 client SHA256 `7051CDA227B15821225BEA639032373D34D7BB08B9EF37049FA5D82C7369278B`；server `F551F809507D79720E811F1C46850AD397B5F2704A23A5DB99AD8280F0343C6D`。
 
-- [ ] **Step 5: 写验收结果并提交。** 明确插件内部文字／初始化异常仍属未修改边界；不声称 DSH 本轮另做了验收；只提交本次文件，不推远程。
+- [x] **Step 5: 写验收结果并提交。** 明确插件内部文字／初始化异常仍属未修改边界；不声称 DSH 本轮另做了验收；只提交本次文件，不推远程。
 
 ## Self-review
 
