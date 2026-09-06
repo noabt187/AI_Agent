@@ -131,6 +131,9 @@ export interface PendingConfirmation extends ConfirmationRef {
   sourceRunId: string
 }
 export interface WriteApproval extends ConfirmationRef { workspaceKey: string }
+export interface ApprovedProposal extends PendingConfirmation {
+  selection?: string
+}
 export interface TaskBackground {
   objective: string
   requirement?: string
@@ -149,6 +152,7 @@ export interface TaskState {
   questions?: string[]
   pendingConfirmation?: PendingConfirmation
   approval?: WriteApproval
+  approvedProposal?: ApprovedProposal
   lastRunId?: string
   interruption?: string
 }

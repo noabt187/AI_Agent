@@ -9,7 +9,7 @@ import {
 import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
 import { formatMemoryContext } from '../memory/projectMemory.js'
 import type { AgentEventHandler, AgentResult, TurnContext, WorldState } from './types.js'
-import { canWriteTask } from './taskState.js'
+import { canWriteTask, ownsTurn } from './taskState.js'
 import { isPureConfirmationInput } from './taskInput.js'
 export { isPureConfirmationInput } from './taskInput.js'
 import { getMemorySettings } from './types.js'
@@ -83,7 +83,11 @@ export function buildWorldStateContext(state: WorldState, turn?: TurnContext): s
   if (state.task) {
     parts.push(`当前任务版本: ${state.task.id}/${state.task.revision}，阶段: ${state.task.phase}`)
     if (turn) parts.push(`本轮执行依据（最新请求，优先于历史）: ${turn.intent === 'confirm' || turn.intent === 'resume' ? state.task.objective : turn.input}`)
-    if (turn?.control?.kind === 'confirm' && turn.control.selection !== undefined) parts.push(`本轮已确认的候选方案: ${turn.control.selection}`)
+    const approved = state.task.approvedProposal
+    if (turn && ownsTurn(state, turn) && state.task.phase === 'active' && approved && (!approved.allowWrite || canWriteTask(state, turn))) {
+      parts.push(`本任务版本已批准方案: ${approved.prompt}`)
+      if (approved.selection !== undefined) parts.push(`本任务版本已确认的候选方案: ${approved.selection}`)
+    }
     if (state.task.previousContext.length) parts.push(`历史/背景（不得作为本轮执行目标或授权）:\n${JSON.stringify(state.task.previousContext)}`)
   } else if (state.goal) parts.push(`历史/背景目标（非本轮执行依据）: ${state.goal}`)
   if (state.confirmedRequirement) {

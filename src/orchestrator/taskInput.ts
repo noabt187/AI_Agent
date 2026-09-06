@@ -9,7 +9,13 @@ export function workspaceKey(state: Pick<WorldState, 'allowedPaths' | 'repositor
   return JSON.stringify({ paths: (state.allowedPaths.length ? state.allowedPaths : [process.cwd()]).map(p => resolve(p)), repository: normalizeRepositoryConfig(state.repository) })
 }
 export function isPureConfirmationInput(input: string): boolean {
-  return ['确认', '是', 'yes', 'y', 'ok', '好', '可以', '开始', '确认方案', '开始写', '开始编写'].includes(input.trim().toLowerCase())
+  return ['确认', 'confirm', '是', 'yes', 'y', 'ok', '好', '可以', '开始', '确认方案', '开始写', '开始编写'].includes(input.trim().toLowerCase())
+}
+export function validateConfirmationInput(input: string, control?: TaskInputControl): void {
+  if (control?.kind === 'confirm' && !isPureConfirmationInput(input)
+    && !(control.selection !== undefined && input.trim() === control.selection)) {
+    throw new TaskStateError('conflicting_confirmation', '确认输入包含新约束，请作为新请求或修改方案提交', 400)
+  }
 }
 export function isCancelInput(input: string): boolean { return ['取消', 'cancel', '不做了'].includes(input.trim().toLowerCase()) }
 export function parseTaskControl(value: unknown): TaskInputControl | undefined {
@@ -27,6 +33,7 @@ export function bindTaskInput(state: WorldState, input: string, control?: unknow
   if (typeof input !== 'string' || !input.trim()) throw new TaskStateError('malformed_input', '输入不能为空', 400)
   if (ids && (typeof ids.runId !== 'string' || !ids.runId.trim() || typeof ids.userMessageId !== 'string' || !ids.userMessageId.trim())) throw new TaskStateError('malformed_binding', '无效运行或消息标识', 400)
   let bound = parseTaskControl(control)
+  validateConfirmationInput(input, bound)
   if (!bound && !isCancelInput(input)) {
     if (['继续', 'continue'].includes(input.trim().toLowerCase())) {
       if (!state.task || ['completed', 'cancelled'].includes(state.task.phase)) throw new TaskStateError('no_task', '当前没有可继续的任务')

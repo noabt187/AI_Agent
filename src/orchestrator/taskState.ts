@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { normalizeRepositoryConfig, type AgentResult, type ConfirmationRef, type TaskRequestBinding, type TaskState, type TurnContext, type WorldState } from './types.js'
-import { isCancelInput, parseTaskControl, TaskStateError, workspaceKey } from './taskInput.js'
+import { isCancelInput, parseTaskControl, TaskStateError, validateConfirmationInput, workspaceKey } from './taskInput.js'
 export { TaskStateError } from './taskInput.js'
 
 export function ownsTurn(state: WorldState, turn: TurnContext): boolean {
   return state.task?.id === turn.taskId && state.task.revision === turn.taskRevision && state.task.lastRunId === turn.runId
 }
 export function canWriteTask(state: WorldState, turn: TurnContext): boolean {
-  const task = state.task, approval = task?.approval
-  return !!(task && approval && task.phase === 'active' && ownsTurn(state, turn)
+  const task = state.task, approval = task?.approval, proposal = task?.approvedProposal
+  return !!(task && approval && proposal?.allowWrite && proposal.id === approval.confirmationId
+    && proposal.taskId === turn.taskId && proposal.taskRevision === turn.taskRevision
+    && (proposal.selection === undefined || proposal.selections?.includes(proposal.selection))
+    && task.phase === 'active' && ownsTurn(state, turn)
     && approval.taskId === turn.taskId && approval.taskRevision === turn.taskRevision
     && approval.workspaceKey === turn.workspaceKey && workspaceKey(state) === turn.workspaceKey)
 }
@@ -36,12 +39,14 @@ export function beginTaskTurn(state: WorldState, binding: TaskRequestBinding): T
   let task = state.task
   let intent: TurnContext['intent'] = 'new'
   const c = parseTaskControl(binding.control)
+  validateConfirmationInput(binding.input, c)
   if (c) {
     if (!task || task.id !== c.taskId || task.revision !== c.taskRevision) throw new TaskStateError('stale_task', '任务版本已改变')
     if (c.kind === 'confirm' || c.kind === 'revise') requireConfirmation(state, c)
     if (c.kind === 'confirm') {
       const p = task.pendingConfirmation!
       if (c.selection !== undefined && !p.selections?.includes(c.selection)) throw new TaskStateError('invalid_selection', '候选方案不属于当前确认', 400)
+      task.approvedProposal = { ...structuredClone(p), selection: c.selection }
       task.approval = p.allowWrite ? { taskId: task.id, taskRevision: task.revision, confirmationId: p.id, workspaceKey: binding.workspaceKey } : undefined
       task.previousContext.push({ objective: task.objective, proposal: p.prompt })
       task.pendingConfirmation = undefined
@@ -61,7 +66,7 @@ export function beginTaskTurn(state: WorldState, binding: TaskRequestBinding): T
   if (!c || c.kind === 'revise') {
     if (isCancelInput(binding.input) && !c) {
       if (!task) throw new TaskStateError('no_task', '当前没有可取消的任务')
-      task.phase = 'cancelled'; task.approval = undefined; task.pendingConfirmation = undefined; intent = 'cancel'
+      task.phase = 'cancelled'; task.approval = undefined; task.approvedProposal = undefined; task.pendingConfirmation = undefined; intent = 'cancel'
     } else {
       const revise = !!task && (c?.kind === 'revise' || task.phase === 'awaiting_input')
       const previousContext = task ? [...task.previousContext, { objective: task.objective, proposal: task.pendingConfirmation?.prompt, questions: task.questions }] : []
@@ -82,10 +87,10 @@ export function applyTaskResult(state: WorldState, turn: TurnContext, result: Ag
   if (!ownsTurn(state, turn)) return false
   const task = state.task!
   if (task.phase !== 'active') return false
-  if (result.action === 'ask_user') { task.phase = 'awaiting_input'; task.questions = result.questions; task.approval = undefined }
+  if (result.action === 'ask_user') { task.phase = 'awaiting_input'; task.questions = result.questions; task.approval = undefined; task.approvedProposal = undefined }
   if (result.action === 'confirm') {
     const id = randomUUID()
-    task.phase = 'awaiting_confirmation'; task.approval = undefined
+    task.phase = 'awaiting_confirmation'; task.approval = undefined; task.approvedProposal = undefined
     task.pendingConfirmation = { id, confirmationId: id, taskId: task.id, taskRevision: task.revision,
       kind: result.confirmType ?? 'read_only', allowWrite: result.confirmType === 'allow_write', message: result.message ?? result.prompt,
       prompt: result.prompt, selections: result.selections, sourceRunId: turn.runId }
@@ -99,6 +104,6 @@ export function pauseTask(state: WorldState, turn: TurnContext, reason: string):
   state.task!.phase = 'paused'; state.task!.interruption = reason; projectTask(state)
 }
 export function invalidateTaskWorkspace(state: WorldState): void {
-  if (state.task) { state.task.approval = undefined; state.task.pendingConfirmation = undefined; if (!['completed', 'cancelled'].includes(state.task.phase)) state.task.phase = 'paused' }
+  if (state.task) { state.task.approval = undefined; state.task.approvedProposal = undefined; state.task.pendingConfirmation = undefined; if (!['completed', 'cancelled'].includes(state.task.phase)) state.task.phase = 'paused' }
   projectTask(state)
 }

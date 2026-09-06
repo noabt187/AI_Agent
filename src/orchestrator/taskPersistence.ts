@@ -27,10 +27,24 @@ export function normalizeTaskState(value: unknown): WorldState {
         || (p.selections !== undefined && !strings(p.selections))) fail()
     }
     if (t.phase === 'awaiting_confirmation' && !t.pendingConfirmation) fail()
+    if (t.approvedProposal !== undefined) {
+      const p = t.approvedProposal
+      if (!object(p) || typeof p.id !== 'string' || !p.id || p.id !== p.confirmationId || p.taskId !== t.id || p.taskRevision !== t.revision
+        || typeof p.prompt !== 'string' || typeof p.message !== 'string' || typeof p.sourceRunId !== 'string'
+        || !['allow_write', 'read_only'].includes(String(p.kind)) || p.allowWrite !== (p.kind === 'allow_write')
+        || (p.selections !== undefined && !strings(p.selections))
+        || (p.selection !== undefined && (typeof p.selection !== 'string' || !strings(p.selections) || !p.selections.includes(p.selection)))) fail()
+    }
     if (t.approval !== undefined) {
       const a = t.approval
       if (!object(a) || a.taskId !== t.id || a.taskRevision !== t.revision || typeof a.confirmationId !== 'string' || !a.confirmationId || typeof a.workspaceKey !== 'string'
         || !['active', 'paused'].includes(String(t.phase)) || t.pendingConfirmation) fail()
+      const p = t.approvedProposal
+      if (p === undefined) {
+        // Early v2 snapshots did not retain which alternative was approved.
+        // Their grants cannot safely recover an exact approved proposal.
+        state.task!.approval = undefined
+      } else if (!object(p) || p.allowWrite !== true || p.id !== a.confirmationId) fail()
     }
   } else if (value.schemaVersion === undefined) {
     // Unversioned permissions are background only, never executable grants.

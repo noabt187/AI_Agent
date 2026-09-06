@@ -115,3 +115,15 @@ test('continue without a task is rejected without calling the runner', async () 
     assert.equal(called, false)
   } finally { await rm(resolve('state', id), { recursive: true, force: true }) }
 })
+
+test('a valid confirmation reference cannot authorize accompanying changed constraints', () => {
+  const s = state(); proposal(s)
+  const binding = bindTaskInput(s, '确认')
+  const before = structuredClone(s)
+  for (const input of ['Confirm, but only read; do not edit', '确认，但只读取，不要修改']) {
+    assert.throws(() => beginTaskTurn(s, { ...binding, input }), /确认.*输入|约束/)
+    assert.deepEqual(s, before)
+    assert.throws(() => bindTaskInput(s, input, binding.control), /确认.*输入|约束/)
+    assert.equal(s.task!.approval, undefined)
+  }
+})

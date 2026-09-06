@@ -140,3 +140,37 @@ test('callbacks retained by a finished runner cannot publish late output', async
     assert.equal(events.includes('late'), false)
   } finally { await rm(resolve('state', id), { recursive: true, force: true }) }
 })
+
+test('selected proposal remains authoritative after approved execution pauses and reloads', async () => {
+  const id = `task-test-${randomUUID()}`
+  const controller = new AbortController()
+  let calls = 0
+  const runner: Pick<Agent, 'run'> = { run: async (_id, _input, state, _signal, _events, _metric, _message, turn) => {
+    calls++
+    if (calls === 1) return { action: 'confirm', prompt: 'Choose: edit README or edit package.json', selections: ['edit README', 'edit package.json'], confirmType: 'allow_write' }
+    assert.equal(canWriteTask(state, turn!), true)
+    if (calls === 2) controller.abort()
+    if (calls === 3) {
+      const { buildRuntimeContext } = await import('../src/orchestrator/agent.js')
+      assert.match(buildRuntimeContext(state, '', [], turn), /已确认的候选方案: edit README/)
+      assert.match(buildRuntimeContext(state, '', [], turn), /已批准方案.*Choose: edit README or edit package.json/s)
+    }
+    return { action: 'chat', message: 'progress' }
+  } }
+  let o = new Orchestrator(id, undefined, undefined, runner)
+  try {
+    await o.handleUserInput('edit the selected file')
+    const binding = o.bindInput('确认')
+    assert.equal(binding.control?.kind, 'confirm')
+    if (binding.control?.kind !== 'confirm') throw new Error('Expected confirmation')
+    assert.throws(() => o.bindInput('Confirm, but only read; do not edit', binding.control), /确认.*输入|约束/)
+    assert.equal(calls, 1)
+    const selected = o.bindInput('确认', { ...binding.control, selection: 'edit README' })
+    await assert.rejects(o.handleUserInput('确认', undefined, controller.signal, undefined, selected), { name: 'AbortError' })
+    const saved = (await loadOrchestratorState(id))!
+    assert.equal(saved.task!.phase, 'paused')
+    o = new Orchestrator(id, saved, undefined, runner)
+    await o.handleUserInput('继续')
+    assert.equal(calls, 3)
+  } finally { await rm(resolve('state', id), { recursive: true, force: true }) }
+})
