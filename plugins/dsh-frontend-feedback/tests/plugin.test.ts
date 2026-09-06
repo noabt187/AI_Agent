@@ -318,6 +318,10 @@ test('DOM annotations are serialized as a compact JSON work order', () => {
   const prompt = buildAnnotationPrompt([element])
   assert.match(prompt, /^\[frontend-feedback\]/)
   assert.match(prompt, /frontend-page-builder Skill/)
+  assert.match(prompt, /完整修改功能闭环/)
+  assert.match(prompt, /前端交互、状态管理、接口调用、后端接口\/数据逻辑/)
+  assert.match(prompt, /判断需要修改哪些层/)
+  assert.match(prompt, /遵守宿主的确认和权限流程/)
   const payload = JSON.parse(prompt.slice(prompt.indexOf('{')))
   assert.deepEqual(payload, {
     annotations: [{

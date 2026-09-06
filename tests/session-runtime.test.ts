@@ -3,6 +3,27 @@ import test from 'node:test'
 import { SessionRuntime, recoverSession } from '../web/src/sessionRuntime.js'
 import { sessionTimeline } from '../web/src/sessionTimeline.js'
 
+test('retry clears only the matching request partial output and keeps other sessions intact', () => {
+  const runtime = new SessionRuntime()
+  runtime.begin('A', 'a', 'retry me')
+  runtime.begin('B', 'b', 'leave me')
+  runtime.event('A', 'a', { type: 'output', message: 'previous finalized segment' })
+  runtime.event('A', 'a', { type: 'delta', text: 'failed partial' })
+  runtime.event('B', 'b', { type: 'delta', text: 'other session' })
+  runtime.event('A', 'a', { type: 'retry', attempt: 1, maxAttempts: 3, reason: '服务端错误', delayMs: 100 })
+  assert.deepEqual(runtime.view('A').timeline.filter(row => row.role === 'assistant').map(row => row.content), ['previous finalized segment'])
+  assert.equal(runtime.view('A').deltaCount, 0)
+  assert.match(runtime.view('A').status, /正在重试 1\/3/)
+  assert.equal(runtime.view('B').timeline.at(-1)?.content, 'other session')
+  runtime.event('A', 'a', { type: 'delta', text: 'successful attempt' })
+  runtime.event('A', 'a', { type: 'output', message: 'successful attempt' })
+  assert.equal(runtime.view('A').timeline.filter(row => row.content === 'successful attempt').length, 1)
+  runtime.end('A', 'a')
+  const before = structuredClone(runtime.view('A'))
+  runtime.event('A', 'a', { type: 'retry', attempt: 2, maxAttempts: 3, reason: 'late event', delayMs: 100 })
+  assert.deepEqual(runtime.view('A'), before)
+})
+
 test('parallel sessions and stream buffers remain independent', () => {
   const runtime = new SessionRuntime()
   runtime.begin('A', 'a', 'same')

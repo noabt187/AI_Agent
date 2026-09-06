@@ -377,7 +377,7 @@ export class Orchestrator {
         await this.emitOutput(`\n${result.prompt}`, onEvent)
         const allowWrite = result.confirmType === 'allow_write'
         if (allowWrite) {
-          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。', onEvent)
+          await this.emitOutput('\n⚠️ 确认此方案后，Agent 将获得文件写入和副作用操作权限，请仔细核对方案内容。', onEvent)
         }
         break
       case 'done':

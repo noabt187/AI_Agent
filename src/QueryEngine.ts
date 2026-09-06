@@ -187,7 +187,13 @@ export class QueryEngine {
       // 等待后重试（指数退避）
       const waitMs = Math.min(2000 * Math.pow(2, attempt), 30000)
       const reason = lastError.includes('429') ? '限流' : '服务端错误'
-      yield { kind: 'delta', uuid: assistantUuid, role: 'assistant', delta: `\n[${reason}，${waitMs / 1000}秒后重试 (${attempt + 1}/${MAX_RETRIES})]...`, createdAt }
+      yield {
+        kind: 'retry',
+        attempt: attempt + 1,
+        maxAttempts: MAX_RETRIES,
+        reason,
+        delayMs: waitMs,
+      }
       await new Promise((r) => setTimeout(r, waitMs))
     }
 

@@ -79,7 +79,7 @@ export type WorldState = {
 }
 
 export type AgentResult =
-  | { action: 'chat'; message: string }
+  | { action: 'chat'; message: string; protocolFallback?: true }
   | { action: 'ask_user'; questions: string[]; message?: string }
   | { action: 'confirm'; prompt: string; message?: string; confirmType?: 'allow_write'; selections?: string[] }
   | { action: 'done'; message: string }
@@ -89,6 +89,7 @@ export type AgentEvent =
   | { type: 'run'; run: import('../state/runStore.js').RunRecord }
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
+  | { type: 'retry'; attempt: number; maxAttempts: number; reason: string; delayMs: number }
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }

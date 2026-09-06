@@ -87,6 +87,12 @@ export class SessionRuntime {
       return
     }
     if (event.type === 'start') { r.raw=''; r.assistantId=undefined; s.aborting=false; s.deltaCount=0; s.status='模型思考中'; return }
+    if (event.type === 'retry') {
+      if (r.assistantId) s.timeline = s.timeline.filter(row => row.id !== r.assistantId)
+      r.raw = ''; r.assistantId = undefined; s.deltaCount = 0
+      s.status = `${event.reason}，正在重试 ${event.attempt}/${event.maxAttempts}`
+      return
+    }
     if (event.type === 'delta') {
       r.raw += event.text
       const content = partialOutputText(r.raw)

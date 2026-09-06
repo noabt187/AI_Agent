@@ -13,6 +13,13 @@ export type LlmToolCall = {
   arguments: string // JSON string, parse with JSON.parse
 }
 
+export type ToolSchemaProperty = {
+  type: string
+  description?: string
+  enum?: string[]
+  items?: { type: string }
+}
+
 export type ToolDefinition = {
   type: 'function'
   function: {
@@ -20,7 +27,7 @@ export type ToolDefinition = {
     description: string
     parameters: {
       type: 'object'
-      properties: Record<string, { type: string; description: string }>
+      properties: Record<string, ToolSchemaProperty>
       required: string[]
     }
   }

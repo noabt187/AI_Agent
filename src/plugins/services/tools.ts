@@ -4,10 +4,12 @@ import type { RepositoryConfig } from '../../orchestrator/types.js'
 import {
   builtinToolRegistry,
   executeToolDefinition,
+  executeToolDefinitionResult,
   toolEntriesToOpenAI,
   type ToolDef,
   type ToolScope,
 } from '../../tools/index.js'
+import { toolFailure, type ToolResult } from '../../tools/types.js'
 
 export interface ToolExecutionRequest {
   name: string
@@ -22,6 +24,7 @@ export interface ToolExecutionRequest {
 export interface AgentToolSource {
   definitions(scope: ToolScope): ToolDefinition[]
   execute(request: ToolExecutionRequest): Promise<string>
+  executeResult?(request: ToolExecutionRequest): Promise<ToolResult>
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -63,6 +66,15 @@ export class ToolRegistry extends Service implements AgentToolSource {
       request.designConfirmed,
       request.signal,
       { turnLoadedSkills: request.turnLoadedSkills, repository: request.repository },
+    )
+  }
+
+  async executeResult(request: ToolExecutionRequest): Promise<ToolResult> {
+    const definition = this.entries.get(request.name)
+    if (definition === undefined) return toolFailure('UNKNOWN_TOOL', `未知工具 "${request.name}"`)
+    return executeToolDefinitionResult(
+      definition, request.name, request.args, request.allowedPaths, request.designConfirmed,
+      request.signal, { turnLoadedSkills: request.turnLoadedSkills, repository: request.repository },
     )
   }
 }

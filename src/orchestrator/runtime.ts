@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createFileAgentSkillSource, type AgentSkillSource } from '../skills/index.js'
-import { executeTool, toolDefsToOpenAI } from '../tools/index.js'
+import { executeTool, executeToolResult, toolDefsToOpenAI } from '../tools/index.js'
 import { createAgentSkillSource } from '../plugins/services/skills.js'
 import type { AgentToolSource, ToolExecutionRequest } from '../plugins/services/tools.js'
 
@@ -14,6 +14,12 @@ const SKILLS_DIR = resolve(import.meta.dirname ?? process.cwd(), '../skills')
 
 const legacyTools: AgentToolSource = {
   definitions: toolDefsToOpenAI,
+  executeResult(request: ToolExecutionRequest) {
+    return executeToolResult(
+      request.name, request.args, request.allowedPaths, request.designConfirmed, request.signal,
+      { turnLoadedSkills: request.turnLoadedSkills, repository: request.repository },
+    )
+  },
   execute(request: ToolExecutionRequest) {
     return executeTool(
       request.name,

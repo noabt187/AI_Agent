@@ -25,6 +25,9 @@ config/model.json
 # Logs
 *.log
 
+# Local evaluation artifacts and isolated trial workspaces
+eval/results/
+
 # Local exploratory tests
 tests/context-memory.test.ts
 

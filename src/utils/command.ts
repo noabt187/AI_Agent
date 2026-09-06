@@ -16,26 +16,47 @@ export class CommandError extends Error {
   ) { super(message); this.name = 'CommandError' }
 }
 
-// npm.cmd is a script, not an executable. Node launches the CLI without shell interpolation.
-function resolveCommand(file: string, args: string[]): { file: string; args: string[] } {
-  const name = basename(file).toLowerCase().replace(/\.(cmd|ps1)$/, '')
-  if (process.platform !== 'win32' || !['npm', 'npx'].includes(name)) return { file, args }
+const WINDOWS_PACKAGE_CLIS: Record<string, string[]> = {
+  npm: ['npm/bin/npm-cli.js'],
+  npx: ['npm/bin/npx-cli.js'],
+  pnpm: ['pnpm/bin/pnpm.cjs', 'pnpm/bin/pnpm.js', 'corepack/dist/pnpm.js'],
+  yarn: ['yarn/bin/yarn.js', 'corepack/dist/yarn.js'],
+}
+
+export function resolveCommandForPlatform(file: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' && Object.hasOwn(WINDOWS_PACKAGE_CLIS, file.toLowerCase())
+    ? `${file}.cmd` : file
+}
+
+/** Launch package-manager JavaScript directly: arguments never pass through cmd interpolation. */
+export function commandInvocationForPlatform(
+  file: string, args: string[], platform: NodeJS.Platform = process.platform,
+  searchDirectories?: readonly string[],
+): { file: string; args: string[] } {
+  const name = basename(resolveCommandForPlatform(file, platform)).toLowerCase().replace(/\.(cmd|ps1)$/, '')
+  if (platform !== 'win32' || !Object.hasOwn(WINDOWS_PACKAGE_CLIS, name)) return { file, args }
   const nodeDir = dirname(realpathSync(process.execPath))
-  const directories = file.includes('/') || file.includes('\\')
+  const directories = searchDirectories ?? (file.includes('/') || file.includes('\\')
     ? [dirname(file)]
-    : [nodeDir, dirname(process.execPath), ...(process.env.PATH ?? '').split(delimiter)]
-  for (const dir of directories) {
-    const cli = join(dir.replace(/^"|"$/g, ''), 'node_modules', 'npm', 'bin', `${name}-cli.js`)
-    if (existsSync(cli)) return { file: process.execPath, args: [cli, ...args] }
+    : [nodeDir, dirname(process.execPath), ...(process.env.PATH ?? '').split(delimiter)])
+  for (const directory of directories) {
+    const dir = directory.replace(/^"|"$/g, '')
+    if (!dir) continue
+    for (const entry of WINDOWS_PACKAGE_CLIS[name]) {
+      const cli = join(dir, 'node_modules', entry)
+      if (existsSync(cli)) return { file: process.execPath, args: [cli, ...args] }
+    }
+    const executable = join(dir, `${name}.exe`)
+    if (existsSync(executable)) return { file: executable, args }
   }
-  throw new CommandError('start', `无法定位 ${name} CLI（Windows 脚本入口）；请检查 Node/npm 安装路径`, '', '', null, 'ENOENT')
+  throw new CommandError('start', `无法定位 ${name} CLI（Windows 脚本入口）；请检查包管理器安装路径`, '', '', null, 'ENOENT')
 }
 
 export async function runCommand(
   file: string, args: string[], cwd: string, timeout = 120_000, signal?: AbortSignal,
 ): Promise<CommandResult> {
   if (signal?.aborted) throw new CommandError('aborted', '命令已取消')
-  const resolved = resolveCommand(file, args)
+  const resolved = commandInvocationForPlatform(file, args)
   return new Promise((resolve, reject) => {
     let stdout = '', stderr = '', bytes = 0
     let stopped: CommandFailureKind | undefined

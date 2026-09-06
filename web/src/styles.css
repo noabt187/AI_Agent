@@ -405,6 +405,19 @@ button, a, input, textarea, select, summary {
   cursor: default;
 }
 
+.sessionListEmpty {
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  padding: 12px;
+  text-align: center;
+}
+
+.welcomeState .newSessionButton {
+  width: auto;
+  margin-top: 16px;
+}
+
 .sessionTitleInput {
   width: 100%;
   border: 1px solid var(--line-strong);

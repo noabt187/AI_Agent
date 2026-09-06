@@ -87,6 +87,9 @@ export function applyTaskResult(state: WorldState, turn: TurnContext, result: Ag
   if (!ownsTurn(state, turn)) return false
   const task = state.task!
   if (task.phase !== 'active') return false
+  // An unparsed/empty response cannot preserve execution authority. Keep the
+  // task and history: a transport turn ending is not proof of task completion.
+  if (result.action === 'chat' && result.protocolFallback) { task.approval = undefined; task.approvedProposal = undefined }
   if (result.action === 'ask_user') { task.phase = 'awaiting_input'; task.questions = result.questions; task.approval = undefined; task.approvedProposal = undefined }
   if (result.action === 'confirm') {
     const id = randomUUID()

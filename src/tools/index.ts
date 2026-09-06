@@ -11,6 +11,13 @@ import { saveCheckpointTool } from './saveCheckpoint.js'
 import { isInsideAllowedPaths } from '../utils/pathUtils.js'
 import type { ToolDefinition } from '../llm/types.js'
 import type { RepositoryConfig } from '../orchestrator/types.js'
+import { CommandError } from '../utils/command.js'
+import {
+  toolFailure,
+  toolResultFromLegacyOutput,
+  toolResultToLegacyOutput,
+  type ToolResult,
+} from './types.js'
 
 export type ToolScope = 'read' | 'write' | 'memory'
 
@@ -31,6 +38,12 @@ export type ExecuteToolOptions = {
   turnLoadedSkills?: Set<string>
   repository?: RepositoryConfig
 }
+
+const REMOTE_SIDE_EFFECT_TOOLS = new Set([
+  'createPullRequest',
+  'forkRepository',
+  'cloneRepository',
+])
 
 function isDefaultValueToken(value: string | undefined): boolean {
   const trimmed = value?.trim().toLowerCase() ?? ''
@@ -109,7 +122,7 @@ export const builtinToolRegistry: Readonly<Record<string, ToolDef>> = {
     withSignal: (rootDir, args, signal) => verifyCodeTool(rootDir, args[0] ?? '', signal),
     description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
-    scope: 'read',
+    scope: 'write',
   },
   createPullRequest: {
     fn: createPullRequestTool,
@@ -211,6 +224,19 @@ export function toolEntriesToOpenAI(
 
 // ── Execute Tool ────────────────────────────────────────────────────
 
+export async function executeToolResult(
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<ToolResult> {
+  const tool = builtinToolRegistry[name]
+  if (!tool) return toolFailure('UNKNOWN_TOOL', `未知工具 "${name}"`)
+  return executeToolDefinitionResult(tool, name, args, allowedPaths, designConfirmed, signal, options)
+}
+
 export async function executeTool(
   name: string,
   args: Record<string, string>,
@@ -219,9 +245,7 @@ export async function executeTool(
   signal?: AbortSignal,
   options?: ExecuteToolOptions,
 ): Promise<string> {
-  const tool = builtinToolRegistry[name]
-  if (!tool) return `错误：未知工具 "${name}"`
-  return executeToolDefinition(tool, name, args, allowedPaths, designConfirmed, signal, options)
+  return toolResultToLegacyOutput(await executeToolResult(name, args, allowedPaths, designConfirmed, signal, options))
 }
 
 export async function executeToolDefinition(
@@ -233,15 +257,38 @@ export async function executeToolDefinition(
   signal?: AbortSignal,
   options?: ExecuteToolOptions,
 ): Promise<string> {
+  return toolResultToLegacyOutput(await executeToolDefinitionResult(tool, name, args, allowedPaths, designConfirmed, signal, options))
+}
+
+export async function executeToolDefinitionResult(
+  tool: ToolDef,
+  name: string,
+  args: Record<string, string>,
+  allowedPaths: string[],
+  designConfirmed?: boolean,
+  signal?: AbortSignal,
+  options?: ExecuteToolOptions,
+): Promise<ToolResult> {
+  if (process.env.AGENT_EVAL_LOCAL_ONLY === '1' && REMOTE_SIDE_EFFECT_TOOLS.has(name)) {
+    return toolFailure(
+      'REMOTE_SIDE_EFFECT_BLOCKED',
+      `本地评测模式已阻断远程工具 "${name}"，未执行任何 GitHub 副作用操作。`,
+    )
+  }
+
+  if (signal?.aborted) return toolFailure('ABORTED', '工具执行已取消')
   const effectiveArgs = applyRepositoryDefaults(name, args, options?.repository)
 
-  // 写权限检查
+  // All file writes, command execution and remote operations share one gate.
   if (tool.scope === 'write' && !designConfirmed) {
-    return `错误：当前未确认方案，请先向用户说明修改方案，等待用户确认后再修改代码。`
+    return toolFailure(
+      'PERMISSION_DENIED',
+      '当前未确认方案，请先向用户说明修改方案，等待用户确认后再执行副作用操作。',
+    )
   }
 
   if (tool.scope === 'memory' && !options?.turnLoadedSkills?.has('auto-memory')) {
-    return '错误：writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。'
+    return toolFailure('PERMISSION_DENIED', 'writeMemory 只能在本轮先调用 use_skill("auto-memory") 后执行。')
   }
 
   // 校验 rootDir（如果工具有此参数）
@@ -251,30 +298,30 @@ export async function executeToolDefinition(
   const validatePathArg = (val: string | undefined, argName: string): string | null => {
     if (!val) return null
     if (!isAbsolute(val)) {
-      return `错误：参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
+      return `参数 "${argName}" 必须是绝对路径，当前值为 "${val}"。当前可操作目录：${allowedPaths.join(', ')}`
     }
     if (!isInsideAllowedPaths(val, allowedPaths)) {
-      return `错误：路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
+      return `路径 "${val}" 不在可操作目录内。当前可操作目录：${allowedPaths.join(', ')}`
     }
     return null
   }
 
   if (rootDir) {
     const err = validatePathArg(rootDir, 'rootDir')
-    if (err) return err
+    if (err) return toolFailure('PATH_OUTSIDE_ALLOWED', err)
   }
 
   // 校验路径参数：必须是绝对路径且在可操作目录内
   for (const argName of tool.pathArgNames ?? []) {
     const err = validatePathArg(effectiveArgs[argName], argName)
-    if (err) return err
+    if (err) return toolFailure('PATH_OUTSIDE_ALLOWED', err)
   }
 
   // 必填参数校验
   const requiredArgNames = tool.requiredArgNames ?? tool.argNames
   for (const argName of requiredArgNames) {
     if (!effectiveArgs[argName] || effectiveArgs[argName].trim() === '') {
-      return `错误：工具 "${name}" 缺少必需参数 "${argName}"`
+      return toolFailure('INVALID_ARGUMENTS', `工具 "${name}" 缺少必需参数 "${argName}"`)
     }
   }
 
@@ -284,9 +331,24 @@ export async function executeToolDefinition(
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
       .map((n) => effectiveArgs[n] ?? '')
 
-    if (tool.withSignal) return await tool.withSignal(effectiveRootDir, argValues, signal)
-    return await tool.fn(effectiveRootDir, ...argValues)
+    const output = tool.withSignal
+      ? await tool.withSignal(effectiveRootDir, argValues, signal)
+      : await tool.fn(effectiveRootDir, ...argValues)
+    return toolResultFromLegacyOutput(output)
   } catch (e: unknown) {
-    return `工具执行错误：${e instanceof Error ? e.message : String(e)}`
+    if (e instanceof CommandError) {
+      const code = e.kind === 'aborted' ? 'ABORTED' : e.kind === 'timeout' ? 'TIMEOUT'
+        : e.kind === 'output-limit' ? 'OUTPUT_LIMIT' : e.code === 'ENOENT' ? 'COMMAND_NOT_FOUND'
+        : e.kind === 'exit' ? 'COMMAND_FAILED' : 'TOOL_EXECUTION_FAILED'
+      return toolFailure(code, e.message, e.kind === 'timeout', { stdout: e.stdout, stderr: e.stderr, exitCode: e.exitCode })
+    }
+    const message = e instanceof Error ? e.message : String(e)
+    const commandMissing = /(?:spawn\s+\S+\s+ENOENT|command not found|不是内部或外部命令)/i.test(message)
+    const timedOut = /timed?\s*out|ETIMEDOUT/i.test(message)
+    return toolFailure(
+      commandMissing ? 'COMMAND_NOT_FOUND' : timedOut ? 'TIMEOUT' : 'TOOL_EXECUTION_FAILED',
+      message,
+      timedOut,
+    )
   }
 }
