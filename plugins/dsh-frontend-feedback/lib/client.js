@@ -43,6 +43,7 @@ var DEFAULT_PRESENTATION_DOCUMENT_BRIEF = {
   requirements: ""
 };
 var JOB_ID_PATTERN = /^presentation-[a-z0-9-]{8,80}$/;
+var IMAGE_SLOT_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/;
 var PLAN_SLIDE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 var PRESENTATION_JOB_PHASES = /* @__PURE__ */ new Set([
   "source_ready",
@@ -70,6 +71,19 @@ function isRecord(value) {
 }
 function isPresentationJobId(value) {
   return typeof value === "string" && JOB_ID_PATTERN.test(value);
+}
+function isPresentationImageSlotId(value) {
+  return typeof value === "string" && IMAGE_SLOT_ID_PATTERN.test(value);
+}
+function normalizePresentationImageSlotSelection(value) {
+  if (!isRecord(value) || !isPresentationImageSlotId(value.slotId)) return null;
+  return {
+    slotId: value.slotId,
+    ...typeof value.slideId === "string" && PLAN_SLIDE_ID_PATTERN.test(value.slideId) ? { slideId: value.slideId } : {},
+    ...typeof value.label === "string" ? { label: value.label.trim().slice(0, 200) } : {},
+    ...typeof value.assetId === "string" ? { assetId: value.assetId.trim().slice(0, 160) } : {},
+    ...typeof value.imageKey === "string" ? { imageKey: value.imageKey.trim().slice(0, 160) } : {}
+  };
 }
 function presentationJobStorageKey(sessionId) {
   return `dsh-pagecraft.presentation-job:${sessionId}`;
@@ -545,6 +559,12 @@ function isFeedbackComment(value) {
   if (!isFeedbackSelection(value) || typeof value.comment !== "string") return false;
   return value.kind === "element" || (value.operation === "insert" || value.operation === "overlay" || value.operation === "replace");
 }
+
+// src/presentation-workspace.ts
+var PRESENTATION_WORKSPACE_PATH = "/api/frontend-feedback/presentation-workspace";
+var PRESENTATION_WORKSPACE_FILE_PATH = "/api/frontend-feedback/presentation-workspace/file";
+var PRESENTATION_WORKSPACE_ASSET_PATH = "/api/frontend-feedback/presentation-workspace/asset";
+var PRESENTATION_WORKSPACE_BIND_ASSET_PATH = "/api/frontend-feedback/presentation-workspace/bind-asset";
 
 // src/client/presentation.tsx
 var import_react = require("react");
@@ -32321,7 +32341,8 @@ function WorkspaceExplorer({
   onClose,
   onRefresh,
   onNavigate,
-  onAnnotationSelection
+  onAnnotationSelection,
+  onImageSlotSelection
 }) {
   const fallbackLayoutKey = (0, import_react4.useMemo)(() => `dsh-pagecraft.workspace-layout:${encodeURIComponent(sessionId)}`, [sessionId]);
   const initialLayout = (0, import_react4.useMemo)(() => readLayout(fallbackLayoutKey), [fallbackLayoutKey]);
@@ -32614,6 +32635,18 @@ function WorkspaceExplorer({
         setStatus("\u5DF2\u627E\u5230\u9875\u9762\u6587\u5B57\u3002\u8F93\u5165\u65B0\u5185\u5BB9\u540E\u70B9\u51FB\u201C\u4FEE\u6539\u6587\u5B57\u201D\u3002");
         return;
       }
+      if (data2?.type === "dsh-pagecraft-image-slot-selected") {
+        const imageSlot = normalizePresentationImageSlotSelection(data2);
+        if (imageSlot === null) {
+          setStatus("\u56FE\u7247\u69FD\u4F4D\u4FE1\u606F\u65E0\u6548\uFF0C\u8BF7\u5237\u65B0\u9884\u89C8\u540E\u91CD\u8BD5\u3002");
+          return;
+        }
+        setPreviewSelectionMode(null);
+        postPreviewMode(null);
+        setStatus(`\u5DF2\u9009\u62E9\u56FE\u7247\u69FD\u4F4D\uFF1A${imageSlot.label ?? imageSlot.slotId}`);
+        onImageSlotSelection(imageSlot);
+        return;
+      }
       if (data2?.type === "dsh-pagecraft-text-verification" && typeof data2.transactionId === "string") {
         const pending = pendingVerificationRef.current;
         if (pending === null || pending.started.transactionId !== data2.transactionId) return;
@@ -32645,7 +32678,7 @@ function WorkspaceExplorer({
     }
     window.addEventListener("message", onPreviewMessage);
     return () => window.removeEventListener("message", onPreviewMessage);
-  }, [completeTextVerification, onAnnotationSelection, onClose, onNavigate, previewSelectionMode]);
+  }, [completeTextVerification, onAnnotationSelection, onClose, onImageSlotSelection, onNavigate, previewSelectionMode]);
   (0, import_react4.useEffect)(() => {
     return () => {
       const pending = pendingVerificationRef.current;
@@ -33391,14 +33424,6 @@ var sourceStyles = {
 
 // src/client/project-assets.tsx
 var import_react5 = require("react");
-
-// src/presentation-workspace.ts
-var PRESENTATION_WORKSPACE_PATH = "/api/frontend-feedback/presentation-workspace";
-var PRESENTATION_WORKSPACE_FILE_PATH = "/api/frontend-feedback/presentation-workspace/file";
-var PRESENTATION_WORKSPACE_ASSET_PATH = "/api/frontend-feedback/presentation-workspace/asset";
-var PRESENTATION_WORKSPACE_BIND_ASSET_PATH = "/api/frontend-feedback/presentation-workspace/bind-asset";
-
-// src/client/project-assets.tsx
 var import_jsx_runtime5 = require("react/jsx-runtime");
 async function readJson(response) {
   const value = await response.json().catch(() => null);
@@ -33479,7 +33504,7 @@ function ProjectAssetLibraryDialog({
     }
   }
   async function bindSelected() {
-    if (selectedAsset === null || selectedSlot?.imageKey === void 0 || summary?.manifest === void 0) return;
+    if (selectedAsset === null || selectedSlot === null || summary?.manifest === void 0) return;
     setBusy(true);
     try {
       const deck = await readJson(await fetch(
@@ -33492,6 +33517,8 @@ function ProjectAssetLibraryDialog({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
+            slotId: selectedSlot.slotId,
+            slideId: selectedSlot.slideId,
             imageKey: selectedSlot.imageKey,
             assetPath: selectedAsset.path,
             alt: selectedSlot.label ?? selectedAsset.name,
@@ -33531,7 +33558,7 @@ function ProjectAssetLibraryDialog({
       setBusy(false);
     }
   }
-  const canBind = selectedAsset !== null && selectedSlot?.imageKey !== void 0 && summary?.available === true;
+  const canBind = selectedAsset !== null && selectedSlot !== null && summary?.available === true;
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "dialog", "aria-modal": "true", "aria-label": "\u9879\u76EE\u56FE\u7247\u7BA1\u7406", style: projectAssetStyles.overlay, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.dialog, children: [
     /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("header", { style: projectAssetStyles.header, children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
@@ -33543,7 +33570,7 @@ function ProjectAssetLibraryDialog({
     selectedSlot !== null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.slotNotice, children: [
       "\u5F53\u524D\u69FD\u4F4D\uFF1A",
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: selectedSlot.label ?? selectedSlot.slotId }),
-      selectedSlot.imageKey === void 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: " \xB7 \u65E7\u69FD\u4F4D\u7F3A\u5C11\u6E90\u7801\u952E\uFF0C\u53EA\u80FD\u4F7F\u7528\u65E7\u7248\u4E34\u65F6\u7ED1\u5B9A" }) : null
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: " \xB7 \u4FEE\u6539\u4F1A\u76F4\u63A5\u5199\u5165 deck.json" })
     ] }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: projectAssetStyles.body, children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("aside", { style: projectAssetStyles.assetGrid, children: [
@@ -33658,6 +33685,14 @@ var colors = {
 function describeError2(error) {
   return error instanceof Error ? error.message : String(error);
 }
+async function readApiJson(response) {
+  const value = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(value?.error?.message ?? `\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09`);
+  return value;
+}
+function presentationQuery(sessionId, values2 = {}) {
+  return new URLSearchParams({ sessionId, ...values2 });
+}
 function useSessionRunning(activity) {
   const subscribe = (0, import_react6.useCallback)((listener) => activity?.subscribe(listener) ?? (() => {
   }), [activity]);
@@ -33750,6 +33785,7 @@ function FrontendFeedbackPanel({
   const iframeRef = (0, import_react6.useRef)(null);
   const previousAgentRunningRef = (0, import_react6.useRef)(agentRunning);
   const refreshNoticeRef = (0, import_react6.useRef)(null);
+  const imageSlotRequestRef = (0, import_react6.useRef)(0);
   const initialNavigation = (0, import_react6.useMemo)(() => readPersistedPreviewNavigation(storageId), [storageId]);
   const initialDraft = (0, import_react6.useMemo)(() => readPersistedFeedbackDraft(storageId), [storageId]);
   const navigationRef = (0, import_react6.useRef)(initialNavigation);
@@ -33779,6 +33815,7 @@ function FrontendFeedbackPanel({
   const [showProjectAssetLibrary, setShowProjectAssetLibrary] = (0, import_react6.useState)(false);
   const [showSourceWorkspace, setShowSourceWorkspace] = (0, import_react6.useState)(false);
   const [selectedImageSlot, setSelectedImageSlot] = (0, import_react6.useState)(null);
+  const [openingImageSlot, setOpeningImageSlot] = (0, import_react6.useState)(false);
   const loadedUrl = currentPreviewUrl(navigation);
   const canGoBack = navigation.index > 0;
   const canGoForward = navigation.index < navigation.entries.length - 1;
@@ -33863,6 +33900,43 @@ function FrontendFeedbackPanel({
     setStatus(loadingStatus);
     setRevision((value) => value + 1);
   }, []);
+  const openImageSlot = (0, import_react6.useCallback)(async (nextImageSlot) => {
+    if (workspaceMode !== "presentation") return;
+    const request = ++imageSlotRequestRef.current;
+    setSelectedImageSlot(nextImageSlot);
+    setShowAssetLibrary(false);
+    setShowProjectAssetLibrary(false);
+    setOpeningImageSlot(true);
+    setStatus(`\u6B63\u5728\u6253\u5F00\u56FE\u7247\u69FD\u4F4D\uFF1A${nextImageSlot.label ?? nextImageSlot.slotId}\u2026`);
+    try {
+      try {
+        const summary = await readApiJson(await fetch(
+          `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+          { cache: "no-store" }
+        ));
+        if (request !== imageSlotRequestRef.current) return;
+        if (summary.available) {
+          setShowProjectAssetLibrary(true);
+          setStatus("\u5DF2\u6253\u5F00\u56FE\u7247\u69FD\u4F4D\u3002\u9009\u62E9\u56FE\u7247\u540E\u4F1A\u76F4\u63A5\u5199\u56DE PPT \u9879\u76EE\u6E90\u7801\u3002");
+          return;
+        }
+      } catch (error) {
+        if (request !== imageSlotRequestRef.current) return;
+        if (presentationJobId === null) {
+          setStatus(`\u65E0\u6CD5\u6253\u5F00\u9879\u76EE\u56FE\u7247\uFF1A${describeError2(error)}`);
+          return;
+        }
+      }
+      if (presentationJobId !== null) {
+        setShowAssetLibrary(true);
+        setStatus("\u5F53\u524D PPT \u5C1A\u672A\u8FC1\u79FB\u4E3A\u672C\u5730\u9879\u76EE\uFF1B\u56FE\u7247\u5C06\u4F7F\u7528\u517C\u5BB9\u6A21\u5F0F\u7ED1\u5B9A\u5230\u6F14\u793A\u4EFB\u52A1\u3002");
+        return;
+      }
+      setStatus("\u5F53\u524D\u76EE\u5F55\u4E0D\u662F\u53EF\u5199\u5165\u7684 PageCraft PPT \u9879\u76EE\uFF0C\u4E5F\u6CA1\u6709\u5173\u8054\u7684\u6F14\u793A\u4EFB\u52A1\u3002");
+    } finally {
+      if (request === imageSlotRequestRef.current) setOpeningImageSlot(false);
+    }
+  }, [presentationJobId, sessionId, workspaceMode]);
   (0, import_react6.useEffect)(() => {
     const wasRunning = previousAgentRunningRef.current;
     previousAgentRunningRef.current = agentRunning;
@@ -33895,26 +33969,8 @@ function FrontendFeedbackPanel({
         return;
       }
       if (event.data?.type === "dsh-pagecraft-image-slot-selected") {
-        if (workspaceMode !== "presentation" || typeof event.data.slotId !== "string") return;
-        const nextImageSlot = {
-          slotId: event.data.slotId,
-          ...typeof event.data.slideId === "string" ? { slideId: event.data.slideId } : {},
-          ...typeof event.data.label === "string" ? { label: event.data.label } : {},
-          ...typeof event.data.assetId === "string" ? { assetId: event.data.assetId } : {},
-          ...typeof event.data.imageKey === "string" ? { imageKey: event.data.imageKey } : {}
-        };
-        setSelectedImageSlot(nextImageSlot);
-        if (nextImageSlot.imageKey !== void 0) {
-          setShowProjectAssetLibrary(true);
-          setStatus("\u5DF2\u6253\u5F00\u56FE\u7247\u69FD\u4F4D\u3002\u9009\u62E9\u56FE\u7247\u540E\u4F1A\u76F4\u63A5\u5199\u56DE PPT \u9879\u76EE\u6E90\u7801\u3002");
-          return;
-        }
-        if (presentationJobId === null) {
-          setStatus("\u8FD9\u662F\u65E7\u7248\u56FE\u7247\u69FD\u4F4D\uFF0C\u5E76\u4E14\u6CA1\u6709\u5173\u8054\u7684\u6F14\u793A\u4EFB\u52A1\u3002\u53EF\u5148\u5728\u6E90\u7801\u5DE5\u4F5C\u533A\u8FC1\u79FB\u8FD9\u4E2A PPT\u3002");
-          return;
-        }
-        setShowAssetLibrary(true);
-        setStatus("\u5DF2\u6253\u5F00\u65E7\u7248\u56FE\u7247\u69FD\u4F4D\uFF1B\u672C\u6B21\u7ED1\u5B9A\u53EA\u4F5C\u7528\u4E8E\u4EFB\u52A1\u9884\u89C8\uFF0C\u8FC1\u79FB\u540E\u53EF\u5199\u56DE\u9879\u76EE\u3002");
+        const nextImageSlot = normalizePresentationImageSlotSelection(event.data);
+        if (nextImageSlot !== null) void openImageSlot(nextImageSlot);
         return;
       }
       if (event.data?.type === "dsh-frontend-feedback-deck-state") {
@@ -33972,7 +34028,7 @@ function FrontendFeedbackPanel({
     };
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
-  }, [assetManifest, navigatePreview, postAssetBindings, presentationJobId, selection2, workspaceMode]);
+  }, [assetManifest, navigatePreview, openImageSlot, postAssetBindings, selection2, workspaceMode]);
   const openPreview = () => {
     navigatePreview(urlDraft);
   };
@@ -34410,9 +34466,13 @@ function FrontendFeedbackPanel({
               }, "*");
             }, 0);
           }
+        },
+        onImageSlotSelection: (nextImageSlot) => {
+          void openImageSlot(nextImageSlot);
         }
       }
     ) : null,
+    openingImageSlot ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { role: "status", "aria-live": "polite", style: styles2.imageSlotLoadingOverlay, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: styles2.imageSlotLoadingCard, children: "\u6B63\u5728\u6253\u5F00\u56FE\u7247\u7D20\u6750\u2026" }) }) : null,
     showProjectAssetLibrary ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
       ProjectAssetLibraryDialog,
       {
@@ -34560,6 +34620,8 @@ var styles2 = {
   sessionHint: { width: "100%", fontSize: 11, marginTop: 8, padding: "6px 10px", borderRadius: 6, color: colors.accentStrong, background: "#1a2b23", border: `1px solid ${colors.border}` },
   sendButton: { width: "100%", height: 38, marginTop: 8, border: `1px solid ${colors.accent}`, borderRadius: 8, color: "#102016", background: colors.accentStrong, cursor: "pointer", fontWeight: 800 },
   launcherButton: { height: 30, display: "inline-flex", alignItems: "center", gap: 6, padding: "0 9px", border: 0, borderRadius: 7, color: "var(--dsw-alias-label-secondary, #c2cbc5)", background: "transparent", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" },
+  imageSlotLoadingOverlay: { position: "absolute", inset: 0, zIndex: 49, display: "grid", placeItems: "center", background: "rgba(3,8,6,.58)", backdropFilter: "blur(2px)" },
+  imageSlotLoadingCard: { padding: "12px 18px", border: `1px solid ${colors.border}`, borderRadius: 10, color: colors.text, background: colors.panel2, boxShadow: "0 12px 36px rgba(0,0,0,.32)", fontSize: 13, fontWeight: 700 },
   launcherIcon: { color: colors.accent, fontSize: 14, lineHeight: 1 },
   launcherOverlay: { position: "fixed", inset: 0, zIndex: 1e4, padding: 16, boxSizing: "border-box", background: "rgba(4, 7, 6, .72)", backdropFilter: "blur(4px)" },
   launcherPanel: { width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", border: `1px solid ${colors.border}`, borderRadius: 14, background: "#0e1311", boxShadow: "0 24px 80px rgba(0, 0, 0, .55)" }

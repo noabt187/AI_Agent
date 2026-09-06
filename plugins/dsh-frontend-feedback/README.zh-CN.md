@@ -182,7 +182,7 @@ pnpm dsh web
 - 文档导入支持不超过 25 MB 的 PDF、DOCX、Markdown 和 UTF-8 文本；扫描版 PDF 需要 OCR，当前版本会明确拒绝。
 - 演示文稿模式目前创建和修改网页式幻灯片；原生 PPTX/PDF 导出和母版编辑属于后续功能。
 - 直接修改文字采用保守策略：接口动态数据、运行时计算文本、多个相同字面量、构建产物和当前打开文件夹之外的源码都不会被猜测修改。PageCraft PPT 会根据所属幻灯片和元素路径修改 `deck.json` 内嵌 HTML；仍然兼容稳定的 `data-pagecraft-text-key`，但不强制要求它。
-- 图片槽位管理仍需要标准 PageCraft 演示清单和稳定的 `data-pagecraft-image-key`。旧 PPT 只有在源码位置唯一、结构明确时才能自动迁移。
+- 图片槽位管理需要标准 PageCraft 演示清单和全局唯一的 `data-pagecraft-image-slot`。每个槽位必须只包含一个 `<img>`，PageCraft 才会安全写入；旧版 `slide.visual` 绑定仍然兼容。
 
 ## 路线图
 

@@ -1012,7 +1012,9 @@ async function handlePresentationWorkspaceBindAsset(
       ? value.focalPoint as { x?: number; y?: number }
       : undefined
     sendJson(res, 200, await bindPresentationProjectAsset(cwd, {
-      imageKey: typeof value.imageKey === 'string' ? value.imageKey : '',
+      slotId: typeof value.slotId === 'string' ? value.slotId : undefined,
+      slideId: typeof value.slideId === 'string' ? value.slideId : undefined,
+      imageKey: typeof value.imageKey === 'string' ? value.imageKey : undefined,
       assetPath: typeof value.assetPath === 'string' ? value.assetPath : '',
       alt: typeof value.alt === 'string' ? value.alt : undefined,
       fit: value.fit === 'contain' ? 'contain' : 'cover',

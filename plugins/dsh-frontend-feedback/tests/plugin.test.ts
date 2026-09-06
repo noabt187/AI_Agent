@@ -725,6 +725,62 @@ test('project image binding writes deck.json and protects referenced files', asy
   }), /图片编辑键无效/)
 })
 
+test('project image binding updates the exact inline slot and supports multiple slots per slide', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-inline-assets-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  await createPresentationWorkspace(cwd)
+  const deckPath = join(cwd, 'src', 'presentation', 'deck.json')
+  const document = JSON.parse(await readFile(deckPath, 'utf8'))
+  document.slides[1].content = [
+    '<div class="two-images">',
+    '<figure data-pagecraft-image-slot="slide-02-machine"><img alt="旧机床图"></figure>',
+    '<figure data-pagecraft-image-slot="slide-02-chart"><img class="chart" style="width: 100%; object-fit: cover"></figure>',
+    '</div>',
+  ].join('')
+  await writeFile(deckPath, `${JSON.stringify(document, null, 2)}\n`)
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSAAAAAASUVORK5CYII=', 'base64')
+  const uploaded = await uploadPresentationProjectAsset(cwd, 'machine.png', png)
+
+  const initial = await readPresentationSourceFile(cwd, 'src/presentation/deck.json')
+  const machine = await bindPresentationProjectAsset(cwd, {
+    slotId: 'slide-02-machine',
+    slideId: 'slide-02',
+    assetPath: uploaded.assets[0].path,
+    alt: '五轴机床主视图',
+    fit: 'contain',
+    focalPoint: { x: 0.25, y: 0.75 },
+    baseHash: initial.hash,
+  })
+  const chart = await bindPresentationProjectAsset(cwd, {
+    slotId: 'slide-02-chart',
+    slideId: 'slide-02',
+    assetPath: uploaded.assets[0].path,
+    alt: '实验数据图',
+    fit: 'cover',
+    focalPoint: { x: 0.5, y: 0.5 },
+    baseHash: machine.file.hash,
+  })
+  const updated = JSON.parse(chart.file.content)
+
+  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-machine"[^>]*><img src="\/pagecraft-assets\//)
+  assert.match(updated.slides[1].content, /alt="五轴机床主视图"/)
+  assert.match(updated.slides[1].content, /object-fit: contain/)
+  assert.match(updated.slides[1].content, /object-position: 25% 75%/)
+  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-chart"[^>]*><img class="chart"[^>]*src="\/pagecraft-assets\//)
+  assert.match(updated.slides[1].content, /alt="实验数据图"/)
+  assert.match(updated.slides[1].content, /width: 100%/)
+  assert.deepEqual(chart.assets[0].references, ['slide-02'])
+  await assert.rejects(() => deletePresentationProjectAsset(cwd, uploaded.assets[0].path), /仍被幻灯片使用/)
+})
+
+test('presentation skill describes slot-level source persistence for multi-image slides', async () => {
+  const skill = await readFile(new URL('../skills/presentation-builder/SKILL.md', import.meta.url), 'utf8')
+  assert.match(skill, /slot ID.*deck\.json/i)
+  assert.match(skill, /slide may contain multiple image slots/i)
+  assert.doesNotMatch(skill, /每个槽位.*<slide-id>\.visual/)
+  assert.doesNotMatch(skill, /updates the selected slide's `visual` object/)
+})
+
 test('legacy deck migration only accepts one unambiguous presentation source', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-migration-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
@@ -1046,6 +1102,5 @@ test('plugin registers the host route and both builder skills', () => {
   assert.match(skills[1]?.content, /data-pagecraft-image-slot/)
   assert.match(skills[1]?.content, /pagecraft-presentation\.json/)
   assert.match(skills[1]?.content, /data-pagecraft-text-key/)
-  assert.match(skills[1]?.content, /data-pagecraft-image-key/)
   assert.doesNotMatch(skills[1]?.content, /^---/)
 })

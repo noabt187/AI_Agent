@@ -166,6 +166,18 @@ export const ANNOTATOR_SCRIPT = String.raw`
     return slotId && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/.test(slotId) ? slot : null;
   }
 
+  function selectImageSlot(imageSlot) {
+    const presentation = presentationContextFor(imageSlot);
+    post({
+      type: 'dsh-pagecraft-image-slot-selected',
+      slotId: imageSlot.getAttribute('data-pagecraft-image-slot'),
+      imageKey: imageSlot.getAttribute('data-pagecraft-image-key') || undefined,
+      label: imageSlot.getAttribute('data-pagecraft-slot-label') || '图片槽位',
+      assetId: imageSlot.getAttribute('data-pagecraft-asset-id') || undefined,
+      ...(presentation ? { slideId: presentation.slideId } : {})
+    });
+  }
+
   function rememberSlot(slot) {
     let state = slotStates.get(slot);
     if (state) return state;
@@ -267,7 +279,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
   }
 
   function updateImageSlotOverlay(target) {
-    const slot = mode === null ? imageSlotFor(target) : null;
+    const slot = mode === 'area' ? null : imageSlotFor(target);
     hoveredImageSlot = slot;
     if (!slot) {
       imageSlotOverlay.style.display = 'none';
@@ -548,7 +560,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
   function renderState() {
     areaCapture.style.display = mode === 'area' ? 'block' : 'none';
     if (mode !== 'element') elementOverlay.style.display = 'none';
-    if (mode !== null) {
+    if (mode === 'area') {
       imageSlotOverlay.style.display = 'none';
       imageSlotBadge.style.display = 'none';
     }
@@ -580,6 +592,10 @@ export const ANNOTATOR_SCRIPT = String.raw`
 
   function highlight(element) {
     if ((mode !== 'element' && mode !== 'text') || !(element instanceof Element) || element === root || element === document.body || isUi(element)) {
+      elementOverlay.style.display = 'none';
+      return;
+    }
+    if (imageSlotFor(element)) {
       elementOverlay.style.display = 'none';
       return;
     }
@@ -1173,6 +1189,12 @@ export const ANNOTATOR_SCRIPT = String.raw`
   }, true);
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element) || isUi(event.target)) return;
+    const imageSlot = mode === 'area' ? null : imageSlotFor(event.target);
+    if (imageSlot) {
+      consume(event);
+      selectImageSlot(imageSlot);
+      return;
+    }
     if (mode === 'element') {
       consume(event);
       post({ type: 'dsh-frontend-feedback-selected', payload: describeElement(event.target) });
@@ -1187,20 +1209,6 @@ export const ANNOTATOR_SCRIPT = String.raw`
     }
     if (mode === 'area') {
       consume(event);
-      return;
-    }
-    const imageSlot = imageSlotFor(event.target);
-    if (imageSlot) {
-      consume(event);
-      const presentation = presentationContextFor(imageSlot);
-      post({
-        type: 'dsh-pagecraft-image-slot-selected',
-        slotId: imageSlot.getAttribute('data-pagecraft-image-slot'),
-        imageKey: imageSlot.getAttribute('data-pagecraft-image-key') || undefined,
-        label: imageSlot.getAttribute('data-pagecraft-slot-label') || '图片槽位',
-        assetId: imageSlot.getAttribute('data-pagecraft-asset-id') || undefined,
-        ...(presentation ? { slideId: presentation.slideId } : {})
-      });
       return;
     }
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

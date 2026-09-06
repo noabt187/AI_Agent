@@ -7,6 +7,7 @@ import { undo } from '@codemirror/commands'
 import { IDBFactory } from 'fake-indexeddb'
 import { WorkspaceExplorer } from '../src/client/source-workspace.tsx'
 import { IndexedDbDraftStorage, sourceDraftKey } from '../src/client/source-drafts.ts'
+import type { PresentationImageSlotSelection } from '../src/presentation.ts'
 import { installBrowserDom } from './helpers/browser-dom.ts'
 
 const scope = { sessionId: 'test', rootPath: '/fixture', selectedFolder: '.', path: 'source.txt' }
@@ -14,7 +15,12 @@ function snapshot(content: string, path = 'source.txt') {
   return { path, content, hash: `hash:${content}`, bytes: new TextEncoder().encode(content).length, updatedAt: '', language: 'text' }
 }
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) }) }
-async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string; baseHash: string }) {
+interface MountWorkspaceOptions {
+  previewSrc?: string | null
+  onImageSlotSelection?(selection: PresentationImageSlotSelection): void
+}
+
+async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string; baseHash: string }, options: MountWorkspaceOptions = {}) {
   const dom = installBrowserDom()
   const idb = new IDBFactory()
   const storage = new IndexedDbDraftStorage(idb)
@@ -59,7 +65,7 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
-  const render = (sessionId = 'test') => root.render(<WorkspaceExplorer sessionId={sessionId} previewSrc={null} onClose={() => {}} onRefresh={() => {}} onNavigate={() => {}} onAnnotationSelection={() => {}} />)
+  const render = (sessionId = 'test') => root.render(<WorkspaceExplorer sessionId={sessionId} previewSrc={options.previewSrc ?? null} onClose={() => {}} onRefresh={() => {}} onNavigate={() => {}} onAnnotationSelection={() => {}} onImageSlotSelection={options.onImageSlotSelection ?? (() => {})} />)
   await act(async () => render())
   await settle()
   const click = async (label: string) => {
@@ -75,6 +81,38 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
   t.after(async () => { await act(async () => root.unmount()); globalThis.fetch = oldFetch; globalThis.EventSource = oldEvents; dom.cleanup() })
   return { host, click, view, edit, saveButton, storage, key: sourceDraftKey(scope), disk: () => disk, otherDisk: () => otherDisk, writes: () => writes, setDisk: (raw: string) => { disk = snapshot(raw) }, setOtherDisk: (raw: string) => { otherDisk = snapshot(raw, 'other.txt') }, setPutGate: (gate?: Promise<void>) => { putGate = gate }, setPutResponseGate: (gate?: Promise<void>) => { putResponseGate = gate }, setReadGate: (gate?: Promise<void>) => { readGate = gate }, setRestoreGate: (gate?: Promise<void>) => { restoreGate = gate }, render }
 }
+
+test('file workspace forwards image-slot clicks from its own preview frame', async t => {
+  let selected: PresentationImageSlotSelection | null = null
+  const f = await mountWorkspace(t, 'base\n', undefined, {
+    previewSrc: 'http://fixture/preview',
+    onImageSlotSelection(selection) {
+      selected = selection
+    },
+  })
+  const frame = f.host.querySelector('iframe')
+  assert.ok(frame?.contentWindow)
+
+  await act(async () => {
+    window.dispatchEvent(new window.MessageEvent('message', {
+      source: frame.contentWindow,
+      data: {
+        type: 'dsh-pagecraft-image-slot-selected',
+        slotId: 'slide-03-chart',
+        slideId: 'slide-03',
+        label: '实验结果图',
+        assetId: 'asset-1',
+      },
+    }))
+  })
+
+  assert.deepEqual(selected, {
+    slotId: 'slide-03-chart',
+    slideId: 'slide-03',
+    label: '实验结果图',
+    assetId: 'asset-1',
+  })
+})
 
 test('real editor discard resets text, dirty state, cache and undo; next input cannot resurrect it', async t => {
   const f = await mountWorkspace(t)

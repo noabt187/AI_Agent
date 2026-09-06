@@ -181,6 +181,17 @@ export function isPresentationImageSlotId(value: unknown): value is string {
   return typeof value === 'string' && IMAGE_SLOT_ID_PATTERN.test(value)
 }
 
+export function normalizePresentationImageSlotSelection(value: unknown): PresentationImageSlotSelection | null {
+  if (!isRecord(value) || !isPresentationImageSlotId(value.slotId)) return null
+  return {
+    slotId: value.slotId,
+    ...(typeof value.slideId === 'string' && PLAN_SLIDE_ID_PATTERN.test(value.slideId) ? { slideId: value.slideId } : {}),
+    ...(typeof value.label === 'string' ? { label: value.label.trim().slice(0, 200) } : {}),
+    ...(typeof value.assetId === 'string' ? { assetId: value.assetId.trim().slice(0, 160) } : {}),
+    ...(typeof value.imageKey === 'string' ? { imageKey: value.imageKey.trim().slice(0, 160) } : {}),
+  }
+}
+
 export function presentationJobStorageKey(sessionId: string): string {
   return `dsh-pagecraft.presentation-job:${sessionId}`
 }

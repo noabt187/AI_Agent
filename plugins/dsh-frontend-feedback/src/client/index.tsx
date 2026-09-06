@@ -4,6 +4,7 @@ import {
   buildPresentationDocumentPrompt,
   buildPresentationOutlinePrompt,
   isPresentationJobId,
+  normalizePresentationImageSlotSelection,
   presentationJobStorageKey,
   resolvePresentationSlides,
 } from '../presentation.ts'
@@ -35,6 +36,8 @@ import {
   suppressCurrentHostPreview,
 } from '../shared.ts'
 import type { AreaOperation, FeedbackComment, FeedbackDraftState, FeedbackSelection, PreviewNavigationState } from '../shared.ts'
+import { PRESENTATION_WORKSPACE_PATH } from '../presentation-workspace.ts'
+import type { PresentationWorkspaceSummary } from '../presentation-workspace.ts'
 import { PresentationDocumentDialog, SlideRail } from './presentation.tsx'
 import {
   AssetLibraryDialog,
@@ -219,6 +222,7 @@ function FrontendFeedbackPanel({
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const previousAgentRunningRef = useRef(agentRunning)
   const refreshNoticeRef = useRef<string | null>(null)
+  const imageSlotRequestRef = useRef(0)
   const initialNavigation = useMemo(() => readPersistedPreviewNavigation(storageId), [storageId])
   const initialDraft = useMemo(() => readPersistedFeedbackDraft(storageId), [storageId])
   const navigationRef = useRef(initialNavigation)
@@ -254,6 +258,7 @@ function FrontendFeedbackPanel({
   const [showProjectAssetLibrary, setShowProjectAssetLibrary] = useState(false)
   const [showSourceWorkspace, setShowSourceWorkspace] = useState(false)
   const [selectedImageSlot, setSelectedImageSlot] = useState<PresentationImageSlotSelection | null>(null)
+  const [openingImageSlot, setOpeningImageSlot] = useState(false)
   const loadedUrl = currentPreviewUrl(navigation)
   const canGoBack = navigation.index > 0
   const canGoForward = navigation.index < navigation.entries.length - 1
@@ -348,6 +353,46 @@ function FrontendFeedbackPanel({
     setRevision(value => value + 1)
   }, [])
 
+  const openImageSlot = useCallback(async (nextImageSlot: PresentationImageSlotSelection) => {
+    if (workspaceMode !== 'presentation') return
+    const request = ++imageSlotRequestRef.current
+    setSelectedImageSlot(nextImageSlot)
+    setShowAssetLibrary(false)
+    setShowProjectAssetLibrary(false)
+    setOpeningImageSlot(true)
+    setStatus(`正在打开图片槽位：${nextImageSlot.label ?? nextImageSlot.slotId}…`)
+
+    try {
+      try {
+        const summary = await readApiJson<PresentationWorkspaceSummary>(await fetch(
+          `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+          { cache: 'no-store' },
+        ))
+        if (request !== imageSlotRequestRef.current) return
+        if (summary.available) {
+          setShowProjectAssetLibrary(true)
+          setStatus('已打开图片槽位。选择图片后会直接写回 PPT 项目源码。')
+          return
+        }
+      } catch (error) {
+        if (request !== imageSlotRequestRef.current) return
+        if (presentationJobId === null) {
+          setStatus(`无法打开项目图片：${describeError(error)}`)
+          return
+        }
+      }
+
+      if (presentationJobId !== null) {
+        setShowAssetLibrary(true)
+        setStatus('当前 PPT 尚未迁移为本地项目；图片将使用兼容模式绑定到演示任务。')
+        return
+      }
+      setStatus('当前目录不是可写入的 PageCraft PPT 项目，也没有关联的演示任务。')
+    } finally {
+      if (request === imageSlotRequestRef.current) setOpeningImageSlot(false)
+    }
+  }, [presentationJobId, sessionId, workspaceMode])
+
   useEffect(() => {
     const wasRunning = previousAgentRunningRef.current
     previousAgentRunningRef.current = agentRunning
@@ -384,26 +429,8 @@ function FrontendFeedbackPanel({
         return
       }
       if (event.data?.type === 'dsh-pagecraft-image-slot-selected') {
-        if (workspaceMode !== 'presentation' || typeof event.data.slotId !== 'string') return
-        const nextImageSlot: PresentationImageSlotSelection = {
-          slotId: event.data.slotId,
-          ...(typeof event.data.slideId === 'string' ? { slideId: event.data.slideId } : {}),
-          ...(typeof event.data.label === 'string' ? { label: event.data.label } : {}),
-          ...(typeof event.data.assetId === 'string' ? { assetId: event.data.assetId } : {}),
-          ...(typeof event.data.imageKey === 'string' ? { imageKey: event.data.imageKey } : {}),
-        }
-        setSelectedImageSlot(nextImageSlot)
-        if (nextImageSlot.imageKey !== undefined) {
-          setShowProjectAssetLibrary(true)
-          setStatus('已打开图片槽位。选择图片后会直接写回 PPT 项目源码。')
-          return
-        }
-        if (presentationJobId === null) {
-          setStatus('这是旧版图片槽位，并且没有关联的演示任务。可先在源码工作区迁移这个 PPT。')
-          return
-        }
-        setShowAssetLibrary(true)
-        setStatus('已打开旧版图片槽位；本次绑定只作用于任务预览，迁移后可写回项目。')
+        const nextImageSlot = normalizePresentationImageSlotSelection(event.data)
+        if (nextImageSlot !== null) void openImageSlot(nextImageSlot)
         return
       }
       if (event.data?.type === 'dsh-frontend-feedback-deck-state') {
@@ -463,7 +490,7 @@ function FrontendFeedbackPanel({
     }
     window.addEventListener('message', listener)
     return () => window.removeEventListener('message', listener)
-  }, [assetManifest, navigatePreview, postAssetBindings, presentationJobId, selection, workspaceMode])
+  }, [assetManifest, navigatePreview, openImageSlot, postAssetBindings, selection, workspaceMode])
 
   const openPreview = () => {
     navigatePreview(urlDraft)
@@ -886,7 +913,13 @@ function FrontendFeedbackPanel({
               }, 0)
             }
           }}
+          onImageSlotSelection={(nextImageSlot) => { void openImageSlot(nextImageSlot) }}
         />
+      ) : null}
+      {openingImageSlot ? (
+        <div role="status" aria-live="polite" style={styles.imageSlotLoadingOverlay}>
+          <div style={styles.imageSlotLoadingCard}>正在打开图片素材…</div>
+        </div>
       ) : null}
       {showProjectAssetLibrary ? (
         <ProjectAssetLibraryDialog
@@ -1042,6 +1075,8 @@ const styles: Record<string, any> = {
   sessionHint: { width: '100%', fontSize: 11, marginTop: 8, padding: '6px 10px', borderRadius: 6, color: colors.accentStrong, background: '#1a2b23', border: `1px solid ${colors.border}` },
   sendButton: { width: '100%', height: 38, marginTop: 8, border: `1px solid ${colors.accent}`, borderRadius: 8, color: '#102016', background: colors.accentStrong, cursor: 'pointer', fontWeight: 800 },
   launcherButton: { height: 30, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '0 9px', border: 0, borderRadius: 7, color: 'var(--dsw-alias-label-secondary, #c2cbc5)', background: 'transparent', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap' },
+  imageSlotLoadingOverlay: { position: 'absolute', inset: 0, zIndex: 49, display: 'grid', placeItems: 'center', background: 'rgba(3,8,6,.58)', backdropFilter: 'blur(2px)' },
+  imageSlotLoadingCard: { padding: '12px 18px', border: `1px solid ${colors.border}`, borderRadius: 10, color: colors.text, background: colors.panel2, boxShadow: '0 12px 36px rgba(0,0,0,.32)', fontSize: 13, fontWeight: 700 },
   launcherIcon: { color: colors.accent, fontSize: 14, lineHeight: 1 },
   launcherOverlay: { position: 'fixed', inset: 0, zIndex: 10000, padding: 16, boxSizing: 'border-box', background: 'rgba(4, 7, 6, .72)', backdropFilter: 'blur(4px)' },
   launcherPanel: { width: '100%', height: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden', border: `1px solid ${colors.border}`, borderRadius: 14, background: '#0e1311', boxShadow: '0 24px 80px rgba(0, 0, 0, .55)' },

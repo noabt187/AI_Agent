@@ -93,7 +93,6 @@ Use a managed image slot whenever the user may reasonably want to upload or repl
 ```html
 <figure
   class="hero-visual"
-  data-pagecraft-image-key="slide-04.visual"
   data-pagecraft-image-slot="slide-04-main-visual"
   data-pagecraft-slot-label="五轴机床主视图"
 >
@@ -101,12 +100,12 @@ Use a managed image slot whenever the user may reasonably want to upload or repl
 </figure>
 ```
 
-- Give every slot a stable, deck-wide unique ID using letters, digits, `_`, or `-`. Prefer `<slide-id>-<visual-role>` so the ID survives text edits.
-- Give every slot a `data-pagecraft-image-key` in the exact `<slide-id>.visual` form. Render its `src`, `alt`, `fit`, and focal position from that slide's `visual` object in `deck.json`.
+- Give every slot a stable, deck-wide unique ID using letters, digits, `_`, or `-`. Prefer `<slide-id>-<visual-role>` so the ID survives text edits. PageCraft uses this slot ID to update the matching `<img>` inside `deck.json`.
+- A slide may contain multiple image slots. Give each one a different semantic role such as `slide-04-machine`, `slide-04-chart`, or `slide-04-result`.
 - Give the slot a short Chinese or English label through `data-pagecraft-slot-label`; PageCraft displays it to the user.
 - Define the slot's layout in CSS with a deliberate width, height or `aspect-ratio`, overflow behavior, and placeholder appearance. It must reserve useful space even before an image is selected.
-- The slot may be the `<img>` itself or a container holding one `<img>`. Use the slide's `visual.fit` and `visual.position` values to render `object-fit` and `object-position`.
-- Keep meaningful `alt` text in `deck.json`. PageCraft writes uploaded images to `public/pagecraft-assets` and updates the selected slide's `visual` object, so the direct browser preview and deployed project use the same image.
+- The slot may be the `<img>` itself or a container holding exactly one `<img>`. Keep its `src`, `alt`, `object-fit`, and `object-position` in the canonical deck content so PageCraft can update the selected slot without guessing.
+- Keep meaningful `alt` text in `deck.json`. PageCraft writes uploaded images to `public/pagecraft-assets` and updates the selected slot's `<img>`, so the direct browser preview and deployed project use the same image.
 - Use slots for replaceable raster imagery. Keep accurate charts, Mermaid/Graphviz diagrams, formulas, and editable DOM illustrations in code unless the user specifically wants them managed as images.
 - Do not put a slot around purely decorative icons or every small visual. One to three purposeful slots on a visual slide is usually enough.
 
@@ -128,7 +127,7 @@ Use only fields supported by the known deck schema. Do not put a text key on gen
 3. For `area` annotations, use the provided container-relative position and four corners directly. Follow `insert`, `overlay`, or `replace` exactly, while expressing final placement through the slide's layout system when possible.
 4. Make the smallest coherent change that satisfies the selected slide without silently changing the story or style of unrelated slides.
 5. If feedback requests a deck-wide rule such as typography, color, footer, or spacing, change the shared theme/layout component and inspect representative slides for regressions.
-6. Preserve stable `data-pagecraft-slide-id`, `data-pagecraft-text-key`, and `data-pagecraft-image-key` values and keep all slides discoverable in DOM order.
+6. Preserve stable `data-pagecraft-slide-id`, `data-pagecraft-text-key`, and `data-pagecraft-image-slot` values and keep all slides discoverable in DOM order.
 7. Verify the edited slide at presentation size and check nearby slides for overflow, unexpected wrapping, style drift, and broken navigation.
 
 ## Visual quality rules

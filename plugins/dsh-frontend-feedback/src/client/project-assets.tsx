@@ -112,7 +112,7 @@ export function ProjectAssetLibraryDialog({
   }
 
   async function bindSelected(): Promise<void> {
-    if (selectedAsset === null || selectedSlot?.imageKey === undefined || summary?.manifest === undefined) return
+    if (selectedAsset === null || selectedSlot === null || summary?.manifest === undefined) return
     setBusy(true)
     try {
       const deck = await readJson<PresentationWorkspaceFile>(await fetch(
@@ -125,6 +125,8 @@ export function ProjectAssetLibraryDialog({
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            slotId: selectedSlot.slotId,
+            slideId: selectedSlot.slideId,
             imageKey: selectedSlot.imageKey,
             assetPath: selectedAsset.path,
             alt: selectedSlot.label ?? selectedAsset.name,
@@ -166,7 +168,7 @@ export function ProjectAssetLibraryDialog({
     }
   }
 
-  const canBind = selectedAsset !== null && selectedSlot?.imageKey !== undefined && summary?.available === true
+  const canBind = selectedAsset !== null && selectedSlot !== null && summary?.available === true
 
   return (
     <div role="dialog" aria-modal="true" aria-label="项目图片管理" style={projectAssetStyles.overlay}>
@@ -179,7 +181,7 @@ export function ProjectAssetLibraryDialog({
         {selectedSlot !== null ? (
           <div style={projectAssetStyles.slotNotice}>
             当前槽位：<strong>{selectedSlot.label ?? selectedSlot.slotId}</strong>
-            {selectedSlot.imageKey === undefined ? <span> · 旧槽位缺少源码键，只能使用旧版临时绑定</span> : null}
+            <span> · 修改会直接写入 deck.json</span>
           </div>
         ) : null}
 

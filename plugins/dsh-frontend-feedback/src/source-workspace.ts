@@ -12,13 +12,14 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { parseFragment } from 'parse5'
 import {
   inspectPresentationImage,
   readPresentationAsset,
   readPresentationAssets,
 } from './assets.ts'
 import { resolvePresentationJobDirectory } from './document.ts'
-import { isPresentationJobId } from './presentation.ts'
+import { isPresentationImageSlotId, isPresentationJobId } from './presentation.ts'
 import {
   PRESENTATION_PROJECT_MANIFEST,
   isPresentationTextFile,
@@ -53,7 +54,9 @@ interface PresentationEntryInput {
 }
 
 interface ProjectAssetBindingInput {
-  imageKey: string
+  slotId?: string
+  slideId?: string
+  imageKey?: string
   assetPath: string
   alt?: string
   fit?: 'cover' | 'contain'
@@ -67,6 +70,7 @@ interface StoredHistoryEntry extends PresentationWorkspaceHistoryEntry {
 
 interface DeckSlide {
   id?: unknown
+  content?: unknown
   visual?: unknown
   [key: string]: unknown
 }
@@ -74,6 +78,17 @@ interface DeckSlide {
 interface DeckDocument {
   slides?: unknown
   [key: string]: unknown
+}
+
+interface HtmlSourceLocation {
+  startTag?: { startOffset?: number; endOffset?: number }
+}
+
+interface HtmlNode {
+  tagName?: string
+  attrs?: Array<{ name: string; value: string }>
+  childNodes?: HtmlNode[]
+  sourceCodeLocation?: HtmlSourceLocation
 }
 
 export class PresentationWorkspaceError extends Error {
@@ -419,6 +434,86 @@ function visualSource(slide: DeckSlide): string | null {
   return typeof src === 'string' ? src : null
 }
 
+function htmlAttribute(node: HtmlNode, name: string): string | undefined {
+  return node.attrs?.find(attribute => attribute.name.toLowerCase() === name.toLowerCase())?.value
+}
+
+function htmlElements(root: HtmlNode): HtmlNode[] {
+  const elements: HtmlNode[] = []
+  function visit(node: HtmlNode): void {
+    if (typeof node.tagName === 'string') elements.push(node)
+    for (const child of node.childNodes ?? []) visit(child)
+  }
+  visit(root)
+  return elements
+}
+
+function inlineImageSources(slide: DeckSlide): string[] {
+  if (typeof slide.content !== 'string') return []
+  const fragment = parseFragment(slide.content) as unknown as HtmlNode
+  return htmlElements(fragment)
+    .filter(node => node.tagName?.toLowerCase() === 'img')
+    .map(node => htmlAttribute(node, 'src'))
+    .filter((src): src is string => typeof src === 'string')
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function imageStyle(value: string | undefined, fit: 'cover' | 'contain', position: string): string {
+  const declarations = (value ?? '')
+    .split(';')
+    .map(declaration => declaration.trim())
+    .filter(declaration => declaration.length > 0 && !/^object-(?:fit|position)\s*:/i.test(declaration))
+  declarations.push(`object-fit: ${fit}`, `object-position: ${position}`)
+  return declarations.join('; ')
+}
+
+function imageStartTag(node: HtmlNode, src: string, alt: string, fit: 'cover' | 'contain', position: string): string {
+  const attributes = (node.attrs ?? []).filter(attribute => !['src', 'alt', 'style'].includes(attribute.name.toLowerCase()))
+  attributes.push(
+    { name: 'src', value: src },
+    { name: 'alt', value: alt },
+    { name: 'style', value: imageStyle(htmlAttribute(node, 'style'), fit, position) },
+  )
+  return `<img${attributes.map(attribute => ` ${attribute.name}="${escapeHtmlAttribute(attribute.value)}"`).join('')}>`
+}
+
+function replaceInlineImage(
+  content: string,
+  slotId: string,
+  src: string,
+  alt: string,
+  fit: 'cover' | 'contain',
+  position: string,
+): string | null {
+  const fragment = parseFragment(content, { sourceCodeLocationInfo: true }) as unknown as HtmlNode
+  const slots = htmlElements(fragment).filter(node => htmlAttribute(node, 'data-pagecraft-image-slot') === slotId)
+  if (slots.length === 0) return null
+  if (slots.length > 1) {
+    throw new PresentationWorkspaceError('当前幻灯片中存在重复的图片槽位 ID', 409, 'PRESENTATION_IMAGE_SLOT_AMBIGUOUS')
+  }
+  const images = htmlElements(slots[0]).filter(node => node.tagName?.toLowerCase() === 'img')
+  if (images.length !== 1) {
+    throw new PresentationWorkspaceError(
+      images.length === 0 ? '图片槽位中没有可替换的 img 元素' : '图片槽位中存在多个 img 元素，无法安全判断目标',
+      409,
+      images.length === 0 ? 'PRESENTATION_IMAGE_TARGET_NOT_FOUND' : 'PRESENTATION_IMAGE_TARGET_AMBIGUOUS',
+    )
+  }
+  const start = images[0].sourceCodeLocation?.startTag?.startOffset
+  const end = images[0].sourceCodeLocation?.startTag?.endOffset
+  if (start === undefined || end === undefined || start > end) {
+    throw new PresentationWorkspaceError('图片槽位没有稳定的源码位置', 409, 'PRESENTATION_IMAGE_TARGET_NOT_FOUND')
+  }
+  return `${content.slice(0, start)}${imageStartTag(images[0], src, alt, fit, position)}${content.slice(end)}`
+}
+
 function publicAssetUrl(manifest: PresentationProjectManifest, assetPath: string): string {
   const suffix = assetPath.slice(manifest.assets.length + 1).split('/').map(encodeURIComponent).join('/')
   return `${manifest.publicAssetBase}/${suffix}`
@@ -426,7 +521,7 @@ function publicAssetUrl(manifest: PresentationProjectManifest, assetPath: string
 
 function referencedSlides(deck: unknown, publicUrl: string): string[] {
   return deckSlides(deck)
-    .filter(slide => visualSource(slide) === publicUrl)
+    .filter(slide => visualSource(slide) === publicUrl || inlineImageSources(slide).includes(publicUrl))
     .map(slide => typeof slide.id === 'string' ? slide.id : '')
     .filter(Boolean)
 }
@@ -650,8 +745,6 @@ export async function bindPresentationProjectAsset(
   options: SourceWorkspaceOptions = {},
 ): Promise<{ file: PresentationWorkspaceFile; assets: PresentationProjectAsset[] }> {
   const manifest = await readManifest(cwd)
-  const match = /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,79})\.visual$/.exec(input.imageKey)
-  if (match === null) throw new PresentationWorkspaceError('图片编辑键无效', 400, 'PRESENTATION_IMAGE_KEY_INVALID')
   const assetPath = normalizedPath(input.assetPath)
   if (!assetPathAllowed(manifest, assetPath)) throw new PresentationWorkspaceError('图片不在项目素材目录中', 403, 'PRESENTATION_ASSET_FORBIDDEN')
   await validateResolvedPath(cwd, assetPath, manifest.assets, true)
@@ -660,16 +753,40 @@ export async function bindPresentationProjectAsset(
     throw new PresentationWorkspaceError('deck.json 已被其他操作修改', 409, 'PRESENTATION_FILE_CONFLICT', { current: deckFile })
   }
   const deck = JSON.parse(deckFile.content) as DeckDocument
-  const slide = deckSlides(deck).find(item => item.id === match[1])
-  if (slide === undefined) throw new PresentationWorkspaceError('找不到图片槽位对应的幻灯片', 404, 'PRESENTATION_SLIDE_NOT_FOUND')
   const x = Math.min(1, Math.max(0, Number.isFinite(input.focalPoint?.x) ? Number(input.focalPoint?.x) : 0.5))
   const y = Math.min(1, Math.max(0, Number.isFinite(input.focalPoint?.y) ? Number(input.focalPoint?.y) : 0.5))
-  slide.visual = {
-    type: 'image',
-    src: publicAssetUrl(manifest, assetPath),
-    alt: typeof input.alt === 'string' ? input.alt.trim().slice(0, 300) : '',
-    fit: input.fit === 'contain' ? 'contain' : 'cover',
-    position: `${Math.round(x * 100)}% ${Math.round(y * 100)}%`,
+  const fit = input.fit === 'contain' ? 'contain' : 'cover'
+  const position = `${Math.round(x * 100)}% ${Math.round(y * 100)}%`
+  const src = publicAssetUrl(manifest, assetPath)
+  const alt = typeof input.alt === 'string' ? input.alt.trim().slice(0, 300) : ''
+
+  const slotId = input.slotId
+  if (slotId !== undefined) {
+    if (!isPresentationImageSlotId(slotId)) {
+      throw new PresentationWorkspaceError('图片槽位 ID 无效', 400, 'PRESENTATION_IMAGE_SLOT_INVALID')
+    }
+    const matchingSlides = deckSlides(deck).flatMap((slide) => {
+      if (input.slideId !== undefined && slide.id !== input.slideId) return []
+      if (typeof slide.content !== 'string') return []
+      const content = replaceInlineImage(slide.content, slotId, src, alt, fit, position)
+      return content === null ? [] : [{ slide, content }]
+    })
+    if (matchingSlides.length !== 1) {
+      throw new PresentationWorkspaceError(
+        matchingSlides.length === 0 ? '找不到图片槽位对应的源码' : '多个幻灯片使用了相同的图片槽位 ID',
+        matchingSlides.length === 0 ? 404 : 409,
+        matchingSlides.length === 0 ? 'PRESENTATION_IMAGE_SLOT_NOT_FOUND' : 'PRESENTATION_IMAGE_SLOT_AMBIGUOUS',
+      )
+    }
+    matchingSlides[0].slide.content = matchingSlides[0].content
+  } else {
+    const match = typeof input.imageKey === 'string'
+      ? /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,79})\.visual$/.exec(input.imageKey)
+      : null
+    if (match === null) throw new PresentationWorkspaceError('图片编辑键无效', 400, 'PRESENTATION_IMAGE_KEY_INVALID')
+    const slide = deckSlides(deck).find(item => item.id === match[1])
+    if (slide === undefined) throw new PresentationWorkspaceError('找不到图片槽位对应的幻灯片', 404, 'PRESENTATION_SLIDE_NOT_FOUND')
+    slide.visual = { type: 'image', src, alt, fit, position }
   }
   const file = await savePresentationSourceFile(cwd, manifest.deck, `${JSON.stringify(deck, null, 2)}\n`, deckFile.hash, options)
   return { file, assets: (await listPresentationProjectAssets(cwd)).assets }

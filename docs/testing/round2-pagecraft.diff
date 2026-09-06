@@ -1,0 +1,714 @@
+diff --git a/plugins/dsh-frontend-feedback/src/client/source-workspace.tsx b/plugins/dsh-frontend-feedback/src/client/source-workspace.tsx
+index 582e917..c8131a6 100644
+--- a/plugins/dsh-frontend-feedback/src/client/source-workspace.tsx
++++ b/plugins/dsh-frontend-feedback/src/client/source-workspace.tsx
+@@ -52,6 +52,14 @@ import {
+   workspaceEntryByPath,
+ } from './workspace-state.ts'
+ import type { WorkspaceTreeState } from './workspace-state.ts'
++import {
++  IndexedDbDraftStorage,
++  SourceDraftCache,
++  diskSaveStatus,
++  draftAfterQueuedOperation,
++  isDraftCacheAllowed,
++} from './source-drafts.ts'
++import type { SourceDraftScope } from './source-drafts.ts'
+ 
+ interface WorkspaceExplorerProps {
+   sessionId: string
+@@ -66,6 +74,7 @@ interface OpenFile {
+   file: WorkspaceFile
+   draft: string
+   conflict: WorkspaceFile | null
++  draftRevision: number | null
+ }
+ 
+ interface PendingTextVerification {
+@@ -277,6 +286,7 @@ export function WorkspaceExplorer({
+   const [focus, setFocus] = useState<WorkspaceFocus>(initialLayout.focus)
+   const [status, setStatus] = useState('正在读取当前 DSH 工作区…')
+   const [busy, setBusy] = useState(false)
++  const [pendingPersistence, setPendingPersistence] = useState(0)
+   const [conflict, setConflict] = useState<{ mine: string; current: WorkspaceFile } | null>(null)
+   const [history, setHistory] = useState<WorkspaceHistoryEntry[]>([])
+   const [folderPickerOpen, setFolderPickerOpen] = useState(false)
+@@ -293,6 +303,7 @@ export function WorkspaceExplorer({
+   const shellRef = useRef<HTMLDivElement>(null)
+   const treeRef = useRef(tree)
+   const openFilesRef = useRef(openFiles)
++  const draftCache = useMemo(() => new SourceDraftCache(new IndexedDbDraftStorage()), [])
+   const lastSequenceRef = useRef(0)
+   const loadedLayoutRootRef = useRef<string | null>(null)
+   const active = openFiles.find(item => item.file.path === activePath) ?? null
+@@ -301,6 +312,23 @@ export function WorkspaceExplorer({
+   treeRef.current = tree
+   openFilesRef.current = openFiles
+ 
++  const draftScope = useCallback((path: string): SourceDraftScope | null => summary === null ? null : ({
++    sessionId,
++    rootPath: summary.rootPath,
++    selectedFolder,
++    path,
++  }), [selectedFolder, sessionId, summary])
++
++  useEffect(() => {
++    function beforeUnload(event: BeforeUnloadEvent): void {
++      if (pendingPersistence === 0 && !openFilesRef.current.some(item => item.draft !== item.file.content)) return
++      event.preventDefault()
++      event.returnValue = ''
++    }
++    window.addEventListener('beforeunload', beforeUnload)
++    return () => window.removeEventListener('beforeunload', beforeUnload)
++  }, [pendingPersistence])
++
+   useEffect(() => {
+     storeLayout(layoutKey, { treeVisible, split, focus })
+   }, [focus, layoutKey, split, treeVisible])
+@@ -394,9 +422,9 @@ export function WorkspaceExplorer({
+   const revealEditedFile = useCallback((file: WorkspaceFile, line: number): void => {
+     setOpenFiles(items => {
+       const existing = items.find(item => item.file.path === file.path)
+-      if (existing === undefined) return [...items, { file, draft: file.content, conflict: null }]
++      if (existing === undefined) return [...items, { file, draft: file.content, conflict: null, draftRevision: null }]
+       return items.map(item => item.file.path === file.path
+-        ? { file, draft: file.content, conflict: null }
++        ? { file, draft: file.content, conflict: null, draftRevision: null }
+         : item)
+     })
+     setActivePath(file.path)
+@@ -582,8 +610,24 @@ export function WorkspaceExplorer({
+     try {
+       const query = apiQuery(sessionId, { selectedFolder, path: entry.path })
+       const file = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
+-      setOpenFiles(items => [...items, { file, draft: file.content, conflict: null }])
+-      setStatus(`已打开 ${entry.path}`)
++      const scope = draftScope(file.path)
++      let opened: OpenFile = { file, draft: file.content, conflict: null, draftRevision: null }
++      if (scope !== null) {
++        try {
++          const restored = await draftCache.restore(scope, file.hash)
++          if (restored.kind === 'recovered') {
++            opened = { ...opened, draft: restored.content, draftRevision: restored.revision }
++            setStatus(`已恢复 ${entry.path} 的浏览器草稿（尚未写入磁盘）。`)
++          } else if (restored.kind === 'conflict') {
++            opened = { ...opened, draft: restored.content, conflict: file, draftRevision: restored.revision }
++            setConflict({ mine: restored.content, current: file })
++            setStatus(`${entry.path} 的磁盘内容已变化，请处理恢复冲突。`)
++          } else setStatus(`已打开 ${entry.path}`)
++        } catch (error) {
++          setStatus(`无法读取浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
++        }
++      }
++      setOpenFiles(items => [...items, opened])
+     } catch (error) {
+       setStatus(error instanceof Error ? error.message : String(error))
+     } finally {
+@@ -602,10 +646,37 @@ export function WorkspaceExplorer({
+ 
+   function updateDraft(value: string): void {
+     if (activePath === null) return
+-    setOpenFiles(items => items.map(item => item.file.path === activePath ? { ...item, draft: value } : item))
++    const draftPath = activePath
++    setOpenFiles(items => items.map(item => item.file.path === draftPath ? { ...item, draft: value } : item))
++    const item = openFilesRef.current.find(candidate => candidate.file.path === draftPath)
++    const scope = draftScope(draftPath)
++    if (item === undefined || scope === null) return
++    if (!isDraftCacheAllowed(draftPath)) {
++      setStatus('安全提示：敏感文件草稿不会缓存在浏览器中；请及时保存到磁盘。')
++      return
++    }
++    setPendingPersistence(count => count + 1)
++    void draftCache.persist(scope, item.file.hash, value).then((result) => {
++      if (result.ok) {
++        const current = openFilesRef.current.find(open => open.file.path === draftPath)
++        if (current?.draft === value && current.file.content === value) {
++          void draftCache.clearSaved(scope, result.revision).catch(error => {
++            setStatus(`磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}`)
++          })
++        } else {
++          setOpenFiles(items => items.map(open => open.file.path === draftPath && open.draft === value
++            ? { ...open, draftRevision: result.revision }
++            : open))
++        }
++      } else {
++        setStatus(`浏览器草稿保存失败：${result.error.message} 请保存到磁盘后再关闭。`)
++      }
++    }).finally(() => setPendingPersistence(count => Math.max(0, count - 1)))
+   }
+ 
+   async function writeFile(item: OpenFile, baseHash = item.file.hash): Promise<void> {
++    const savedContent = item.draft
++    const savedRevision = item.draftRevision
+     setBusy(true)
+     try {
+       const file = await apiJson<WorkspaceFile>(await fetch(
+@@ -616,9 +687,34 @@ export function WorkspaceExplorer({
+           body: JSON.stringify({ selectedFolder, path: item.file.path, content: item.draft, baseHash }),
+         },
+       ))
+-      setOpenFiles(items => items.map(open => open.file.path === file.path ? { file, draft: file.content, conflict: null } : open))
++      const latestAtWrite = openFilesRef.current.find(open => open.file.path === file.path)
++      const hadNewerEdit = latestAtWrite !== undefined && latestAtWrite.draft !== savedContent
++      setOpenFiles(items => items.map(open => open.file.path === file.path
++        ? hadNewerEdit
++          ? { ...open, file, conflict: null }
++          : { file, draft: file.content, conflict: null, draftRevision: null }
++        : open))
++      const scope = draftScope(file.path)
++      let persistenceWarning: string | null = null
++      const afterCleanup = await draftAfterQueuedOperation(
++        savedContent,
++        () => scope !== null && savedRevision !== null ? draftCache.clearSaved(scope, savedRevision) : Promise.resolve(),
++        () => openFilesRef.current.find(open => open.file.path === file.path)?.draft,
++      )
++      if (afterCleanup.error !== null) {
++        persistenceWarning = `磁盘已保存，但浏览器草稿清理失败：${afterCleanup.error.message}`
++      }
++      if (scope !== null && afterCleanup.newerDraft !== null) {
++        const newestDraft = afterCleanup.newerDraft
++        const persisted = await draftCache.persist(scope, file.hash, newestDraft)
++        if (persisted.ok) {
++          setOpenFiles(items => items.map(open => open.file.path === file.path && open.draft === newestDraft
++            ? { ...open, draftRevision: persisted.revision }
++            : open))
++        } else persistenceWarning = `磁盘已保存，但较新的浏览器草稿保存失败：${persisted.error.message} 较新的修改仍未保存。`
++      }
+       setConflict(null)
+-      setStatus(`已保存 ${file.path}。正在同步预览…`)
++      setStatus(diskSaveStatus(file.path, afterCleanup.newerDraft !== null, persistenceWarning))
+       window.setTimeout(onRefresh, 450)
+     } catch (error) {
+       if (error instanceof WorkspaceApiError) {
+@@ -641,6 +737,35 @@ export function WorkspaceExplorer({
+     onClose()
+   }
+ 
++  async function discardActiveDraft(): Promise<void> {
++    if (active === null || !window.confirm(`丢弃 ${active.file.path} 的未保存修改吗？`)) return
++    const discardedDraft = active.draft
++    const scope = draftScope(active.file.path)
++    setBusy(true)
++    try {
++      const afterDiscard = await draftAfterQueuedOperation(
++        discardedDraft,
++        () => scope === null ? Promise.resolve() : draftCache.discard(scope),
++        () => openFilesRef.current.find(item => item.file.path === active.file.path)?.draft,
++      )
++      if (afterDiscard.error !== null) {
++        setStatus(`无法丢弃浏览器草稿：${afterDiscard.error.message}`)
++        return
++      }
++      if (afterDiscard.newerDraft !== null) {
++        setStatus(`${active.file.path} 在丢弃期间有新的修改；新修改已保留且仍未保存。`)
++        return
++      }
++      setOpenFiles(items => items.map(item => item.file.path === active.file.path
++        ? { ...item, draft: item.file.content, conflict: null, draftRevision: null }
++        : item))
++      setConflict(null)
++      setStatus(`已丢弃 ${active.file.path} 的浏览器草稿。`)
++    } finally {
++      setBusy(false)
++    }
++  }
++
+   async function toggleEntry(entry: WorkspaceEntry): Promise<void> {
+     const willExpand = !treeRef.current.expanded.has(entry.path)
+     setTree(value => toggleDirectory(value, entry.path))
+@@ -736,7 +861,7 @@ export function WorkspaceExplorer({
+           body: JSON.stringify({ selectedFolder, path: active.file.path, historyId: entry.id, baseHash: active.file.hash }),
+         },
+       ))
+-      setOpenFiles(items => items.map(item => item.file.path === file.path ? { file, draft: file.content, conflict: null } : item))
++      setOpenFiles(items => items.map(item => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item))
+       setHistory([])
+       setStatus('历史版本已恢复。')
+       window.setTimeout(onRefresh, 450)
+@@ -951,6 +1076,7 @@ export function WorkspaceExplorer({
+               <span>{status}</span>
+               <div style={sourceStyles.statusActions}>
+                 {active !== null ? <button type="button" onClick={() => { void loadHistory() }} style={sourceStyles.statusButton}>历史版本</button> : null}
++                {dirty ? <button type="button" onClick={() => { void discardActiveDraft() }} style={sourceStyles.statusButton}>丢弃修改</button> : null}
+                 <span>{active?.file.language ?? ''}{dirty ? ' · 未保存' : active === null ? '' : ' · 已保存'}</span>
+               </div>
+             </footer>
+@@ -1037,8 +1163,17 @@ export function WorkspaceExplorer({
+             <div style={sourceStyles.conflictActions}>
+               <button type="button" onClick={() => {
+                 const current = conflict.current
+-                setOpenFiles(items => items.map(item => item.file.path === current.path ? { file: current, draft: current.content, conflict: null } : item))
+-                setConflict(null)
++                const scope = draftScope(current.path)
++                void (async () => {
++                  try {
++                    if (scope !== null) await draftCache.discard(scope)
++                    setOpenFiles(items => items.map(item => item.file.path === current.path ? { file: current, draft: current.content, conflict: null, draftRevision: null } : item))
++                    setConflict(null)
++                    setStatus(`已载入 ${current.path} 的磁盘版本并丢弃对应浏览器草稿。`)
++                  } catch (error) {
++                    setStatus(`无法丢弃浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
++                  }
++                })()
+               }} style={sourceStyles.secondaryButton}>载入最新版本</button>
+               <button type="button" onClick={() => {
+                 if (active === null) return
+diff --git a/plugins/dsh-frontend-feedback/src/client/source-drafts.ts b/plugins/dsh-frontend-feedback/src/client/source-drafts.ts
+new file mode 100644
+index 0000000..41831a4
+--- /dev/null
++++ b/plugins/dsh-frontend-feedback/src/client/source-drafts.ts
+@@ -0,0 +1,197 @@
++export interface SourceDraftScope {
++  sessionId: string
++  rootPath: string
++  selectedFolder: string
++  path: string
++}
++
++export interface SourceDraftRecord extends SourceDraftScope {
++  key: string
++  baseHash: string
++  content: string
++  revision: number
++  updatedAt: number
++}
++
++export interface SourceDraftStorage {
++  get(key: string): Promise<SourceDraftRecord | undefined>
++  put(record: SourceDraftRecord): Promise<void>
++  delete(key: string): Promise<void>
++  deleteIfRevision(key: string, revision: number): Promise<boolean>
++  list(): Promise<SourceDraftRecord[]>
++}
++
++export type DraftRestore =
++  | { kind: 'none' }
++  | { kind: 'recovered'; content: string; revision: number }
++  | { kind: 'conflict'; content: string; revision: number; baseHash: string; diskHash: string }
++
++export type DraftPersistResult =
++  | { ok: true; revision: number }
++  | { ok: false; error: Error }
++
++export function diskSaveStatus(path: string, hasNewerEdit: boolean, persistenceWarning: string | null): string {
++  if (persistenceWarning !== null) return persistenceWarning
++  return hasNewerEdit
++    ? `已保存 ${path} 的先前版本；较新的修改仍未保存。`
++    : `已保存 ${path}。正在同步预览…`
++}
++
++export async function draftAfterQueuedOperation(
++  previousDraft: string,
++  operation: () => Promise<unknown>,
++  readCurrentDraft: () => string | undefined,
++): Promise<{ newerDraft: string | null; error: Error | null }> {
++  let error: Error | null = null
++  try {
++    await operation()
++  } catch (cause) {
++    error = cause instanceof Error ? cause : new Error(String(cause))
++  }
++  const current = readCurrentDraft()
++  return { newerDraft: current !== undefined && current !== previousDraft ? current : null, error }
++}
++
++const MAX_DRAFT_BYTES = 1_000_000
++const MAX_DRAFTS = 100
++
++function canonicalPart(value: string, root = false): string {
++  const normalized = value.trim().replaceAll('\\', '/').replace(/\/+$/, '')
++  return root && /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized
++}
++
++export function sourceDraftKey(scope: SourceDraftScope): string {
++  return ['v1', scope.sessionId, canonicalPart(scope.rootPath, true), canonicalPart(scope.selectedFolder), canonicalPart(scope.path)]
++    .map(encodeURIComponent)
++    .join(':')
++}
++
++export function isDraftCacheAllowed(path: string): boolean {
++  const name = path.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() ?? ''
++  if (name === '.env' || name.startsWith('.env.')) return false
++  if (/^(id_(rsa|dsa|ecdsa|ed25519))(\.|$)/.test(name)) return false
++  if (/(^|[._-])(?:client[._-]?secret|private[._-]?key|api[._-]?key|service[._-]?account|credentials?|secrets?)(?:[._-]|$)/.test(name)) return false
++  if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(name)) return false
++  return true
++}
++
++export class SourceDraftCache {
++  private readonly writes = new Map<string, Promise<void>>()
++  constructor(private readonly storage: SourceDraftStorage) {}
++
++  private async queued<T>(key: string, operation: () => Promise<T>): Promise<T> {
++    const previous = this.writes.get(key) ?? Promise.resolve()
++    let release!: () => void
++    const gate = new Promise<void>(resolve => { release = resolve })
++    const tail = previous.then(() => gate)
++    this.writes.set(key, tail)
++    await previous
++    try {
++      return await operation()
++    } finally {
++      release()
++      if (this.writes.get(key) === tail) this.writes.delete(key)
++    }
++  }
++
++  async persist(scope: SourceDraftScope, baseHash: string, content: string): Promise<DraftPersistResult> {
++    const key = sourceDraftKey(scope)
++    try {
++      return await this.queued(key, async () => {
++        if (!isDraftCacheAllowed(scope.path)) throw new Error('敏感文件草稿不会缓存在浏览器中。')
++        if (new TextEncoder().encode(content).byteLength > MAX_DRAFT_BYTES) throw new Error('草稿超过 1 MB 浏览器缓存上限。')
++        const previous = await this.storage.get(key)
++        const records = await this.storage.list()
++        if (previous === undefined && records.length >= MAX_DRAFTS) throw new Error('浏览器中已有 100 份未保存草稿；请先保存或丢弃一份。')
++        const revision = (previous?.revision ?? 0) + 1
++        await this.storage.put({ ...scope, key, baseHash, content, revision, updatedAt: Date.now() })
++        return { ok: true, revision }
++      })
++    } catch (error) {
++      return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
++    }
++  }
++
++  async restore(scope: SourceDraftScope, diskHash: string): Promise<DraftRestore> {
++    if (!isDraftCacheAllowed(scope.path)) return { kind: 'none' }
++    return this.queued(sourceDraftKey(scope), async () => {
++      const record = await this.storage.get(sourceDraftKey(scope))
++      if (record === undefined) return { kind: 'none' }
++      if (record.baseHash === diskHash) return { kind: 'recovered', content: record.content, revision: record.revision }
++      return { kind: 'conflict', content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash }
++    })
++  }
++
++  clearSaved(scope: SourceDraftScope, revision: number): Promise<boolean> {
++    const key = sourceDraftKey(scope)
++    return this.queued(key, () => this.storage.deleteIfRevision(key, revision))
++  }
++
++  discard(scope: SourceDraftScope): Promise<void> {
++    const key = sourceDraftKey(scope)
++    return this.queued(key, () => this.storage.delete(key))
++  }
++}
++
++export class MemoryDraftStorage implements SourceDraftStorage {
++  readonly records = new Map<string, SourceDraftRecord>()
++  failure: Error | null = null
++  private check(): void { if (this.failure !== null) throw this.failure }
++  async get(key: string): Promise<SourceDraftRecord | undefined> { this.check(); return this.records.get(key) }
++  async put(record: SourceDraftRecord): Promise<void> { this.check(); this.records.set(record.key, structuredClone(record)) }
++  async delete(key: string): Promise<void> { this.check(); this.records.delete(key) }
++  async deleteIfRevision(key: string, revision: number): Promise<boolean> {
++    this.check()
++    if (this.records.get(key)?.revision !== revision) return false
++    this.records.delete(key)
++    return true
++  }
++  async list(): Promise<SourceDraftRecord[]> { this.check(); return Array.from(this.records.values()) }
++}
++
++export class IndexedDbDraftStorage implements SourceDraftStorage {
++  private readonly database: Promise<IDBDatabase>
++  constructor(indexedDb: IDBFactory = window.indexedDB) {
++    this.database = new Promise((resolve, reject) => {
++      const request = indexedDb.open('dsh-pagecraft-source-drafts', 1)
++      request.onupgradeneeded = () => request.result.createObjectStore('drafts', { keyPath: 'key' })
++      request.onsuccess = () => resolve(request.result)
++      request.onerror = () => reject(request.error ?? new Error('无法打开浏览器草稿数据库。'))
++    })
++  }
++  private async request<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
++    const db = await this.database
++    return new Promise((resolve, reject) => {
++      const transaction = db.transaction('drafts', mode)
++      const request = action(transaction.objectStore('drafts'))
++      let result: T
++      request.onsuccess = () => { result = request.result }
++      request.onerror = () => reject(request.error ?? new Error('浏览器草稿存储失败。'))
++      transaction.oncomplete = () => resolve(result)
++      transaction.onerror = () => reject(transaction.error ?? new Error('浏览器草稿事务失败。'))
++      transaction.onabort = () => reject(transaction.error ?? new Error('浏览器草稿事务失败。'))
++    })
++  }
++  get(key: string): Promise<SourceDraftRecord | undefined> { return this.request('readonly', store => store.get(key)) }
++  async put(record: SourceDraftRecord): Promise<void> { await this.request('readwrite', store => store.put(record)) }
++  async delete(key: string): Promise<void> { await this.request('readwrite', store => store.delete(key)) }
++  list(): Promise<SourceDraftRecord[]> { return this.request('readonly', store => store.getAll()) }
++  async deleteIfRevision(key: string, revision: number): Promise<boolean> {
++    const db = await this.database
++    return new Promise((resolve, reject) => {
++      const transaction = db.transaction('drafts', 'readwrite')
++      const store = transaction.objectStore('drafts')
++      const get = store.get(key)
++      let removed = false
++      get.onsuccess = () => {
++        if ((get.result as SourceDraftRecord | undefined)?.revision === revision) {
++          store.delete(key)
++          removed = true
++        }
++      }
++      transaction.oncomplete = () => resolve(removed)
++      transaction.onerror = () => reject(transaction.error ?? new Error('浏览器草稿清理失败。'))
++      transaction.onabort = () => reject(transaction.error ?? new Error('浏览器草稿清理失败。'))
++    })
++  }
++}
+diff --git a/plugins/dsh-frontend-feedback/src/workspace.ts b/plugins/dsh-frontend-feedback/src/workspace.ts
+index 1df51c4..9e2ea12 100644
+--- a/plugins/dsh-frontend-feedback/src/workspace.ts
++++ b/plugins/dsh-frontend-feedback/src/workspace.ts
+@@ -119,6 +119,16 @@ const TEXT_EXTENSIONS = new Set([
+ 
+ const IMAGE_EXTENSIONS = new Set(['.gif', '.jpeg', '.jpg', '.png', '.webp'])
+ 
++const TEXT_FILENAMES = new Set([
++  '.editorconfig',
++  '.gitattributes',
++  '.gitignore',
++  'containerfile',
++  'dockerfile',
++  'license',
++  'makefile',
++])
++
+ function extensionOf(path: string): string {
+   const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+   const dot = path.lastIndexOf('.')
+@@ -149,7 +159,8 @@ export function normalizeWorkspacePath(value: unknown): string | null {
+ }
+ 
+ export function isWorkspaceTextFile(path: string): boolean {
+-  return TEXT_EXTENSIONS.has(extensionOf(path))
++  const name = path.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() ?? ''
++  return TEXT_EXTENSIONS.has(extensionOf(path)) || TEXT_FILENAMES.has(name)
+ }
+ 
+ export function isWorkspaceImageFile(path: string): boolean {
+diff --git a/plugins/dsh-frontend-feedback/src/workspace-explorer.ts b/plugins/dsh-frontend-feedback/src/workspace-explorer.ts
+index cfcb467..65e1c78 100644
+--- a/plugins/dsh-frontend-feedback/src/workspace-explorer.ts
++++ b/plugins/dsh-frontend-feedback/src/workspace-explorer.ts
+@@ -257,7 +257,13 @@ export async function readWorkspaceFile(
+   }
+   const body = await readFile(resolved.target)
+   if (body.includes(0)) throw new WorkspaceExplorerError('文件包含二进制内容，不能作为文本编辑', 415, 'WORKSPACE_BINARY_FILE')
+-  return fileSnapshot(resolved.relativePath, body.toString('utf8'), metadata.mtime.toISOString())
++  let content: string
++  try {
++    content = new TextDecoder('utf-8', { fatal: true }).decode(body)
++  } catch {
++    throw new WorkspaceExplorerError('文件不是有效的 UTF-8 文本，不能编辑', 415, 'WORKSPACE_BINARY_FILE')
++  }
++  return fileSnapshot(resolved.relativePath, content, metadata.mtime.toISOString())
+ }
+ 
+ function imageMimeType(path: string): string | null {
+diff --git a/plugins/dsh-frontend-feedback/tests/source-drafts.test.ts b/plugins/dsh-frontend-feedback/tests/source-drafts.test.ts
+new file mode 100644
+index 0000000..2460929
+--- /dev/null
++++ b/plugins/dsh-frontend-feedback/tests/source-drafts.test.ts
+@@ -0,0 +1,134 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import {
++  MemoryDraftStorage,
++  SourceDraftCache,
++  diskSaveStatus,
++  draftAfterQueuedOperation,
++  isDraftCacheAllowed,
++  sourceDraftKey,
++} from '../src/client/source-drafts.ts'
++
++const scope = { sessionId: 'session-a', rootPath: 'C:\\Work\\Site', selectedFolder: 'app', path: 'src/main.ts' }
++
++test('draft keys isolate session, canonical root, folder, and relative path', () => {
++  assert.equal(sourceDraftKey(scope), sourceDraftKey({ ...scope, rootPath: 'c:/work/site/' }))
++  assert.notEqual(sourceDraftKey(scope), sourceDraftKey({ ...scope, sessionId: 'session-b' }))
++  assert.notEqual(sourceDraftKey(scope), sourceDraftKey({ ...scope, selectedFolder: 'other' }))
++  assert.notEqual(sourceDraftKey(scope), sourceDraftKey({ ...scope, path: 'src/other.ts' }))
++})
++
++test('draft survives a new cache instance and reports disk conflicts', async () => {
++  const storage = new MemoryDraftStorage()
++  const first = new SourceDraftCache(storage)
++  const saved = await first.persist(scope, 'disk-a', 'edited')
++  assert.equal(saved.ok, true)
++  const second = new SourceDraftCache(storage)
++  assert.deepEqual(await second.restore(scope, 'disk-a'), { kind: 'recovered', content: 'edited', revision: 1 })
++  assert.deepEqual(await second.restore(scope, 'disk-b'), {
++    kind: 'conflict', content: 'edited', revision: 1, baseHash: 'disk-a', diskHash: 'disk-b',
++  })
++})
++
++test('clearing saved revision N preserves edits persisted as N+1', async () => {
++  const storage = new MemoryDraftStorage()
++  const cache = new SourceDraftCache(storage)
++  const first = await cache.persist(scope, 'disk-a', 'one')
++  const second = await cache.persist(scope, 'disk-a', 'two')
++  assert.equal(first.ok && first.revision, 1)
++  assert.equal(second.ok && second.revision, 2)
++  assert.equal(await cache.clearSaved(scope, 1), false)
++  assert.equal((await cache.restore(scope, 'disk-a')).kind, 'recovered')
++  assert.equal(await cache.clearSaved(scope, 2), true)
++  assert.deepEqual(await cache.restore(scope, 'disk-a'), { kind: 'none' })
++})
++
++test('storage failure is returned to callers as a visible warning condition', async () => {
++  const storage = new MemoryDraftStorage()
++  storage.failure = new Error('quota exceeded')
++  const result = await new SourceDraftCache(storage).persist(scope, 'disk-a', 'edited')
++  assert.equal(result.ok, false)
++  if (!result.ok) assert.match(result.error.message, /quota exceeded/)
++})
++
++test('explicit discard deletes only the selected file draft', async () => {
++  const storage = new MemoryDraftStorage()
++  const cache = new SourceDraftCache(storage)
++  await cache.persist(scope, 'disk-a', 'one')
++  const other = { ...scope, path: 'src/other.ts' }
++  await cache.persist(other, 'disk-b', 'two')
++  await cache.discard(scope)
++  assert.deepEqual(await cache.restore(scope, 'disk-a'), { kind: 'none' })
++  assert.equal((await cache.restore(other, 'disk-b')).kind, 'recovered')
++})
++
++test('discard waits for an in-flight persist and cannot be resurrected', async () => {
++  class PausedStorage extends MemoryDraftStorage {
++    release: (() => void) | null = null
++    override async put(record: Parameters<MemoryDraftStorage['put']>[0]): Promise<void> {
++      await new Promise<void>(resolve => { this.release = resolve })
++      await super.put(record)
++    }
++  }
++  const storage = new PausedStorage()
++  const cache = new SourceDraftCache(storage)
++  const pending = cache.persist(scope, 'disk-a', 'one')
++  while (storage.release === null) await Promise.resolve()
++  const discarded = cache.discard(scope)
++  storage.release()
++  await pending
++  await discarded
++  assert.deepEqual(await cache.restore(scope, 'disk-a'), { kind: 'none' })
++})
++
++test('draft capacity fails visibly without evicting existing unsaved records', async () => {
++  const storage = new MemoryDraftStorage()
++  const cache = new SourceDraftCache(storage)
++  for (let index = 0; index < 100; index += 1) {
++    assert.equal((await cache.persist({ ...scope, path: `file-${index}.ts` }, 'disk', String(index))).ok, true)
++  }
++  const overflow = await cache.persist({ ...scope, path: 'overflow.ts' }, 'disk', 'overflow')
++  assert.equal(overflow.ok, false)
++  if (!overflow.ok) assert.match(overflow.error.message, /100/)
++  assert.equal((await storage.list()).length, 100)
++  assert.equal((await cache.restore({ ...scope, path: 'file-0.ts' }, 'disk')).kind, 'recovered')
++})
++
++test('sensitive credential filenames are never cacheable', () => {
++  for (const path of ['.env', '.env.local', 'server.pem', 'id_rsa', 'credentials.json', 'service-account.json', 'client-secret.json', 'my-credentials.json', 'private-key.json', 'prod_api-key.yaml']) {
++    assert.equal(isDraftCacheAllowed(path), false, path)
++  }
++  for (const path of ['.gitignore', 'LICENSE', 'Dockerfile', 'src/main.ts']) {
++    assert.equal(isDraftCacheAllowed(path), true, path)
++  }
++})
++
++test('restore refuses legacy sensitive records without reading their contents', async () => {
++  const storage = new MemoryDraftStorage()
++  const sensitive = { ...scope, path: 'my-credentials.json' }
++  storage.records.set(sourceDraftKey(sensitive), { ...sensitive, key: sourceDraftKey(sensitive), baseHash: 'disk', content: 'secret', revision: 1, updatedAt: 1 })
++  assert.deepEqual(await new SourceDraftCache(storage).restore(sensitive, 'disk'), { kind: 'none' })
++})
++
++test('disk save status preserves persistence failures and newer-edit state', () => {
++  assert.equal(diskSaveStatus('a.ts', true, 'quota warning'), 'quota warning')
++  assert.match(diskSaveStatus('a.ts', true, null), /较新的修改仍未保存/)
++  assert.match(diskSaveStatus('a.ts', false, null), /正在同步预览/)
++})
++
++test('post-save re-read observes edit C made while cleanup of saved B awaits', async () => {
++  let current = 'B'
++  let release!: () => void
++  const cleanup = new Promise<void>(resolve => { release = resolve })
++  const pending = draftAfterQueuedOperation('B', () => cleanup, () => current)
++  current = 'C'
++  release()
++  assert.deepEqual(await pending, { newerDraft: 'C', error: null })
++})
++
++test('post-operation re-read preserves cleanup errors alongside the newest edit', async () => {
++  const failure = new Error('cleanup failed')
++  const result = await draftAfterQueuedOperation('B', async () => { throw failure }, () => 'C')
++  assert.equal(result.newerDraft, 'C')
++  assert.equal(result.error, failure)
++})
+diff --git a/plugins/dsh-frontend-feedback/tests/indexeddb-draft-storage.test.ts b/plugins/dsh-frontend-feedback/tests/indexeddb-draft-storage.test.ts
+new file mode 100644
+index 0000000..3736113
+--- /dev/null
++++ b/plugins/dsh-frontend-feedback/tests/indexeddb-draft-storage.test.ts
+@@ -0,0 +1,22 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { IndexedDbDraftStorage } from '../src/client/source-drafts.ts'
++
++test('IndexedDB writes reject when transaction aborts after request success', async () => {
++  const transaction: any = {
++    error: new Error('late abort'),
++    objectStore: () => ({ put: () => request }),
++  }
++  const request: any = { result: undefined }
++  const database: any = { transaction: () => transaction }
++  const openRequest: any = { result: database }
++  const factory: any = { open: () => openRequest }
++  const storage = new IndexedDbDraftStorage(factory)
++  queueMicrotask(() => openRequest.onsuccess())
++  const pending = storage.put({ key: 'k', sessionId: 's', rootPath: '/', selectedFolder: '.', path: 'a.ts', baseHash: 'h', content: 'x', revision: 1, updatedAt: 1 })
++  await Promise.resolve()
++  await Promise.resolve()
++  request.onsuccess()
++  transaction.onabort()
++  await assert.rejects(pending, /late abort/)
++})
+diff --git a/plugins/dsh-frontend-feedback/tests/workspace-contracts.test.ts b/plugins/dsh-frontend-feedback/tests/workspace-contracts.test.ts
+index 1c24842..68ee6d5 100644
+--- a/plugins/dsh-frontend-feedback/tests/workspace-contracts.test.ts
++++ b/plugins/dsh-frontend-feedback/tests/workspace-contracts.test.ts
+@@ -23,7 +23,7 @@ test('workspace paths allow root and descendants but reject escape paths', () =>
+ })
+ 
+ test('workspace contracts cover frontend text and stable session storage', () => {
+-  for (const path of ['index.html', 'App.tsx', 'Slide.vue', 'Deck.svelte', 'copy.json', 'notes.mdx', 'icon.svg']) {
++  for (const path of ['index.html', 'App.tsx', 'Slide.vue', 'Deck.svelte', 'copy.json', 'notes.mdx', 'icon.svg', '.gitignore', '.gitattributes', '.editorconfig', 'Dockerfile', 'Containerfile', 'LICENSE', 'Makefile']) {
+     assert.equal(isWorkspaceTextFile(path), true, path)
+   }
+   assert.equal(isWorkspaceTextFile('machine.png'), false)
+diff --git a/plugins/dsh-frontend-feedback/tests/workspace-explorer.test.ts b/plugins/dsh-frontend-feedback/tests/workspace-explorer.test.ts
+index 82d8f1b..239f7c7 100644
+--- a/plugins/dsh-frontend-feedback/tests/workspace-explorer.test.ts
++++ b/plugins/dsh-frontend-feedback/tests/workspace-explorer.test.ts
+@@ -67,6 +67,19 @@ test('workspace writes real files atomically and refuses stale hashes', async (t
+   )
+ })
+ 
++test('extensionless project files require valid UTF-8 text', async (t) => {
++  const cwd = await createWorkspaceFixture(t)
++  await writeFile(join(cwd, 'LICENSE'), 'MIT\n')
++  await writeFile(join(cwd, '.gitignore'), 'dist/\n')
++  assert.equal((await readWorkspaceFile(cwd, '.', 'LICENSE')).content, 'MIT\n')
++  assert.equal((await readWorkspaceFile(cwd, '.', '.gitignore')).content, 'dist/\n')
++  await writeFile(join(cwd, 'LICENSE'), Buffer.from([0xff, 0xfe, 0xfd]))
++  await assert.rejects(
++    () => readWorkspaceFile(cwd, '.', 'LICENSE'),
++    (error: any) => error.code === 'WORKSPACE_BINARY_FILE',
++  )
++})
++
+ test('workspace mutations stay inside the selected root and history restores by hash', async (t) => {
+   const cwd = await createWorkspaceFixture(t)
+   await createWorkspaceEntry(cwd, 'slides', { parent: 'slides', name: 'notes.md', kind: 'file', content: '# Notes\n' })
+

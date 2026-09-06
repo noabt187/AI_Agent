@@ -52,6 +52,8 @@ import {
   isDraftCacheAllowed,
 } from './source-drafts.ts'
 import type { SourceDraftScope } from './source-drafts.ts'
+import { normalizePresentationImageSlotSelection } from '../presentation.ts'
+import type { PresentationImageSlotSelection } from '../presentation.ts'
 
 interface WorkspaceExplorerProps {
   sessionId: string
@@ -60,6 +62,7 @@ interface WorkspaceExplorerProps {
   onRefresh(): void
   onNavigate(url: string): void
   onAnnotationSelection(selection: FeedbackSelection): void
+  onImageSlotSelection(selection: PresentationImageSlotSelection): void
 }
 
 type OpenFile = SourceDocument
@@ -185,6 +188,7 @@ export function WorkspaceExplorer({
   onRefresh,
   onNavigate,
   onAnnotationSelection,
+  onImageSlotSelection,
 }: WorkspaceExplorerProps): ReactElement {
   const fallbackLayoutKey = useMemo(() => `dsh-pagecraft.workspace-layout:${encodeURIComponent(sessionId)}`, [sessionId])
   const initialLayout = useMemo(() => readLayout(fallbackLayoutKey), [fallbackLayoutKey])
@@ -492,6 +496,18 @@ export function WorkspaceExplorer({
         setStatus('已找到页面文字。输入新内容后点击“修改文字”。')
         return
       }
+      if (data?.type === 'dsh-pagecraft-image-slot-selected') {
+        const imageSlot = normalizePresentationImageSlotSelection(data)
+        if (imageSlot === null) {
+          setStatus('图片槽位信息无效，请刷新预览后重试。')
+          return
+        }
+        setPreviewSelectionMode(null)
+        postPreviewMode(null)
+        setStatus(`已选择图片槽位：${imageSlot.label ?? imageSlot.slotId}`)
+        onImageSlotSelection(imageSlot)
+        return
+      }
       if (data?.type === 'dsh-pagecraft-text-verification' && typeof data.transactionId === 'string') {
         const pending = pendingVerificationRef.current
         if (pending === null || pending.started.transactionId !== data.transactionId) return
@@ -524,7 +540,7 @@ export function WorkspaceExplorer({
     }
     window.addEventListener('message', onPreviewMessage)
     return () => window.removeEventListener('message', onPreviewMessage)
-  }, [completeTextVerification, onAnnotationSelection, onClose, onNavigate, previewSelectionMode])
+  }, [completeTextVerification, onAnnotationSelection, onClose, onImageSlotSelection, onNavigate, previewSelectionMode])
 
   useEffect(() => {
     return () => {

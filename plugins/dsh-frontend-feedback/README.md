@@ -182,7 +182,7 @@ Run `npm run build` after source changes and refresh Harness. `npm run check` bu
 - Document import supports PDF, DOCX, Markdown, and UTF-8 text up to 25 MB. Scanned PDFs require OCR and are rejected in this version.
 - Presentation mode currently creates and refines browser-based decks; native PPTX/PDF export and master-slide editing are future work.
 - Direct text editing is intentionally conservative: dynamic API data, computed runtime strings, ambiguous literals, generated bundles, and source outside the opened folder are never guessed. PageCraft decks use the owning slide and its element path to edit HTML stored inside `deck.json`; stable `data-pagecraft-text-key` markers remain supported but are not required.
-- Managed image-slot editing requires a PageCraft presentation manifest and stable `data-pagecraft-image-key` markers. Older decks can be migrated only when PageCraft can identify one unambiguous deck source.
+- Managed image-slot editing requires a PageCraft presentation manifest and deck-wide unique `data-pagecraft-image-slot` markers. Each slot must contain exactly one `<img>` so PageCraft can update it safely; legacy `slide.visual` bindings remain supported.
 
 ## Roadmap
 

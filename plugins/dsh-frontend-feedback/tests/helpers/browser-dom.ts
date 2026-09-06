@@ -28,6 +28,7 @@ export function installBrowserDom(): { window: Window; document: Document; clean
     'Node',
     'Element',
     'HTMLElement',
+    'HTMLImageElement',
     'HTMLButtonElement',
     'HTMLInputElement',
     'HTMLTextAreaElement',
