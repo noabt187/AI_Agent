@@ -73,6 +73,8 @@ export type SessionDetail = {
 }
 
 export type RunRecord = {
+  origin?: 'composer' | 'plugin'
+  resultMeta?: { action: 'chat' | 'ask_user' | 'confirm' | 'done'; protocolFallback?: true }
   taskId?: string
   taskRevision?: number
   taskPhase?: TaskState['phase']
@@ -172,6 +174,10 @@ export type ManagedSkill = {
   source: 'builtin' | 'custom'
 }
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number, public readonly code?: string) { super(message) }
+}
+
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -183,7 +189,7 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await res.json()
   if (!res.ok) {
     const message = typeof payload?.error === 'string' ? payload.error : `HTTP ${res.status}`
-    throw new Error(message)
+    throw new ApiError(message, res.status, typeof payload?.code === 'string' ? payload.code : undefined)
   }
   return payload as T
 }
@@ -297,8 +303,8 @@ export async function deleteSkill(id: string): Promise<{ deleted: boolean }> {
   })
 }
 
-export async function abortSession(sessionId: string): Promise<void> {
-  await jsonRequest<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' })
+export async function abortSession(sessionId: string, expectedRunId?: string): Promise<void> {
+  await jsonRequest<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST', body: JSON.stringify({ expectedRunId }) })
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -345,20 +351,23 @@ export async function streamPrompt(
   onEvent: (event: StreamEvent) => void,
   onAccepted?: () => void,
   control?: TaskInputControl,
+  origin?: RunRecord['origin'],
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, control }),
+    body: JSON.stringify({ prompt, control, origin }),
   })
 
   if (!res.ok || !res.body) {
     let message = `HTTP ${res.status}`
+    let code: string | undefined
     try {
       const payload = await res.json()
       if (typeof payload?.error === 'string') message = payload.error
+      if (typeof payload?.code === 'string') code = payload.code
     } catch {}
-    throw new Error(message)
+    throw new ApiError(message, res.status, code)
   }
   onAccepted?.()
 

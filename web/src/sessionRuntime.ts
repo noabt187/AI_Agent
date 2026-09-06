@@ -1,10 +1,11 @@
 import type { SessionDetail, StreamEvent } from './api'
 import { partialOutputText, sessionTimeline, type TimelineItem } from './sessionTimeline'
 import type { TaskState } from './api'
+import type { InteractionRuntime } from './taskInteraction'
 
 const taskLabels: Record<TaskState['phase'], string> = { active: '本轮运行结束', awaiting_input: '等待补充信息', awaiting_confirmation: '等待确认', paused: '任务已暂停', completed: '任务完成', cancelled: '任务已取消' }
 
-type RequestState = { promptId: string; raw: string; assistantId?: string; segment: number; terminal: boolean }
+type RequestState = { promptId: string; runId?: string; raw: string; assistantId?: string; segment: number; terminal: boolean }
 type SessionView = {
   timeline: TimelineItem[]
   activities: { id:string; sessionId:string; content:string }[]
@@ -12,7 +13,7 @@ type SessionView = {
   deltaCount: number
   aborting: boolean
 }
-type SessionState = SessionView & { requests: Map<string, RequestState>; serverRunning: boolean; revision: number; readSequence: number }
+type SessionState = SessionView & { detail: SessionDetail | null; syncing: boolean; requests: Map<string, RequestState>; serverRunning: boolean; revision: number; readSequence: number }
 export type SnapshotToken = { revision: number; sequence: number }
 
 /** Transport buffers and execution state are owned by sessions, never by the selected view. */
@@ -21,12 +22,19 @@ export class SessionRuntime {
   private state(id: string): SessionState {
     let state = this.sessions.get(id)
     if (!state) {
-      state = { timeline:[], activities:[], status:'就绪', deltaCount:0, aborting:false, requests:new Map(), serverRunning:false, revision:0, readSequence:0 }
+      state = { detail:null, syncing:true, timeline:[], activities:[], status:'就绪', deltaCount:0, aborting:false, requests:new Map(), serverRunning:false, revision:0, readSequence:0 }
       this.sessions.set(id, state)
     }
     return state
   }
   view(id: string): SessionView { return this.state(id) }
+  detail(id: string): SessionDetail | null { return this.state(id).detail }
+  interactionRuntime(id: string): InteractionRuntime {
+    const s = this.state(id)
+    return { running: this.isRunning(id), aborting: s.aborting, syncing: s.syncing,
+      submitting: [...s.requests.values()].some(r => !r.runId && !r.terminal) }
+  }
+  syncing(id: string): void { const s = this.state(id); s.syncing = true; s.revision++ }
   hasStreams(id: string): boolean { return this.state(id).requests.size > 0 }
   isRunning(id: string): boolean {
     const s = this.state(id)
@@ -35,12 +43,14 @@ export class SessionRuntime {
   begin(id: string, requestId: string, prompt: string): void {
     const s = this.state(id), promptId = `${requestId}:prompt`
     s.requests.set(requestId, { promptId, raw:'', segment:0, terminal:false })
+    s.syncing = false
     s.timeline = [...s.timeline, { id:promptId, role:'user', content:prompt }]
     s.activities = []; s.status = '模型思考中'; s.deltaCount = 0; s.revision++
   }
   end(id: string, requestId: string, recover = false): void {
     const s = this.state(id)
     s.requests.delete(requestId)
+    s.syncing = recover
     if (!s.requests.size) { s.serverRunning = recover; s.aborting = false; s.activities = [] }
     s.status = this.isRunning(id) ? '正在执行' : '就绪'
     s.revision++
@@ -59,6 +69,8 @@ export class SessionRuntime {
     const s = this.state(id)
     if (detail.id !== id || token.revision !== s.revision || token.sequence !== s.readSequence) return false
     s.serverRunning = detail.running
+    s.detail = structuredClone(detail)
+    s.syncing = false
     // Live buffers remain complete even when switching away and back. Don't mix a
     // lagging disk snapshot into a still-connected stream's optimistic messages.
     if (!s.requests.size) {
@@ -76,14 +88,30 @@ export class SessionRuntime {
     s.revision++
     if (event.type === 'run') {
       const run = event.run
+      if (r.runId && r.runId !== run.id) return
+      const old = s.detail?.runs?.find(row => row.id === run.id)
+      if (old && !['queued', 'running'].includes(old.status)) return
+      r.runId = run.id
+      if (run.status === 'running') s.syncing = false
+      if (s.detail) s.detail = { ...s.detail, runs: [...(s.detail.runs ?? []).filter(row => row.id !== run.id), run] }
       const promptId = run.userMessageId || r.promptId
       s.timeline = s.timeline.map(item => item.id === r.promptId ? {...item,id:promptId} : item)
       r.promptId = promptId
       r.terminal = !['queued','running'].includes(run.status)
-      if (r.terminal) s.serverRunning = false
+      if (r.terminal) { s.serverRunning = false; s.syncing = true }
       if (run.status === 'running' || r.terminal) s.aborting = false
       const statusItem = sessionTimeline([], [run]).find(item=>item.id===`${run.id}:status`)!
       this.put(s, statusItem)
+      return
+    }
+    if (event.type === 'task') {
+      // Do not accept task events from an old request, queued run or terminal run.
+      if (r.terminal || r.runId !== event.runId || event.task.lastRunId !== event.runId) return
+      const run = s.detail?.runs?.find(row => row.id === event.runId)
+      if (run?.status !== 'running' || !s.detail) return
+      const current = s.detail.state.task
+      if (current?.id === event.task.id && current.revision > event.task.revision) return
+      s.detail = { ...s.detail, state: { ...s.detail.state, task: event.task } }
       return
     }
     if (event.type === 'start') { r.raw=''; r.assistantId=undefined; s.aborting=false; s.deltaCount=0; s.status='模型思考中'; return }
@@ -115,7 +143,7 @@ export class SessionRuntime {
       this.put(s,{id:`${requestId}:error:${s.revision}`,role:'error',content:event.message}); s.status='出错'; return
     }
     if (event.type === 'aborted') { r.terminal=true; s.status='操作已取消'; return }
-    if (event.type === 'done') { r.terminal=true; s.serverRunning=false; s.aborting=false; s.activities=[]; s.status=this.isRunning(id)?'下一条请求排队中':'就绪' }
+    if (event.type === 'done') { r.terminal=true; s.syncing=true; s.serverRunning=false; s.aborting=false; s.activities=[]; s.status=this.isRunning(id)?'下一条请求排队中':'就绪' }
   }
   private put(state: SessionState, item: TimelineItem) {
     state.timeline = state.timeline.some(row=>row.id===item.id)
