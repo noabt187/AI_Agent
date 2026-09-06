@@ -83,12 +83,13 @@ export type AgentResult =
   | { action: 'done'; message: string }
 
 export type AgentEvent =
+  | { type: 'run'; run: import('../state/runStore.js').RunRecord }
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
   | { type: 'tool_call'; name: string; arguments: string }
   | { type: 'tool_result'; name: string; result: string }
   | { type: 'result'; result: AgentResult }
   | { type: 'aborted'; message: string }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; recoverable?: boolean }
 
 export type AgentEventHandler = (event: AgentEvent) => void | Promise<void>

@@ -22,6 +22,7 @@ import {
   feedbackDraftStorageKey,
   isFeedbackDraftEmpty,
   isFeedbackSelection,
+  isPreviewTargetCurrentHost,
   movePreviewNavigation,
   normalizePreviewUrl,
   previewHistoryStorageKey,
@@ -31,6 +32,7 @@ import {
   resolvePersistedPreviewNavigation,
   resolvePersistedPreviewUrl,
   resolvePreviewFrameLocation,
+  suppressCurrentHostPreview,
 } from '../shared.ts'
 import type { AreaOperation, FeedbackComment, FeedbackDraftState, FeedbackSelection, PreviewNavigationState } from '../shared.ts'
 import { PresentationDocumentDialog, SlideRail } from './presentation.tsx'
@@ -177,10 +179,10 @@ function removeStoredValue(key: string): void {
 }
 
 function readPersistedPreviewNavigation(sessionId: string): PreviewNavigationState {
-  return resolvePersistedPreviewNavigation(
+  return suppressCurrentHostPreview(resolvePersistedPreviewNavigation(
     readStoredValue(previewHistoryStorageKey(sessionId)),
     resolvePersistedPreviewUrl(readStoredValue(previewUrlStorageKey(sessionId))),
-  )
+  ), window.location.href)
 }
 
 function persistPreviewNavigation(sessionId: string, navigation: PreviewNavigationState): void {
@@ -221,7 +223,7 @@ function FrontendFeedbackPanel({
   const initialDraft = useMemo(() => readPersistedFeedbackDraft(storageId), [storageId])
   const navigationRef = useRef(initialNavigation)
   const initialPreviewUrl = currentPreviewUrl(initialNavigation)
-  const [urlDraft, setUrlDraft] = useState(initialPreviewUrl)
+  const [urlDraft, setUrlDraft] = useState(initialPreviewUrl ?? '')
   const [navigation, setNavigation] = useState(initialNavigation)
   const [revision, setRevision] = useState(0)
   const [selectionMode, setSelectionMode] = useState<SelectionMode | null>(initialDraft.selection?.kind ?? null)
@@ -257,7 +259,7 @@ function FrontendFeedbackPanel({
   const canGoForward = navigation.index < navigation.entries.length - 1
 
   const previewFrame = useMemo(() => {
-    return resolvePreviewFrameLocation(loadedUrl, window.location.href, revision)
+    return loadedUrl === null ? null : resolvePreviewFrameLocation(loadedUrl, window.location.href, revision)
   }, [loadedUrl, revision])
 
   useEffect(() => {
@@ -300,7 +302,7 @@ function FrontendFeedbackPanel({
     navigationRef.current = next
     persistPreviewNavigation(storageId, next)
     setNavigation(next)
-    setUrlDraft(currentPreviewUrl(next))
+    setUrlDraft(currentPreviewUrl(next) ?? '')
     setRevision(value => value + 1)
     setSelection(null)
     setSelectionMode(null)
@@ -317,7 +319,10 @@ function FrontendFeedbackPanel({
     try {
       const targetUrl = normalizePreviewUrl(rawUrl)
       if (targetUrl === null) throw new Error('只支持有效的 http 或 https 地址')
-      commitNavigation(pushPreviewNavigation(navigationRef.current, targetUrl), nextStatus)
+      const status = isPreviewTargetCurrentHost(targetUrl, window.location.href)
+        ? '警告：此地址是 PageCraft 当前宿主，可能形成循环预览；已按你的明确操作继续打开。'
+        : nextStatus
+      commitNavigation(pushPreviewNavigation(navigationRef.current, targetUrl), status)
     } catch (error) {
       setStatus(`地址无效：${describeError(error)}`)
     }
@@ -330,6 +335,10 @@ function FrontendFeedbackPanel({
   }, [commitNavigation])
 
   const refreshPreview = useCallback((loadingStatus: string, readyStatus: string) => {
+    if (currentPreviewUrl(navigationRef.current) === null) {
+      setStatus('尚未设置预览地址。文件工作区仍可独立使用。')
+      return
+    }
     refreshNoticeRef.current = readyStatus
     setSelection(null)
     setSelectionMode(null)
@@ -646,20 +655,23 @@ function FrontendFeedbackPanel({
           <button
             type="button"
             aria-label="刷新"
+            disabled={loadedUrl === null}
             onClick={() => refreshPreview('正在强制刷新预览…', '预览已强制刷新并重新获取页面。')}
-            style={styles.iconButton}
+            style={{ ...styles.iconButton, ...(loadedUrl === null ? styles.iconButtonDisabled : {}) }}
             title="刷新预览"
           >↻</button>
           <div style={styles.modeGroup}>
             <button
               type="button"
               title="点击已有 DOM 元素进行评注"
+              disabled={loadedUrl === null}
               onClick={() => setAnnotatorMode(selectionMode === 'element' ? null : 'element')}
               style={{ ...styles.modeButton, ...(selectionMode === 'element' ? styles.modeButtonActive : {}) }}
             >选择元素</button>
             <button
               type="button"
               title="拖动框选区域；Alt 关闭吸附，Shift 锁定正方形"
+              disabled={loadedUrl === null}
               onClick={() => setAnnotatorMode(selectionMode === 'area' ? null : 'area')}
               style={{ ...styles.modeButton, ...(selectionMode === 'area' ? styles.areaModeButtonActive : {}) }}
             >框选区域</button>
@@ -679,7 +691,12 @@ function FrontendFeedbackPanel({
           />
         ) : null}
         <div style={styles.previewShell}>
-          <iframe
+          {previewFrame === null ? (
+            <div data-pagecraft-empty-preview="" style={styles.emptyPreview}>
+              <strong>尚未打开预览</strong>
+              <span>输入 http 或 https 地址后打开；文件工作区无需预览地址即可使用。</span>
+            </div>
+          ) : <iframe
             ref={iframeRef}
             title="前端页面评注预览"
             src={previewFrame.src}
@@ -702,7 +719,7 @@ function FrontendFeedbackPanel({
                 }, '*')
               }
             }}
-          />
+          />}
         </div>
 
         <aside style={styles.sidebar}>
@@ -849,7 +866,7 @@ function FrontendFeedbackPanel({
       {showSourceWorkspace ? (
         <WorkspaceExplorer
           sessionId={sessionId}
-          previewSrc={previewFrame.src}
+          previewSrc={previewFrame?.src ?? null}
           onClose={() => setShowSourceWorkspace(false)}
           onRefresh={() => refreshPreview('正在刷新文件工作区预览…', '本地文件修改已保存，预览已同步。')}
           onNavigate={(url) => navigatePreview(url, '正在打开文件工作区预览中的链接…')}
@@ -985,6 +1002,7 @@ const styles: Record<string, any> = {
   },
   presentationWorkspace: { gridTemplateColumns: 'minmax(170px, 220px) minmax(0, 1fr) minmax(280px, 340px)' },
   previewShell: { minWidth: 0, minHeight: 0, padding: 12, background: '#090d0b' },
+  emptyPreview: { width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, border: `1px dashed ${colors.border}`, borderRadius: 10, color: colors.muted, textAlign: 'center' },
   iframe: { display: 'block', width: '100%', height: '100%', border: `1px solid ${colors.border}`, borderRadius: 10, background: 'white' },
   sidebar: { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${colors.border}`, background: colors.panel },
   sidebarHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 14px 12px', borderBottom: `1px solid ${colors.border}`, fontSize: 13 },

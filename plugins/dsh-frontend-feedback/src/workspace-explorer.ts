@@ -257,7 +257,13 @@ export async function readWorkspaceFile(
   }
   const body = await readFile(resolved.target)
   if (body.includes(0)) throw new WorkspaceExplorerError('文件包含二进制内容，不能作为文本编辑', 415, 'WORKSPACE_BINARY_FILE')
-  return fileSnapshot(resolved.relativePath, body.toString('utf8'), metadata.mtime.toISOString())
+  let content: string
+  try {
+    content = new TextDecoder('utf-8', { fatal: true }).decode(body)
+  } catch {
+    throw new WorkspaceExplorerError('文件不是有效的 UTF-8 文本，不能编辑', 415, 'WORKSPACE_BINARY_FILE')
+  }
+  return fileSnapshot(resolved.relativePath, content, metadata.mtime.toISOString())
 }
 
 function imageMimeType(path: string): string | null {

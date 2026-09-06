@@ -31,13 +31,13 @@
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
     "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.6",
     "@deepseek-ai/dsh-skill": "0.1.0-rc.6",
-    "js-yaml": "4.2.0"
+    "js-yaml": "4.2.0",
+    "typescript": "^5.6.3"
   },
   "devDependencies": {
     "@types/js-yaml": "4.0.9",
     "@types/node": "^22.19.19",
     "concurrently": "^9.1.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "tsx": "^4.19.2"
   }
 }

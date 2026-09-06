@@ -233,7 +233,6 @@ function resolvePresentationSlides(value) {
 }
 
 // src/shared.ts
-var DEFAULT_PREVIEW_URL = "http://localhost:5173";
 var MAX_PREVIEW_HISTORY_ENTRIES = 50;
 var MAX_PERSISTED_FEEDBACK_COMMENTS = 50;
 var PREVIEW_URL_STORAGE_PREFIX = "dsh-frontend-feedback.preview-url:";
@@ -288,10 +287,10 @@ function normalizePreviewUrl(value) {
   }
 }
 function resolvePersistedPreviewUrl(value) {
-  return normalizePreviewUrl(value) ?? DEFAULT_PREVIEW_URL;
+  return normalizePreviewUrl(value);
 }
 function currentPreviewUrl(navigation) {
-  return navigation.entries[navigation.index] ?? DEFAULT_PREVIEW_URL;
+  return navigation.entries[navigation.index] ?? null;
 }
 function pushPreviewNavigation(navigation, targetUrl) {
   const normalizedTarget = normalizePreviewUrl(targetUrl);
@@ -304,14 +303,15 @@ function movePreviewNavigation(navigation, delta) {
   const index = navigation.index + delta;
   return index < 0 || index >= navigation.entries.length ? null : { ...navigation, index };
 }
-function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_URL) {
+function resolvePersistedPreviewNavigation(value, fallbackUrl = null) {
   const fallback = resolvePersistedPreviewUrl(fallbackUrl);
+  const fallbackNavigation = () => fallback === null ? { entries: [], index: -1 } : { entries: [fallback], index: 0 };
   if (value === null || value === void 0 || value.trim().length === 0) {
-    return { entries: [fallback], index: 0 };
+    return fallbackNavigation();
   }
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed.entries)) return { entries: [fallback], index: 0 };
+    if (!Array.isArray(parsed.entries)) return fallbackNavigation();
     const requestedIndex = Number.isInteger(parsed.index) ? Number(parsed.index) : parsed.entries.length - 1;
     const normalized = [];
     let normalizedIndex = -1;
@@ -321,7 +321,7 @@ function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_
       normalized.push(url);
       if (sourceIndex <= requestedIndex) normalizedIndex = normalized.length - 1;
     });
-    if (normalized.length === 0) return { entries: [fallback], index: 0 };
+    if (normalized.length === 0) return fallbackNavigation();
     const offset = Math.max(0, normalized.length - MAX_PREVIEW_HISTORY_ENTRIES);
     const entries = normalized.slice(offset);
     const index = Math.min(
@@ -330,7 +330,7 @@ function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_
     );
     return { entries, index };
   } catch {
-    return { entries: [fallback], index: 0 };
+    return fallbackNavigation();
   }
 }
 function isLoopbackPreviewHost(hostname) {
@@ -367,6 +367,24 @@ function resolvePreviewFrameLocation(targetUrl, harnessUrl, revision = 0) {
   endpoint.searchParams.set("revision", String(revision));
   endpoint.hash = target.hash;
   return { src: endpoint.href, allowSameOrigin };
+}
+function isPreviewTargetCurrentHost(targetUrl, harnessUrl) {
+  const target = new URL(targetUrl);
+  const harness = new URL(harnessUrl);
+  const sameHostname = target.hostname.toLowerCase() === harness.hostname.toLowerCase() || isLoopbackPreviewHost(target.hostname) && isLoopbackPreviewHost(harness.hostname);
+  return target.protocol === harness.protocol && effectivePort(target) === effectivePort(harness) && sameHostname;
+}
+function suppressCurrentHostPreview(navigation, harnessUrl) {
+  if (navigation.entries.length === 0) return navigation;
+  const retained = [];
+  let index = -1;
+  navigation.entries.forEach((entry, sourceIndex) => {
+    if (isPreviewTargetCurrentHost(entry, harnessUrl)) return;
+    retained.push(entry);
+    if (sourceIndex <= navigation.index) index = retained.length - 1;
+  });
+  if (retained.length === 0) return { entries: [], index: -1 };
+  return { entries: retained, index: index < 0 ? 0 : index };
 }
 function cornersFromRect(value) {
   return {
@@ -1588,7 +1606,7 @@ var Text = class _Text {
   Return a cursor that iterates over the given range of lines,
   _without_ returning the line breaks between, and yielding empty
   strings for empty lines.
-
+  
   When `from` and `to` are given, they should be 1-based line numbers.
   */
   iterLines(from, to) {
@@ -2133,7 +2151,7 @@ var ChangeDesc = class _ChangeDesc {
   `fromA`/`toA` provides the extent of the change in the starting
   document, `fromB`/`toB` the extent of the replacement in the
   changed document.
-
+  
   When `individual` is true, adjacent changes (which are kept
   separate for [position mapping](https://codemirror.net/6/docs/ref/#state.ChangeDesc.mapPos)) are
   reported separately.
@@ -2295,7 +2313,7 @@ var ChangeSet = class _ChangeSet extends ChangeDesc {
   applied to the document produced by applying `other`. When
   `before` is `true`, order changes as if `this` comes before
   `other`, otherwise (the default) treat `other` as coming first.
-
+  
   Given two changes `A` and `B`, `A.compose(B.map(A))` and
   `B.compose(A.map(B, true))` will produce the same document. This
   provides a basic form of [operational
@@ -2310,7 +2328,7 @@ var ChangeSet = class _ChangeSet extends ChangeDesc {
   each, with the range in the original document (`fromA`-`toA`)
   and the range that replaces it in the new document
   (`fromB`-`toB`).
-
+  
   When `individual` is true, adjacent changes are reported
   separately.
   */
@@ -2938,7 +2956,7 @@ var Facet = class _Facet {
   state. You must take care to declare the parts of the state that
   this value depends on, since your function is only called again
   for a new state when one of those parts changed.
-
+  
   In cases where your value depends only on a single field, you'll
   want to use the [`from`](https://codemirror.net/6/docs/ref/#state.Facet.from) method instead.
   */
@@ -3938,7 +3956,7 @@ var EditorState = class _EditorState {
   Look up a translation for the given phrase (via the
   [`phrases`](https://codemirror.net/6/docs/ref/#state.EditorState^phrases) facet), or return the
   original string if no translation is found.
-
+  
   If additional arguments are passed, they will be inserted in
   place of markers like `$1` (for the first value) and `$2`, etc.
   A single `$` is equivalent to `$1`, and `$$` will produce a
@@ -3962,9 +3980,9 @@ var EditorState = class _EditorState {
   /**
   Find the values for a given language data field, provided by the
   the [`languageData`](https://codemirror.net/6/docs/ref/#state.EditorState^languageData) facet.
-
+  
   Examples of language data fields are...
-
+  
   - [`"commentTokens"`](https://codemirror.net/6/docs/ref/#commands.CommentTokens) for specifying
     comment syntax.
   - [`"autocomplete"`](https://codemirror.net/6/docs/ref/#autocomplete.autocompletion^config.override)
@@ -3989,7 +4007,7 @@ var EditorState = class _EditorState {
   Return a function that can categorize strings (expected to
   represent a single [grapheme cluster](https://codemirror.net/6/docs/ref/#state.findClusterBreak))
   into one of:
-
+  
    - Word (contains an alphanumeric character or a character
      explicitly listed in the local language's `"wordChars"`
      language data, which should be a string)
@@ -4205,7 +4223,7 @@ var RangeSet = class _RangeSet {
   /**
   Update the range set, optionally adding new ranges or filtering
   out existing ones.
-
+  
   (Note: The type parameter is just there as a kludge to work
   around TypeScript variance issues that prevented `RangeSet<X>`
   from being a subtype of `RangeSet<Y>` when `X` is a subtype of
@@ -12885,7 +12903,7 @@ var EditorView = class _EditorView {
   When the start position was the last one on the line, the
   returned position will be across the line break. If there is no
   further line, the original position is returned.
-
+  
   By default, this method moves over a single cluster. The
   optional `by` argument can be used to move across more. It will
   be called with the first cluster as argument, and should return
@@ -12929,7 +12947,7 @@ var EditorView = class _EditorView {
   it defaults to moving to the next line (including wrapped
   lines). Otherwise, `distance` should provide a positive distance
   in pixels.
-
+  
   When `start` has a
   [`goalColumn`](https://codemirror.net/6/docs/ref/#state.SelectionRange.goalColumn), the vertical
   motion will use that as a target horizontal position. Otherwise,
@@ -12944,7 +12962,7 @@ var EditorView = class _EditorView {
   Find the DOM parent node and offset (child offset if `node` is
   an element, character offset when it is a text node) at the
   given document position.
-
+  
   Note that for positions that aren't currently in
   `visibleRanges`, the resulting DOM position isn't necessarily
   meaningful (it may just point before or after a placeholder
@@ -13126,7 +13144,7 @@ var EditorView = class _EditorView {
   only affects the editor's own scrollable element, not parents.
   See also
   [`EditorViewConfig.scrollTo`](https://codemirror.net/6/docs/ref/#view.EditorViewConfig.scrollTo).
-
+  
   The effect should be used with a document identical to the one
   it was created for. Failing to do so is not an error, but may
   not scroll to the expected position. You can
@@ -13142,7 +13160,7 @@ var EditorView = class _EditorView {
   for Tab and Shift-Tab, letting the browser's default
   focus-changing behavior go through instead. This is useful to
   prevent trapping keyboard users in your editor.
-
+  
   Without argument, this toggles the mode. With a boolean, it
   enables (true) or disables it (false). Given a number, it
   temporarily enables the mode until that number of milliseconds
@@ -13187,14 +13205,14 @@ var EditorView = class _EditorView {
   [`style-mod`](https://code.haverbeke.berlin/marijn/style-mod#documentation)
   style spec providing the styles for the theme. These will be
   prefixed with a generated class for the style.
-
+  
   Because the selectors will be prefixed with a scope class, rule
   that directly match the editor's [wrapper
   element](https://codemirror.net/6/docs/ref/#view.EditorView.dom)—to which the scope class will be
   added—need to be explicitly differentiated by adding an `&` to
   the selector for that element—for example
   `&.cm-focused`.
-
+  
   When `dark` is set to true, the theme will be marked as dark,
   which will cause the `&dark` rules from [base
   themes](https://codemirror.net/6/docs/ref/#view.EditorView^baseTheme) to be used (as opposed to
@@ -16004,7 +16022,7 @@ var Tree = class _Tree {
   position. If 1, it'll move into nodes that start at the
   position. With 0, it'll only enter nodes that cover the position
   from both sides.
-
+  
   Note that this will not enter
   [overlays](#common.MountedTree.overlay), and you often want
   [`resolveInner`](#common.Tree.resolveInner) instead.
@@ -17348,7 +17366,7 @@ var Parser = class {
   Start a parse, returning a [partial parse](#common.PartialParse)
   object. [`fragments`](#common.TreeFragment) can be passed in to
   make the parse incremental.
-
+  
   By default, the entire input is parsed. You can pass `ranges`,
   which should be a sorted array of non-empty, non-overlapping
   ranges, to parse only those ranges. The tree returned in that
@@ -17811,7 +17829,7 @@ var Tag = class _Tag {
   same modifier to a twice tag will return the same value (`m1(t1)
   == m1(t1)`) and applying multiple modifiers will, regardless or
   order, produce the same tag (`m1(m2(t1)) == m2(m1(t1))`).
-
+  
   When multiple modifiers are applied to a given base tag, each
   smaller set of modifiers is registered as a parent, so that for
   example `m1(m2(m3(t1)))` is a subtype of `m1(m2(t1))`,
@@ -18826,7 +18844,7 @@ var ParseContext = class _ParseContext {
   asynchronously loading a nested parser. It'll skip its input and
   mark it as not-really-parsed, so that the next update will parse
   it again.
-
+  
   When `until` is given, a reparse will be scheduled when that
   promise resolves.
   */
@@ -19769,7 +19787,7 @@ var HighlightStyle = class _HighlightStyle {
   that rely on external styling), or a
   [`style-mod`](https://code.haverbeke.berlin/marijn/style-mod#documentation)-style
   set of CSS properties (which define the styling for those tags).
-
+  
   The CSS rules created for a highlighter will be emitted in the
   order of the spec's properties. That means that for elements that
   have multiple tags associated with them, styles defined further
@@ -21240,12 +21258,12 @@ var SearchCursor = class {
   /**
   Create a text cursor. The query is the search string, `from` to
   `to` provides the region to search.
-
+  
   When `normalize` is given, it will be called, on both the query
   string and the content it is matched against, before comparing.
   You can, for example, create a case-insensitive search by
   passing `s => s.toLowerCase()`.
-
+  
   Text is always normalized with
   [`.normalize("NFKD")`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize)
   (when supported).
@@ -22368,7 +22386,7 @@ var CompletionContext = class {
   Allows you to register abort handlers, which will be called when
   the query is
   [aborted](https://codemirror.net/6/docs/ref/#autocomplete.CompletionContext.aborted).
-
+  
   By default, running queries will not be aborted for regular
   typing or backspacing, on the assumption that they are likely to
   return a result with a
@@ -25422,7 +25440,7 @@ var InputStream = class {
   Look at a code unit near the stream position. `.peek(0)` equals
   `.next`, `.peek(-1)` gives you the previous character, and so
   on.
-
+  
   Note that looking around during tokenizing creates dependencies
   on potentially far-away content, which may reduce the
   effectiveness incremental parsing—when looking forward—or even
@@ -31954,6 +31972,151 @@ function workspaceEntryByPath(state, path) {
   return null;
 }
 
+// src/client/source-drafts.ts
+function diskSaveStatus(path, hasNewerEdit, persistenceWarning) {
+  if (persistenceWarning !== null) return persistenceWarning;
+  return hasNewerEdit ? `\u5DF2\u4FDD\u5B58 ${path} \u7684\u5148\u524D\u7248\u672C\uFF1B\u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002` : `\u5DF2\u4FDD\u5B58 ${path}\u3002\u6B63\u5728\u540C\u6B65\u9884\u89C8\u2026`;
+}
+async function draftAfterQueuedOperation(previousDraft, operation, readCurrentDraft) {
+  let error = null;
+  try {
+    await operation();
+  } catch (cause) {
+    error = cause instanceof Error ? cause : new Error(String(cause));
+  }
+  const current = readCurrentDraft();
+  return { newerDraft: current !== void 0 && current !== previousDraft ? current : null, error };
+}
+var MAX_DRAFT_BYTES = 1e6;
+var MAX_DRAFTS = 100;
+function canonicalPart(value, root = false) {
+  const normalized = value.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return root && /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+function sourceDraftKey(scope) {
+  return ["v1", scope.sessionId, canonicalPart(scope.rootPath, true), canonicalPart(scope.selectedFolder), canonicalPart(scope.path)].map(encodeURIComponent).join(":");
+}
+function isDraftCacheAllowed(path) {
+  const name2 = path.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  if (name2 === ".env" || name2.startsWith(".env.")) return false;
+  if (/^(id_(rsa|dsa|ecdsa|ed25519))(\.|$)/.test(name2)) return false;
+  if (/(^|[._-])(?:client[._-]?secret|private[._-]?key|api[._-]?key|service[._-]?account|credentials?|secrets?)(?:[._-]|$)/.test(name2)) return false;
+  if (/\.(pem|key|p12|pfx|jks|keystore)$/.test(name2)) return false;
+  return true;
+}
+var SourceDraftCache = class {
+  constructor(storage) {
+    this.storage = storage;
+  }
+  writes = /* @__PURE__ */ new Map();
+  async queued(key, operation) {
+    const previous = this.writes.get(key) ?? Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.writes.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.writes.get(key) === tail) this.writes.delete(key);
+    }
+  }
+  async persist(scope, baseHash, content2) {
+    const key = sourceDraftKey(scope);
+    try {
+      return await this.queued(key, async () => {
+        if (!isDraftCacheAllowed(scope.path)) throw new Error("\u654F\u611F\u6587\u4EF6\u8349\u7A3F\u4E0D\u4F1A\u7F13\u5B58\u5728\u6D4F\u89C8\u5668\u4E2D\u3002");
+        if (new TextEncoder().encode(content2).byteLength > MAX_DRAFT_BYTES) throw new Error("\u8349\u7A3F\u8D85\u8FC7 1 MB \u6D4F\u89C8\u5668\u7F13\u5B58\u4E0A\u9650\u3002");
+        const previous = await this.storage.get(key);
+        const records = await this.storage.list();
+        if (previous === void 0 && records.length >= MAX_DRAFTS) throw new Error("\u6D4F\u89C8\u5668\u4E2D\u5DF2\u6709 100 \u4EFD\u672A\u4FDD\u5B58\u8349\u7A3F\uFF1B\u8BF7\u5148\u4FDD\u5B58\u6216\u4E22\u5F03\u4E00\u4EFD\u3002");
+        const revision = (previous?.revision ?? 0) + 1;
+        await this.storage.put({ ...scope, key, baseHash, content: content2, revision, updatedAt: Date.now() });
+        return { ok: true, revision };
+      });
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
+    }
+  }
+  async restore(scope, diskHash) {
+    if (!isDraftCacheAllowed(scope.path)) return { kind: "none" };
+    return this.queued(sourceDraftKey(scope), async () => {
+      const record = await this.storage.get(sourceDraftKey(scope));
+      if (record === void 0) return { kind: "none" };
+      if (record.baseHash === diskHash) return { kind: "recovered", content: record.content, revision: record.revision };
+      return { kind: "conflict", content: record.content, revision: record.revision, baseHash: record.baseHash, diskHash };
+    });
+  }
+  clearSaved(scope, revision) {
+    const key = sourceDraftKey(scope);
+    return this.queued(key, () => this.storage.deleteIfRevision(key, revision));
+  }
+  discard(scope) {
+    const key = sourceDraftKey(scope);
+    return this.queued(key, () => this.storage.delete(key));
+  }
+};
+var IndexedDbDraftStorage = class {
+  database;
+  constructor(indexedDb = window.indexedDB) {
+    this.database = new Promise((resolve, reject) => {
+      const request = indexedDb.open("dsh-pagecraft-source-drafts", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("drafts", { keyPath: "key" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("\u65E0\u6CD5\u6253\u5F00\u6D4F\u89C8\u5668\u8349\u7A3F\u6570\u636E\u5E93\u3002"));
+    });
+  }
+  async request(mode, action) {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("drafts", mode);
+      const request = action(transaction.objectStore("drafts"));
+      let result;
+      request.onsuccess = () => {
+        result = request.result;
+      };
+      request.onerror = () => reject(request.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u5B58\u50A8\u5931\u8D25\u3002"));
+      transaction.oncomplete = () => resolve(result);
+      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u4E8B\u52A1\u5931\u8D25\u3002"));
+    });
+  }
+  get(key) {
+    return this.request("readonly", (store) => store.get(key));
+  }
+  async put(record) {
+    await this.request("readwrite", (store) => store.put(record));
+  }
+  async delete(key) {
+    await this.request("readwrite", (store) => store.delete(key));
+  }
+  list() {
+    return this.request("readonly", (store) => store.getAll());
+  }
+  async deleteIfRevision(key, revision) {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("drafts", "readwrite");
+      const store = transaction.objectStore("drafts");
+      const get = store.get(key);
+      let removed = false;
+      get.onsuccess = () => {
+        if (get.result?.revision === revision) {
+          store.delete(key);
+          removed = true;
+        }
+      };
+      transaction.oncomplete = () => resolve(removed);
+      transaction.onerror = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\u3002"));
+    });
+  }
+};
+
 // src/client/source-workspace.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
 var WorkspaceApiError = class extends Error {
@@ -32114,6 +32277,7 @@ function WorkspaceExplorer({
   const [focus, setFocus] = (0, import_react3.useState)(initialLayout.focus);
   const [status, setStatus] = (0, import_react3.useState)("\u6B63\u5728\u8BFB\u53D6\u5F53\u524D DSH \u5DE5\u4F5C\u533A\u2026");
   const [busy, setBusy] = (0, import_react3.useState)(false);
+  const [pendingPersistence, setPendingPersistence] = (0, import_react3.useState)(0);
   const [conflict, setConflict] = (0, import_react3.useState)(null);
   const [history2, setHistory] = (0, import_react3.useState)([]);
   const [folderPickerOpen, setFolderPickerOpen] = (0, import_react3.useState)(false);
@@ -32130,6 +32294,7 @@ function WorkspaceExplorer({
   const shellRef = (0, import_react3.useRef)(null);
   const treeRef = (0, import_react3.useRef)(tree);
   const openFilesRef = (0, import_react3.useRef)(openFiles);
+  const draftCache = (0, import_react3.useMemo)(() => new SourceDraftCache(new IndexedDbDraftStorage()), []);
   const lastSequenceRef = (0, import_react3.useRef)(0);
   const loadedLayoutRootRef = (0, import_react3.useRef)(null);
   const active = openFiles.find((item) => item.file.path === activePath) ?? null;
@@ -32137,6 +32302,21 @@ function WorkspaceExplorer({
   const layoutKey = summary === null ? fallbackLayoutKey : workspaceLayoutStorageKey(summary.rootPath, sessionId);
   treeRef.current = tree;
   openFilesRef.current = openFiles;
+  const draftScope = (0, import_react3.useCallback)((path) => summary === null ? null : {
+    sessionId,
+    rootPath: summary.rootPath,
+    selectedFolder,
+    path
+  }, [selectedFolder, sessionId, summary]);
+  (0, import_react3.useEffect)(() => {
+    function beforeUnload(event) {
+      if (pendingPersistence === 0 && !openFilesRef.current.some((item) => item.draft !== item.file.content)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [pendingPersistence]);
   (0, import_react3.useEffect)(() => {
     storeLayout(layoutKey, { treeVisible, split, focus });
   }, [focus, layoutKey, split, treeVisible]);
@@ -32224,8 +32404,8 @@ function WorkspaceExplorer({
   const revealEditedFile = (0, import_react3.useCallback)((file, line) => {
     setOpenFiles((items) => {
       const existing = items.find((item) => item.file.path === file.path);
-      if (existing === void 0) return [...items, { file, draft: file.content, conflict: null }];
-      return items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null } : item);
+      if (existing === void 0) return [...items, { file, draft: file.content, conflict: null, draftRevision: null }];
+      return items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item);
     });
     setActivePath(file.path);
     const entry = workspaceEntryByPath(treeRef.current, file.path);
@@ -32319,7 +32499,9 @@ function WorkspaceExplorer({
           previewRef.current?.contentWindow?.postMessage({
             type: "dsh-pagecraft-verify-text",
             transactionId: pending.started.transactionId,
-            selection: pending.selection
+            selection: pending.selection,
+            expectedText: pending.expectedText,
+            timeoutMs: 6500
           }, "*");
         }
         return;
@@ -32397,8 +32579,24 @@ function WorkspaceExplorer({
     try {
       const query2 = apiQuery(sessionId, { selectedFolder, path: entry.path });
       const file = await apiJson(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query2}`, { cache: "no-store" }));
-      setOpenFiles((items) => [...items, { file, draft: file.content, conflict: null }]);
-      setStatus(`\u5DF2\u6253\u5F00 ${entry.path}`);
+      const scope = draftScope(file.path);
+      let opened = { file, draft: file.content, conflict: null, draftRevision: null };
+      if (scope !== null) {
+        try {
+          const restored = await draftCache.restore(scope, file.hash);
+          if (restored.kind === "recovered") {
+            opened = { ...opened, draft: restored.content, draftRevision: restored.revision };
+            setStatus(`\u5DF2\u6062\u590D ${entry.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\uFF08\u5C1A\u672A\u5199\u5165\u78C1\u76D8\uFF09\u3002`);
+          } else if (restored.kind === "conflict") {
+            opened = { ...opened, draft: restored.content, conflict: file, draftRevision: restored.revision };
+            setConflict({ mine: restored.content, current: file });
+            setStatus(`${entry.path} \u7684\u78C1\u76D8\u5185\u5BB9\u5DF2\u53D8\u5316\uFF0C\u8BF7\u5904\u7406\u6062\u590D\u51B2\u7A81\u3002`);
+          } else setStatus(`\u5DF2\u6253\u5F00 ${entry.path}`);
+        } catch (error) {
+          setStatus(`\u65E0\u6CD5\u8BFB\u53D6\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      setOpenFiles((items) => [...items, opened]);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -32415,9 +32613,34 @@ function WorkspaceExplorer({
   }
   function updateDraft(value) {
     if (activePath === null) return;
-    setOpenFiles((items) => items.map((item) => item.file.path === activePath ? { ...item, draft: value } : item));
+    const draftPath = activePath;
+    setOpenFiles((items) => items.map((item2) => item2.file.path === draftPath ? { ...item2, draft: value } : item2));
+    const item = openFilesRef.current.find((candidate) => candidate.file.path === draftPath);
+    const scope = draftScope(draftPath);
+    if (item === void 0 || scope === null) return;
+    if (!isDraftCacheAllowed(draftPath)) {
+      setStatus("\u5B89\u5168\u63D0\u793A\uFF1A\u654F\u611F\u6587\u4EF6\u8349\u7A3F\u4E0D\u4F1A\u7F13\u5B58\u5728\u6D4F\u89C8\u5668\u4E2D\uFF1B\u8BF7\u53CA\u65F6\u4FDD\u5B58\u5230\u78C1\u76D8\u3002");
+      return;
+    }
+    setPendingPersistence((count2) => count2 + 1);
+    void draftCache.persist(scope, item.file.hash, value).then((result) => {
+      if (result.ok) {
+        const current = openFilesRef.current.find((open) => open.file.path === draftPath);
+        if (current?.draft === value && current.file.content === value) {
+          void draftCache.clearSaved(scope, result.revision).catch((error) => {
+            setStatus(`\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`);
+          });
+        } else {
+          setOpenFiles((items) => items.map((open) => open.file.path === draftPath && open.draft === value ? { ...open, draftRevision: result.revision } : open));
+        }
+      } else {
+        setStatus(`\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${result.error.message} \u8BF7\u4FDD\u5B58\u5230\u78C1\u76D8\u540E\u518D\u5173\u95ED\u3002`);
+      }
+    }).finally(() => setPendingPersistence((count2) => Math.max(0, count2 - 1)));
   }
   async function writeFile(item, baseHash = item.file.hash) {
+    const savedContent = item.draft;
+    const savedRevision = item.draftRevision;
     setBusy(true);
     try {
       const file = await apiJson(await fetch(
@@ -32428,9 +32651,28 @@ function WorkspaceExplorer({
           body: JSON.stringify({ selectedFolder, path: item.file.path, content: item.draft, baseHash })
         }
       ));
-      setOpenFiles((items) => items.map((open) => open.file.path === file.path ? { file, draft: file.content, conflict: null } : open));
+      const latestAtWrite = openFilesRef.current.find((open) => open.file.path === file.path);
+      const hadNewerEdit = latestAtWrite !== void 0 && latestAtWrite.draft !== savedContent;
+      setOpenFiles((items) => items.map((open) => open.file.path === file.path ? hadNewerEdit ? { ...open, file, conflict: null } : { file, draft: file.content, conflict: null, draftRevision: null } : open));
+      const scope = draftScope(file.path);
+      let persistenceWarning = null;
+      const afterCleanup = await draftAfterQueuedOperation(
+        savedContent,
+        () => scope !== null && savedRevision !== null ? draftCache.clearSaved(scope, savedRevision) : Promise.resolve(),
+        () => openFilesRef.current.find((open) => open.file.path === file.path)?.draft
+      );
+      if (afterCleanup.error !== null) {
+        persistenceWarning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u6D4F\u89C8\u5668\u8349\u7A3F\u6E05\u7406\u5931\u8D25\uFF1A${afterCleanup.error.message}`;
+      }
+      if (scope !== null && afterCleanup.newerDraft !== null) {
+        const newestDraft = afterCleanup.newerDraft;
+        const persisted = await draftCache.persist(scope, file.hash, newestDraft);
+        if (persisted.ok) {
+          setOpenFiles((items) => items.map((open) => open.file.path === file.path && open.draft === newestDraft ? { ...open, draftRevision: persisted.revision } : open));
+        } else persistenceWarning = `\u78C1\u76D8\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u8F83\u65B0\u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u4FDD\u5B58\u5931\u8D25\uFF1A${persisted.error.message} \u8F83\u65B0\u7684\u4FEE\u6539\u4ECD\u672A\u4FDD\u5B58\u3002`;
+      }
       setConflict(null);
-      setStatus(`\u5DF2\u4FDD\u5B58 ${file.path}\u3002\u6B63\u5728\u540C\u6B65\u9884\u89C8\u2026`);
+      setStatus(diskSaveStatus(file.path, afterCleanup.newerDraft !== null, persistenceWarning));
       window.setTimeout(onRefresh, 450);
     } catch (error) {
       if (error instanceof WorkspaceApiError) {
@@ -32449,6 +32691,32 @@ function WorkspaceExplorer({
   function handleClose2() {
     if (openFiles.some((item) => item.draft !== item.file.content) && !window.confirm("\u8FD8\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u786E\u5B9A\u5173\u95ED\u6587\u4EF6\u5DE5\u4F5C\u533A\u5417\uFF1F")) return;
     onClose();
+  }
+  async function discardActiveDraft() {
+    if (active === null || !window.confirm(`\u4E22\u5F03 ${active.file.path} \u7684\u672A\u4FDD\u5B58\u4FEE\u6539\u5417\uFF1F`)) return;
+    const discardedDraft = active.draft;
+    const scope = draftScope(active.file.path);
+    setBusy(true);
+    try {
+      const afterDiscard = await draftAfterQueuedOperation(
+        discardedDraft,
+        () => scope === null ? Promise.resolve() : draftCache.discard(scope),
+        () => openFilesRef.current.find((item) => item.file.path === active.file.path)?.draft
+      );
+      if (afterDiscard.error !== null) {
+        setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${afterDiscard.error.message}`);
+        return;
+      }
+      if (afterDiscard.newerDraft !== null) {
+        setStatus(`${active.file.path} \u5728\u4E22\u5F03\u671F\u95F4\u6709\u65B0\u7684\u4FEE\u6539\uFF1B\u65B0\u4FEE\u6539\u5DF2\u4FDD\u7559\u4E14\u4ECD\u672A\u4FDD\u5B58\u3002`);
+        return;
+      }
+      setOpenFiles((items) => items.map((item) => item.file.path === active.file.path ? { ...item, draft: item.file.content, conflict: null, draftRevision: null } : item));
+      setConflict(null);
+      setStatus(`\u5DF2\u4E22\u5F03 ${active.file.path} \u7684\u6D4F\u89C8\u5668\u8349\u7A3F\u3002`);
+    } finally {
+      setBusy(false);
+    }
   }
   async function toggleEntry(entry) {
     const willExpand = !treeRef.current.expanded.has(entry.path);
@@ -32534,7 +32802,7 @@ function WorkspaceExplorer({
           body: JSON.stringify({ selectedFolder, path: active.file.path, historyId: entry.id, baseHash: active.file.hash })
         }
       ));
-      setOpenFiles((items) => items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null } : item));
+      setOpenFiles((items) => items.map((item) => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item));
       setHistory([]);
       setStatus("\u5386\u53F2\u7248\u672C\u5DF2\u6062\u590D\u3002");
       window.setTimeout(onRefresh, 450);
@@ -32757,6 +33025,9 @@ function WorkspaceExplorer({
               active !== null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
                 void loadHistory();
               }, style: sourceStyles.statusButton, children: "\u5386\u53F2\u7248\u672C" }) : null,
+              dirty ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
+                void discardActiveDraft();
+              }, style: sourceStyles.statusButton, children: "\u4E22\u5F03\u4FEE\u6539" }) : null,
               /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
                 active?.file.language ?? "",
                 dirty ? " \xB7 \u672A\u4FDD\u5B58" : active === null ? "" : " \xB7 \u5DF2\u4FDD\u5B58"
@@ -32769,13 +33040,13 @@ function WorkspaceExplorer({
           /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.previewHeader, children: [
             /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: "\u5B9E\u65F6\u9884\u89C8" }),
             /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.previewActions, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => choosePreviewMode("text"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "text" ? sourceStyles.textModeButtonActive : {} }, children: "\u9009\u62E9\u6587\u5B57" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => choosePreviewMode("element"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "element" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9009\u62E9\u5143\u7D20" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => choosePreviewMode("area"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "area" ? sourceStyles.areaModeButtonActive : {} }, children: "\u6846\u9009\u533A\u57DF" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: onRefresh, style: sourceStyles.statusButton, children: "\u5237\u65B0" })
+              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("text"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "text" ? sourceStyles.textModeButtonActive : {} }, children: "\u9009\u62E9\u6587\u5B57" }),
+              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("element"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "element" ? sourceStyles.toolbarButtonActive : {} }, children: "\u9009\u62E9\u5143\u7D20" }),
+              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: () => choosePreviewMode("area"), style: { ...sourceStyles.statusButton, ...previewSelectionMode === "area" ? sourceStyles.areaModeButtonActive : {} }, children: "\u6846\u9009\u533A\u57DF" }),
+              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", disabled: previewSrc === null, onClick: onRefresh, style: sourceStyles.statusButton, children: "\u5237\u65B0" })
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          previewSrc === null ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { "data-pagecraft-workspace-empty-preview": "", style: sourceStyles.emptyPreview, children: "\u5C1A\u672A\u8BBE\u7F6E\u9884\u89C8\u5730\u5740\uFF1B\u53EF\u7EE7\u7EED\u6D4F\u89C8\u548C\u7F16\u8F91\u9879\u76EE\u6587\u4EF6\u3002" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
             "iframe",
             {
               ref: previewRef,
@@ -32869,8 +33140,17 @@ function WorkspaceExplorer({
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: sourceStyles.conflictActions, children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
           const current = conflict.current;
-          setOpenFiles((items) => items.map((item) => item.file.path === current.path ? { file: current, draft: current.content, conflict: null } : item));
-          setConflict(null);
+          const scope = draftScope(current.path);
+          void (async () => {
+            try {
+              if (scope !== null) await draftCache.discard(scope);
+              setOpenFiles((items) => items.map((item) => item.file.path === current.path ? { file: current, draft: current.content, conflict: null, draftRevision: null } : item));
+              setConflict(null);
+              setStatus(`\u5DF2\u8F7D\u5165 ${current.path} \u7684\u78C1\u76D8\u7248\u672C\u5E76\u4E22\u5F03\u5BF9\u5E94\u6D4F\u89C8\u5668\u8349\u7A3F\u3002`);
+            } catch (error) {
+              setStatus(`\u65E0\u6CD5\u4E22\u5F03\u6D4F\u89C8\u5668\u8349\u7A3F\uFF1A${error instanceof Error ? error.message : String(error)}`);
+            }
+          })();
         }, style: sourceStyles.secondaryButton, children: "\u8F7D\u5165\u6700\u65B0\u7248\u672C" }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => {
           if (active === null) return;
@@ -32947,6 +33227,7 @@ var sourceStyles = {
   textModeButtonActive: { color: "#0c1b12", borderColor: "#8bd0a0", background: "#a9e2b7", fontWeight: 800 },
   areaModeButtonActive: { color: "#25170a", borderColor: "#e0a76f", background: "#f2c28f", fontWeight: 800 },
   previewFrame: { flex: 1, width: "100%", minHeight: 0, border: 0, background: "#fff" },
+  emptyPreview: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, color: "#6e7d74", textAlign: "center" },
   textEditPanel: { flex: "none", display: "grid", gap: 8, padding: 10, borderTop: "1px solid #34473d", color: "#dce8e0", background: "#111915" },
   textEditHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11 },
   textEditInput: { width: "100%", minHeight: 72, resize: "vertical", boxSizing: "border-box", padding: 9, border: "1px solid #3b5547", borderRadius: 7, color: "#eff7f1", background: "#0a100d", font: "12px/1.5 ui-sans-serif, system-ui, sans-serif" },
@@ -33297,10 +33578,10 @@ function removeStoredValue(key) {
   }
 }
 function readPersistedPreviewNavigation(sessionId) {
-  return resolvePersistedPreviewNavigation(
+  return suppressCurrentHostPreview(resolvePersistedPreviewNavigation(
     readStoredValue(previewHistoryStorageKey(sessionId)),
     resolvePersistedPreviewUrl(readStoredValue(previewUrlStorageKey(sessionId)))
-  );
+  ), window.location.href);
 }
 function persistPreviewNavigation(sessionId, navigation) {
   writeStoredValue(previewHistoryStorageKey(sessionId), JSON.stringify(navigation));
@@ -33335,7 +33616,7 @@ function FrontendFeedbackPanel({
   const initialDraft = (0, import_react5.useMemo)(() => readPersistedFeedbackDraft(storageId), [storageId]);
   const navigationRef = (0, import_react5.useRef)(initialNavigation);
   const initialPreviewUrl = currentPreviewUrl(initialNavigation);
-  const [urlDraft, setUrlDraft] = (0, import_react5.useState)(initialPreviewUrl);
+  const [urlDraft, setUrlDraft] = (0, import_react5.useState)(initialPreviewUrl ?? "");
   const [navigation, setNavigation] = (0, import_react5.useState)(initialNavigation);
   const [revision, setRevision] = (0, import_react5.useState)(0);
   const [selectionMode, setSelectionMode] = (0, import_react5.useState)(initialDraft.selection?.kind ?? null);
@@ -33364,7 +33645,7 @@ function FrontendFeedbackPanel({
   const canGoBack = navigation.index > 0;
   const canGoForward = navigation.index < navigation.entries.length - 1;
   const previewFrame = (0, import_react5.useMemo)(() => {
-    return resolvePreviewFrameLocation(loadedUrl, window.location.href, revision);
+    return loadedUrl === null ? null : resolvePreviewFrameLocation(loadedUrl, window.location.href, revision);
   }, [loadedUrl, revision]);
   (0, import_react5.useEffect)(() => {
     persistFeedbackDraft(storageId, { selection: selection2, areaOperation, comment: comment2, queued });
@@ -33404,7 +33685,7 @@ function FrontendFeedbackPanel({
     navigationRef.current = next;
     persistPreviewNavigation(storageId, next);
     setNavigation(next);
-    setUrlDraft(currentPreviewUrl(next));
+    setUrlDraft(currentPreviewUrl(next) ?? "");
     setRevision((value) => value + 1);
     setSelection(null);
     setSelectionMode(null);
@@ -33420,7 +33701,8 @@ function FrontendFeedbackPanel({
     try {
       const targetUrl = normalizePreviewUrl(rawUrl);
       if (targetUrl === null) throw new Error("\u53EA\u652F\u6301\u6709\u6548\u7684 http \u6216 https \u5730\u5740");
-      commitNavigation(pushPreviewNavigation(navigationRef.current, targetUrl), nextStatus);
+      const status2 = isPreviewTargetCurrentHost(targetUrl, window.location.href) ? "\u8B66\u544A\uFF1A\u6B64\u5730\u5740\u662F PageCraft \u5F53\u524D\u5BBF\u4E3B\uFF0C\u53EF\u80FD\u5F62\u6210\u5FAA\u73AF\u9884\u89C8\uFF1B\u5DF2\u6309\u4F60\u7684\u660E\u786E\u64CD\u4F5C\u7EE7\u7EED\u6253\u5F00\u3002" : nextStatus;
+      commitNavigation(pushPreviewNavigation(navigationRef.current, targetUrl), status2);
     } catch (error) {
       setStatus(`\u5730\u5740\u65E0\u6548\uFF1A${describeError2(error)}`);
     }
@@ -33431,6 +33713,10 @@ function FrontendFeedbackPanel({
     commitNavigation(next, delta < 0 ? "\u6B63\u5728\u8FD4\u56DE\u4E0A\u4E00\u9875\u2026" : "\u6B63\u5728\u524D\u5F80\u4E0B\u4E00\u9875\u2026");
   }, [commitNavigation]);
   const refreshPreview = (0, import_react5.useCallback)((loadingStatus, readyStatus) => {
+    if (currentPreviewUrl(navigationRef.current) === null) {
+      setStatus("\u5C1A\u672A\u8BBE\u7F6E\u9884\u89C8\u5730\u5740\u3002\u6587\u4EF6\u5DE5\u4F5C\u533A\u4ECD\u53EF\u72EC\u7ACB\u4F7F\u7528\u3002");
+      return;
+    }
     refreshNoticeRef.current = readyStatus;
     setSelection(null);
     setSelectionMode(null);
@@ -33750,8 +34036,9 @@ function FrontendFeedbackPanel({
           {
             type: "button",
             "aria-label": "\u5237\u65B0",
+            disabled: loadedUrl === null,
             onClick: () => refreshPreview("\u6B63\u5728\u5F3A\u5236\u5237\u65B0\u9884\u89C8\u2026", "\u9884\u89C8\u5DF2\u5F3A\u5236\u5237\u65B0\u5E76\u91CD\u65B0\u83B7\u53D6\u9875\u9762\u3002"),
-            style: styles2.iconButton,
+            style: { ...styles2.iconButton, ...loadedUrl === null ? styles2.iconButtonDisabled : {} },
             title: "\u5237\u65B0\u9884\u89C8",
             children: "\u21BB"
           }
@@ -33762,6 +34049,7 @@ function FrontendFeedbackPanel({
             {
               type: "button",
               title: "\u70B9\u51FB\u5DF2\u6709 DOM \u5143\u7D20\u8FDB\u884C\u8BC4\u6CE8",
+              disabled: loadedUrl === null,
               onClick: () => setAnnotatorMode(selectionMode === "element" ? null : "element"),
               style: { ...styles2.modeButton, ...selectionMode === "element" ? styles2.modeButtonActive : {} },
               children: "\u9009\u62E9\u5143\u7D20"
@@ -33772,6 +34060,7 @@ function FrontendFeedbackPanel({
             {
               type: "button",
               title: "\u62D6\u52A8\u6846\u9009\u533A\u57DF\uFF1BAlt \u5173\u95ED\u5438\u9644\uFF0CShift \u9501\u5B9A\u6B63\u65B9\u5F62",
+              disabled: loadedUrl === null,
               onClick: () => setAnnotatorMode(selectionMode === "area" ? null : "area"),
               style: { ...styles2.modeButton, ...selectionMode === "area" ? styles2.areaModeButtonActive : {} },
               children: "\u6846\u9009\u533A\u57DF"
@@ -33792,7 +34081,10 @@ function FrontendFeedbackPanel({
           onSelect: selectPresentationSlide
         }
       ) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: styles2.previewShell, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: styles2.previewShell, children: previewFrame === null ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { "data-pagecraft-empty-preview": "", style: styles2.emptyPreview, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: "\u5C1A\u672A\u6253\u5F00\u9884\u89C8" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: "\u8F93\u5165 http \u6216 https \u5730\u5740\u540E\u6253\u5F00\uFF1B\u6587\u4EF6\u5DE5\u4F5C\u533A\u65E0\u9700\u9884\u89C8\u5730\u5740\u5373\u53EF\u4F7F\u7528\u3002" })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
         "iframe",
         {
           ref: iframeRef,
@@ -33963,7 +34255,7 @@ function FrontendFeedbackPanel({
       WorkspaceExplorer,
       {
         sessionId,
-        previewSrc: previewFrame.src,
+        previewSrc: previewFrame?.src ?? null,
         onClose: () => setShowSourceWorkspace(false),
         onRefresh: () => refreshPreview("\u6B63\u5728\u5237\u65B0\u6587\u4EF6\u5DE5\u4F5C\u533A\u9884\u89C8\u2026", "\u672C\u5730\u6587\u4EF6\u4FEE\u6539\u5DF2\u4FDD\u5B58\uFF0C\u9884\u89C8\u5DF2\u540C\u6B65\u3002"),
         onNavigate: (url) => navigatePreview(url, "\u6B63\u5728\u6253\u5F00\u6587\u4EF6\u5DE5\u4F5C\u533A\u9884\u89C8\u4E2D\u7684\u94FE\u63A5\u2026"),
@@ -34090,6 +34382,7 @@ var styles2 = {
   },
   presentationWorkspace: { gridTemplateColumns: "minmax(170px, 220px) minmax(0, 1fr) minmax(280px, 340px)" },
   previewShell: { minWidth: 0, minHeight: 0, padding: 12, background: "#090d0b" },
+  emptyPreview: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, border: `1px dashed ${colors.border}`, borderRadius: 10, color: colors.muted, textAlign: "center" },
   iframe: { display: "block", width: "100%", height: "100%", border: `1px solid ${colors.border}`, borderRadius: 10, background: "white" },
   sidebar: { minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", borderLeft: `1px solid ${colors.border}`, background: colors.panel },
   sidebarHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 14px 12px", borderBottom: `1px solid ${colors.border}`, fontSize: 13 },

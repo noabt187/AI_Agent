@@ -112,7 +112,8 @@ export interface PreviewNavigationState {
   index: number
 }
 
-export const DEFAULT_PREVIEW_URL = 'http://localhost:5173'
+/** @deprecated Empty preview is now the default; retained for API compatibility. */
+export const DEFAULT_PREVIEW_URL: null = null
 export const MAX_PREVIEW_HISTORY_ENTRIES = 50
 export const MAX_PERSISTED_FEEDBACK_COMMENTS = 50
 
@@ -179,12 +180,12 @@ export function normalizePreviewUrl(value: unknown): string | null {
   }
 }
 
-export function resolvePersistedPreviewUrl(value: string | null | undefined): string {
-  return normalizePreviewUrl(value) ?? DEFAULT_PREVIEW_URL
+export function resolvePersistedPreviewUrl(value: string | null | undefined): string | null {
+  return normalizePreviewUrl(value)
 }
 
-export function currentPreviewUrl(navigation: PreviewNavigationState): string {
-  return navigation.entries[navigation.index] ?? DEFAULT_PREVIEW_URL
+export function currentPreviewUrl(navigation: PreviewNavigationState): string | null {
+  return navigation.entries[navigation.index] ?? null
 }
 
 export function pushPreviewNavigation(
@@ -212,16 +213,19 @@ export function movePreviewNavigation(
 
 export function resolvePersistedPreviewNavigation(
   value: string | null | undefined,
-  fallbackUrl: string | null | undefined = DEFAULT_PREVIEW_URL,
+  fallbackUrl: string | null | undefined = null,
 ): PreviewNavigationState {
   const fallback = resolvePersistedPreviewUrl(fallbackUrl)
+  const fallbackNavigation = (): PreviewNavigationState => fallback === null
+    ? { entries: [], index: -1 }
+    : { entries: [fallback], index: 0 }
   if (value === null || value === undefined || value.trim().length === 0) {
-    return { entries: [fallback], index: 0 }
+    return fallbackNavigation()
   }
 
   try {
     const parsed = JSON.parse(value) as { entries?: unknown; index?: unknown }
-    if (!Array.isArray(parsed.entries)) return { entries: [fallback], index: 0 }
+    if (!Array.isArray(parsed.entries)) return fallbackNavigation()
 
     const requestedIndex = Number.isInteger(parsed.index) ? Number(parsed.index) : parsed.entries.length - 1
     const normalized: string[] = []
@@ -232,7 +236,7 @@ export function resolvePersistedPreviewNavigation(
       normalized.push(url)
       if (sourceIndex <= requestedIndex) normalizedIndex = normalized.length - 1
     })
-    if (normalized.length === 0) return { entries: [fallback], index: 0 }
+    if (normalized.length === 0) return fallbackNavigation()
 
     const offset = Math.max(0, normalized.length - MAX_PREVIEW_HISTORY_ENTRIES)
     const entries = normalized.slice(offset)
@@ -242,7 +246,7 @@ export function resolvePersistedPreviewNavigation(
     )
     return { entries, index }
   } catch {
-    return { entries: [fallback], index: 0 }
+    return fallbackNavigation()
   }
 }
 
@@ -306,6 +310,32 @@ export interface SelectionCorners {
   topRight: SelectionPoint
   bottomRight: SelectionPoint
   bottomLeft: SelectionPoint
+}
+
+export function isPreviewTargetCurrentHost(targetUrl: string, harnessUrl: string): boolean {
+  const target = new URL(targetUrl)
+  const harness = new URL(harnessUrl)
+  const sameHostname = target.hostname.toLowerCase() === harness.hostname.toLowerCase()
+    || (isLoopbackPreviewHost(target.hostname) && isLoopbackPreviewHost(harness.hostname))
+  return target.protocol === harness.protocol
+    && effectivePort(target) === effectivePort(harness)
+    && sameHostname
+}
+
+export function suppressCurrentHostPreview(
+  navigation: PreviewNavigationState,
+  harnessUrl: string,
+): PreviewNavigationState {
+  if (navigation.entries.length === 0) return navigation
+  const retained: string[] = []
+  let index = -1
+  navigation.entries.forEach((entry, sourceIndex) => {
+    if (isPreviewTargetCurrentHost(entry, harnessUrl)) return
+    retained.push(entry)
+    if (sourceIndex <= navigation.index) index = retained.length - 1
+  })
+  if (retained.length === 0) return { entries: [], index: -1 }
+  return { entries: retained, index: index < 0 ? 0 : index }
 }
 
 export function cornersFromRect(value: SelectionRect): SelectionCorners {

@@ -112,17 +112,17 @@ function normalizePresentationSource(value) {
   const originalName = trimmed(value.originalName, 240);
   const sourcePath = trimmed(value.sourcePath, 500);
   const planPath = trimmed(value.planPath, 500);
-  const deckPath = trimmed(value.deckPath, 500);
+  const deckPath2 = trimmed(value.deckPath, 500);
   const statusPath = trimmed(value.statusPath, 500);
   const textCharacters = Number(value.textCharacters);
-  if (!originalName || !sourcePath || !planPath || !deckPath || !statusPath) return null;
+  if (!originalName || !sourcePath || !planPath || !deckPath2 || !statusPath) return null;
   if (!Number.isInteger(textCharacters) || textCharacters < 1) return null;
   return {
     jobId: value.jobId,
     originalName,
     sourcePath,
     planPath,
-    deckPath,
+    deckPath: deckPath2,
     statusPath,
     textCharacters,
     warnings: stringArray(value.warnings, 20, 500)
@@ -479,7 +479,7 @@ async function createPresentationSource(cwd, fileName2, bytes, options = {}) {
   const sourcePath = join(directory, "source.md");
   const sourceJsonPath = join(directory, "source.json");
   const planPath = join(directory, "plan.json");
-  const deckPath = join(directory, "deck.json");
+  const deckPath2 = join(directory, "deck.json");
   const statusPath = join(directory, "status.json");
   await mkdir(directory, { recursive: true });
   throwIfCancelled(options.signal);
@@ -494,7 +494,7 @@ async function createPresentationSource(cwd, fileName2, bytes, options = {}) {
     originalName,
     sourcePath: workspaceRelative(cwd, sourcePath),
     planPath: workspaceRelative(cwd, planPath),
-    deckPath: workspaceRelative(cwd, deckPath),
+    deckPath: workspaceRelative(cwd, deckPath2),
     statusPath: workspaceRelative(cwd, statusPath),
     textCharacters: extracted.text.length,
     warnings: extracted.warnings
@@ -945,6 +945,15 @@ var TEXT_EXTENSIONS3 = /* @__PURE__ */ new Set([
   ".yml"
 ]);
 var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".gif", ".jpeg", ".jpg", ".png", ".webp"]);
+var TEXT_FILENAMES = /* @__PURE__ */ new Set([
+  ".editorconfig",
+  ".gitattributes",
+  ".gitignore",
+  "containerfile",
+  "dockerfile",
+  "license",
+  "makefile"
+]);
 function extensionOf(path) {
   const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const dot = path.lastIndexOf(".");
@@ -972,7 +981,8 @@ function normalizeWorkspacePath(value) {
   return segments.join("/");
 }
 function isWorkspaceTextFile(path) {
-  return TEXT_EXTENSIONS3.has(extensionOf(path));
+  const name2 = path.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+  return TEXT_EXTENSIONS3.has(extensionOf(path)) || TEXT_FILENAMES.has(name2);
 }
 function isWorkspaceImageFile(path) {
   return IMAGE_EXTENSIONS.has(extensionOf(path));
@@ -1000,6 +1010,14 @@ function workspaceLayoutStorageKey(rootPath, sessionId) {
 
 // src/direct-text-edit.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/presentation-text-edit.ts
+import { applyEdits, findNodeAtLocation, modify, parseTree as parseTree2 } from "jsonc-parser";
+import { parseFragment as parseFragment2 } from "parse5";
+
+// src/source-text-resolver.ts
+import { lstat as lstat2, readFile as readFile4, readdir as readdir2 } from "node:fs/promises";
+import { basename as basename4, extname as extname2, relative as relative3, resolve as resolve4, sep as sep4 } from "node:path";
 
 // src/source-text-parsers.ts
 import { parse as parseJavaScript } from "@babel/parser";
@@ -1081,9 +1099,9 @@ function jsxName(node) {
 }
 function jsxAttributes(node) {
   const attributes = node.attributes ?? [];
-  return attributes.flatMap((attribute) => {
-    if (attribute.type !== "JSXAttribute" || typeof attribute.name?.name !== "string") return [];
-    return [attribute.name.name === "className" ? "class" : attribute.name.name];
+  return attributes.flatMap((attribute2) => {
+    if (attribute2.type !== "JSXAttribute" || typeof attribute2.name?.name !== "string") return [];
+    return [attribute2.name.name === "className" ? "class" : attribute2.name.name];
   });
 }
 function openingElement(parent) {
@@ -1177,7 +1195,7 @@ function parseMarkupCandidates(path, source) {
           end: range.end,
           line: sourceLine(source, range.start),
           tagName: parentTag,
-          attributeNames: parent?.attrs?.map((attribute) => attribute.name === "classname" ? "class" : attribute.name) ?? [],
+          attributeNames: parent?.attrs?.map((attribute2) => attribute2.name === "classname" ? "class" : attribute2.name) ?? [],
           sourceStyle: "html"
         });
       }
@@ -1321,10 +1339,6 @@ function encodeSourceTextReplacement(candidate, replacementText) {
   if (candidate.sourceStyle === "json") return JSON.stringify(replacementText).slice(1, -1);
   return replacementText;
 }
-
-// src/source-text-resolver.ts
-import { lstat as lstat2, readFile as readFile4, readdir as readdir2 } from "node:fs/promises";
-import { basename as basename4, extname as extname2, relative as relative3, resolve as resolve4, sep as sep4 } from "node:path";
 
 // src/workspace-explorer.ts
 import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
@@ -1510,7 +1524,13 @@ async function readWorkspaceFile(cwd, selectedFolder, path, options = {}) {
   }
   const body = await readFile3(resolved.target);
   if (body.includes(0)) throw new WorkspaceExplorerError("\u6587\u4EF6\u5305\u542B\u4E8C\u8FDB\u5236\u5185\u5BB9\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u6587\u672C\u7F16\u8F91", 415, "WORKSPACE_BINARY_FILE");
-  return fileSnapshot(resolved.relativePath, body.toString("utf8"), metadata.mtime.toISOString());
+  let content;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    throw new WorkspaceExplorerError("\u6587\u4EF6\u4E0D\u662F\u6709\u6548\u7684 UTF-8 \u6587\u672C\uFF0C\u4E0D\u80FD\u7F16\u8F91", 415, "WORKSPACE_BINARY_FILE");
+  }
+  return fileSnapshot(resolved.relativePath, content, metadata.mtime.toISOString());
 }
 function imageMimeType(path) {
   const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
@@ -1898,11 +1918,220 @@ async function resolveDomTextSource(cwd, selectedFolder, selection, options = {}
   throw new SourceTextResolverError("\u6CA1\u6709\u627E\u5230\u80FD\u5B89\u5168\u4FEE\u6539\u7684\u672C\u5730\u6E90\u7801\uFF0C\u8FD9\u6BB5\u6587\u5B57\u53EF\u80FD\u6765\u81EA\u63A5\u53E3\u3001\u8FD0\u884C\u65F6\u6216\u751F\u6210\u6587\u4EF6", "TEXT_SOURCE_NOT_FOUND", 404);
 }
 
+// src/presentation-text-edit.ts
+var BLOCK_ELEMENTS = /* @__PURE__ */ new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "div",
+  "dl",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "ul"
+]);
+function normalizeText2(value) {
+  return value.replace(/\s+/g, " ").trim();
+}
+function htmlText(node) {
+  if (node.nodeName === "#text") return node.value ?? "";
+  if (node.tagName?.toLowerCase() === "br") return " ";
+  return (node.childNodes ?? []).map((child) => {
+    const text = htmlText(child);
+    return child.tagName !== void 0 && BLOCK_ELEMENTS.has(child.tagName.toLowerCase()) ? ` ${text} ` : text;
+  }).join("");
+}
+function elementChildren(node) {
+  return (node.childNodes ?? []).filter((child) => typeof child.tagName === "string");
+}
+function attribute(node, name2) {
+  return node.attrs?.find((item) => item.name.toLowerCase() === name2.toLowerCase())?.value;
+}
+function stableAttributesMatch(node, selection) {
+  if (selection.textKey !== void 0 && attribute(node, "data-pagecraft-text-key") !== selection.textKey) return false;
+  for (const name2 of ["id", "name", "role", "data-testid", "data-pagecraft-text-key"]) {
+    const expected = selection.attributes[name2];
+    if (expected !== void 0 && attribute(node, name2) !== expected) return false;
+  }
+  return true;
+}
+function classMatchScore(node, selection) {
+  const selected = new Set((selection.attributes.class ?? "").split(/\s+/).filter(Boolean));
+  if (selected.size === 0) return 0;
+  const actual = new Set((attribute(node, "class") ?? "").split(/\s+/).filter(Boolean));
+  let score = 0;
+  for (const name2 of selected) {
+    if (actual.has(name2)) score += 1;
+  }
+  return score;
+}
+function matchesSelection(node, selection) {
+  return node.tagName?.toLowerCase() === selection.tagName.toLowerCase() && normalizeText2(htmlText(node)) === normalizeText2(selection.displayedText) && stableAttributesMatch(node, selection);
+}
+function nodeAtElementPath(root, path) {
+  let current = root;
+  for (const index of path) {
+    if (!Number.isSafeInteger(index) || index < 0) return null;
+    const child = elementChildren(current)[index];
+    if (child === void 0) return null;
+    current = child;
+  }
+  return current;
+}
+function matchingElements(root, selection) {
+  const matches = [];
+  function visit(node) {
+    if (matchesSelection(node, selection)) matches.push(node);
+    for (const child of elementChildren(node)) visit(child);
+  }
+  visit(root);
+  return matches;
+}
+function chooseElement(root, selection) {
+  const path = selection.presentationElementPath;
+  if (path !== void 0) {
+    const exact = nodeAtElementPath(root, path);
+    if (exact !== null && matchesSelection(exact, selection)) return exact;
+  }
+  const matches = matchingElements(root, selection);
+  if (matches.length === 0) {
+    throw new SourceTextResolverError(
+      "\u5F53\u524D\u5E7B\u706F\u7247\u4E2D\u6CA1\u6709\u627E\u5230\u4E0E\u6240\u9009\u6587\u5B57\u5BF9\u5E94\u7684 HTML \u5143\u7D20\uFF0CPageCraft \u6CA1\u6709\u4FEE\u6539\u6587\u4EF6",
+      "TEXT_SOURCE_NOT_FOUND",
+      404
+    );
+  }
+  if (matches.length === 1) return matches[0];
+  const ranked = matches.map((node) => ({ node, score: classMatchScore(node, selection) })).sort((left, right) => right.score - left.score);
+  const [first, second] = ranked;
+  if (first !== void 0 && first.score > (second?.score ?? -1)) return first.node;
+  throw new SourceTextResolverError(
+    "\u5F53\u524D\u5E7B\u706F\u7247\u4E2D\u6709\u591A\u4E2A\u5143\u7D20\u663E\u793A\u76F8\u540C\u6587\u5B57\uFF0CPageCraft \u6CA1\u6709\u731C\u6D4B\u6216\u4FEE\u6539\u6587\u4EF6",
+    "TEXT_SOURCE_AMBIGUOUS"
+  );
+}
+function escapeHtmlText2(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+function replaceElementText(source, node, replacementText) {
+  const start = node.sourceCodeLocation?.startTag?.endOffset;
+  const end = node.sourceCodeLocation?.endTag?.startOffset;
+  if (start === void 0 || end === void 0 || start > end) {
+    throw new SourceTextResolverError(
+      "\u6240\u9009\u6587\u5B57\u8282\u70B9\u6CA1\u6709\u7A33\u5B9A\u7684\u6E90\u7801\u8303\u56F4\uFF0CPageCraft \u6CA1\u6709\u4FEE\u6539\u6587\u4EF6",
+      "TEXT_SOURCE_NOT_FOUND",
+      404
+    );
+  }
+  return `${source.slice(0, start)}${escapeHtmlText2(replacementText)}${source.slice(end)}`;
+}
+function deckPath(selectedFolder) {
+  const folder = normalizeWorkspacePath(selectedFolder);
+  if (folder === null) return null;
+  return folder === "." ? "deck.json" : `${folder}/deck.json`;
+}
+function lineAt(source, offset) {
+  return source.slice(0, offset).split("\n").length;
+}
+function contentLine(source, slideIndex) {
+  const root = parseTree2(source);
+  const node = root === void 0 ? void 0 : findNodeAtLocation(root, ["slides", slideIndex, "content"]);
+  return lineAt(source, node?.offset ?? 0);
+}
+function parseDeck(source) {
+  try {
+    const value = JSON.parse(source);
+    if (value === null || typeof value !== "object") throw new Error("Deck must be an object");
+    return value;
+  } catch (error) {
+    throw new SourceTextResolverError(
+      "deck.json \u4E0D\u662F\u6709\u6548\u7684 JSON\uFF0CPageCraft \u6CA1\u6709\u4FEE\u6539\u6587\u4EF6",
+      "TEXT_SOURCE_NOT_FOUND",
+      409,
+      { cause: error instanceof Error ? error.message : String(error) }
+    );
+  }
+}
+async function readDeck(cwd, selectedFolder) {
+  const path = deckPath(selectedFolder);
+  if (path === null) return null;
+  try {
+    return { file: await readWorkspaceFile(cwd, selectedFolder, path), path };
+  } catch (error) {
+    if (error instanceof WorkspaceExplorerError && error.code === "WORKSPACE_ENTRY_NOT_FOUND") return null;
+    throw error;
+  }
+}
+async function preparePresentationTextEdit(cwd, selectedFolder, selection, replacementText) {
+  if (selection.slideId === void 0) return null;
+  const stored = await readDeck(cwd, selectedFolder);
+  if (stored === null) return null;
+  const deck = parseDeck(stored.file.content);
+  if (!Array.isArray(deck.slides)) {
+    throw new SourceTextResolverError("deck.json \u6CA1\u6709\u6709\u6548\u7684\u5E7B\u706F\u7247\u5217\u8868", "TEXT_SOURCE_NOT_FOUND", 404);
+  }
+  const slideIndexes = deck.slides.flatMap((slide2, index) => {
+    if (slide2 !== null && typeof slide2 === "object" && slide2.id === selection.slideId) return [index];
+    return [];
+  });
+  if (slideIndexes.length !== 1) {
+    throw new SourceTextResolverError(
+      slideIndexes.length === 0 ? "deck.json \u4E2D\u6CA1\u6709\u627E\u5230\u5F53\u524D\u5E7B\u706F\u7247" : "deck.json \u4E2D\u5B58\u5728\u91CD\u590D\u7684\u5E7B\u706F\u7247 ID",
+      slideIndexes.length === 0 ? "TEXT_SOURCE_NOT_FOUND" : "TEXT_SOURCE_AMBIGUOUS",
+      409
+    );
+  }
+  const slideIndex = slideIndexes[0];
+  const slide = deck.slides[slideIndex];
+  if (typeof slide.content !== "string") {
+    throw new SourceTextResolverError("\u5F53\u524D\u5E7B\u706F\u7247\u6CA1\u6709\u53EF\u7F16\u8F91\u7684 HTML \u5185\u5BB9", "TEXT_SOURCE_NOT_FOUND", 404);
+  }
+  const fragment = parseFragment2(slide.content, { sourceCodeLocationInfo: true });
+  const target = chooseElement(fragment, selection);
+  const nextSlideContent = replaceElementText(slide.content, target, replacementText);
+  const edits = modify(
+    stored.file.content,
+    ["slides", slideIndex, "content"],
+    nextSlideContent,
+    {
+      formattingOptions: {
+        insertSpaces: true,
+        tabSize: 2,
+        eol: stored.file.content.includes("\r\n") ? "\r\n" : "\n"
+      }
+    }
+  );
+  return {
+    file: stored.file,
+    line: contentLine(stored.file.content, slideIndex),
+    nextContent: applyEdits(stored.file.content, edits)
+  };
+}
+
 // src/direct-text-edit.ts
 var DEFAULT_VERIFICATION_TIMEOUT_MS = 8e3;
 var DEFAULT_RETENTION_MS = 12e4;
 var MAX_REPLACEMENT_CHARACTERS = 1e4;
-function normalizeText2(value) {
+function normalizeText3(value) {
   return value.replace(/\s+/g, " ").trim();
 }
 function validateReplacementText(value) {
@@ -1949,27 +2178,41 @@ var DirectTextEditService = class {
   }
   async start(cwd, selectedFolder, selection, replacementText) {
     validateReplacementText(replacementText);
-    const target = await resolveDomTextSource(cwd, selectedFolder, selection);
-    const original = await readWorkspaceFile(cwd, selectedFolder, target.path);
-    const currentRange = original.content.slice(target.start, target.end);
-    if (currentRange !== target.replacement) {
-      throw new WorkspaceExplorerError(
-        "\u5B9A\u4F4D\u5B8C\u6210\u540E\u6E90\u7801\u53C8\u53D1\u751F\u4E86\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u8FD9\u6BB5\u6587\u5B57",
-        409,
-        "TEXT_SELECTION_STALE"
-      );
+    const presentationEdit = await preparePresentationTextEdit(cwd, selectedFolder, selection, replacementText);
+    let original;
+    let path;
+    let line;
+    let nextContent;
+    if (presentationEdit !== null) {
+      original = presentationEdit.file;
+      path = original.path;
+      line = presentationEdit.line;
+      nextContent = presentationEdit.nextContent;
+    } else {
+      const target = await resolveDomTextSource(cwd, selectedFolder, selection);
+      original = await readWorkspaceFile(cwd, selectedFolder, target.path);
+      const currentRange = original.content.slice(target.start, target.end);
+      if (currentRange !== target.replacement) {
+        throw new WorkspaceExplorerError(
+          "\u5B9A\u4F4D\u5B8C\u6210\u540E\u6E90\u7801\u53C8\u53D1\u751F\u4E86\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u8FD9\u6BB5\u6587\u5B57",
+          409,
+          "TEXT_SELECTION_STALE"
+        );
+      }
+      const encodedReplacement = encodeSourceTextReplacement(target, replacementText);
+      path = target.path;
+      line = target.line;
+      nextContent = `${original.content.slice(0, target.start)}${encodedReplacement}${original.content.slice(target.end)}`;
     }
-    const encodedReplacement = encodeSourceTextReplacement(target, replacementText);
-    const nextContent = `${original.content.slice(0, target.start)}${encodedReplacement}${original.content.slice(target.end)}`;
-    const written = await saveWorkspaceFile(cwd, selectedFolder, target.path, nextContent, original.hash);
+    const written = await saveWorkspaceFile(cwd, selectedFolder, path, nextContent, original.hash);
     const transactionId = randomUUID4();
     const expiresAt = Date.now() + Math.max(this.verificationTimeoutMs, this.retentionMs);
     const transaction = {
       transactionId,
       cwd,
       selectedFolder,
-      path: target.path,
-      line: target.line,
+      path,
+      line,
       originalContent: original.content,
       originalHash: original.hash,
       writtenHash: written.hash,
@@ -1979,8 +2222,8 @@ var DirectTextEditService = class {
     this.pending.set(transactionId, transaction);
     return {
       transactionId,
-      path: target.path,
-      line: target.line,
+      path,
+      line,
       previousText: selection.displayedText,
       replacementText,
       writtenHash: written.hash,
@@ -1994,7 +2237,7 @@ var DirectTextEditService = class {
     }
     this.pending.delete(transaction.transactionId);
     const observedText = verification.observedText ?? "";
-    if (verification.verified && normalizeText2(observedText) === normalizeText2(transaction.expectedText)) {
+    if (verification.verified && normalizeText3(observedText) === normalizeText3(transaction.expectedText)) {
       const current = await readWorkspaceFile(cwd, transaction.selectedFolder, transaction.path);
       if (current.hash !== transaction.writtenHash) return conflictResult(transaction);
       return committedResult(transaction, current);
@@ -2041,7 +2284,7 @@ var DirectTextEditService = class {
 };
 
 // src/shared.ts
-var DEFAULT_PREVIEW_URL = "http://localhost:5173";
+var DEFAULT_PREVIEW_URL = null;
 var MAX_PREVIEW_HISTORY_ENTRIES = 50;
 var MAX_PERSISTED_FEEDBACK_COMMENTS = 50;
 var PREVIEW_URL_STORAGE_PREFIX = "dsh-frontend-feedback.preview-url:";
@@ -2096,10 +2339,10 @@ function normalizePreviewUrl(value) {
   }
 }
 function resolvePersistedPreviewUrl(value) {
-  return normalizePreviewUrl(value) ?? DEFAULT_PREVIEW_URL;
+  return normalizePreviewUrl(value);
 }
 function currentPreviewUrl(navigation) {
-  return navigation.entries[navigation.index] ?? DEFAULT_PREVIEW_URL;
+  return navigation.entries[navigation.index] ?? null;
 }
 function pushPreviewNavigation(navigation, targetUrl) {
   const normalizedTarget = normalizePreviewUrl(targetUrl);
@@ -2112,14 +2355,15 @@ function movePreviewNavigation(navigation, delta) {
   const index = navigation.index + delta;
   return index < 0 || index >= navigation.entries.length ? null : { ...navigation, index };
 }
-function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_URL) {
+function resolvePersistedPreviewNavigation(value, fallbackUrl = null) {
   const fallback = resolvePersistedPreviewUrl(fallbackUrl);
+  const fallbackNavigation = () => fallback === null ? { entries: [], index: -1 } : { entries: [fallback], index: 0 };
   if (value === null || value === void 0 || value.trim().length === 0) {
-    return { entries: [fallback], index: 0 };
+    return fallbackNavigation();
   }
   try {
     const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed.entries)) return { entries: [fallback], index: 0 };
+    if (!Array.isArray(parsed.entries)) return fallbackNavigation();
     const requestedIndex = Number.isInteger(parsed.index) ? Number(parsed.index) : parsed.entries.length - 1;
     const normalized = [];
     let normalizedIndex = -1;
@@ -2129,7 +2373,7 @@ function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_
       normalized.push(url);
       if (sourceIndex <= requestedIndex) normalizedIndex = normalized.length - 1;
     });
-    if (normalized.length === 0) return { entries: [fallback], index: 0 };
+    if (normalized.length === 0) return fallbackNavigation();
     const offset = Math.max(0, normalized.length - MAX_PREVIEW_HISTORY_ENTRIES);
     const entries = normalized.slice(offset);
     const index = Math.min(
@@ -2138,7 +2382,7 @@ function resolvePersistedPreviewNavigation(value, fallbackUrl = DEFAULT_PREVIEW_
     );
     return { entries, index };
   } catch {
-    return { entries: [fallback], index: 0 };
+    return fallbackNavigation();
   }
 }
 function isLoopbackPreviewHost(hostname) {
@@ -2175,6 +2419,24 @@ function resolvePreviewFrameLocation(targetUrl, harnessUrl, revision = 0) {
   endpoint.searchParams.set("revision", String(revision));
   endpoint.hash = target.hash;
   return { src: endpoint.href, allowSameOrigin };
+}
+function isPreviewTargetCurrentHost(targetUrl, harnessUrl) {
+  const target = new URL(targetUrl);
+  const harness = new URL(harnessUrl);
+  const sameHostname = target.hostname.toLowerCase() === harness.hostname.toLowerCase() || isLoopbackPreviewHost(target.hostname) && isLoopbackPreviewHost(harness.hostname);
+  return target.protocol === harness.protocol && effectivePort(target) === effectivePort(harness) && sameHostname;
+}
+function suppressCurrentHostPreview(navigation, harnessUrl) {
+  if (navigation.entries.length === 0) return navigation;
+  const retained = [];
+  let index = -1;
+  navigation.entries.forEach((entry, sourceIndex) => {
+    if (isPreviewTargetCurrentHost(entry, harnessUrl)) return;
+    retained.push(entry);
+    if (sourceIndex <= navigation.index) index = retained.length - 1;
+  });
+  if (retained.length === 0) return { entries: [], index: -1 };
+  return { entries: retained, index: index < 0 ? 0 : index };
 }
 function cornersFromRect(value) {
   return {
@@ -2536,6 +2798,7 @@ var ANNOTATOR_SCRIPT = String.raw`
   let assetBindings = new Map();
   let assetApplyFrame = null;
   let hoveredImageSlot = null;
+  let activeTextVerification = null;
   const imageStates = new WeakMap();
   const slotStates = new WeakMap();
 
@@ -2897,11 +3160,29 @@ var ANNOTATOR_SCRIPT = String.raw`
     return [presentation?.slideId || '', element.localName, selectorFor(element), siblingIndex].join('|').slice(0, 1000);
   }
 
+  function presentationElementPath(element, presentation) {
+    if (!presentation) return undefined;
+    const slide = element.closest('[data-pagecraft-slide-id]');
+    if (!(slide instanceof HTMLElement) || slide.getAttribute('data-pagecraft-slide-id') !== presentation.slideId) return undefined;
+    const path = [];
+    let current = element;
+    while (current instanceof Element && current !== slide) {
+      const parent = current.parentElement;
+      if (!(parent instanceof Element)) return undefined;
+      const index = Array.from(parent.children).indexOf(current);
+      if (index < 0) return undefined;
+      path.unshift(index);
+      current = parent;
+    }
+    return current === slide ? path : undefined;
+  }
+
   function describeText(element) {
     const target = textTargetFor(element);
     if (!target) return null;
     const presentation = presentationContextFor(target);
     const textKey = target.getAttribute('data-pagecraft-text-key') || undefined;
+    const elementPath = presentationElementPath(target, presentation);
     return {
       pageUrl: document.baseURI,
       framePath: [],
@@ -2912,6 +3193,7 @@ var ANNOTATOR_SCRIPT = String.raw`
       attributes: safeTextAttributes(target),
       nearbyText: nearbyTextFor(target),
       ...(presentation ? { slideId: presentation.slideId } : {}),
+      ...(elementPath ? { presentationElementPath: elementPath } : {}),
       ...(textKey ? { textKey } : {})
     };
   }
@@ -2929,6 +3211,56 @@ var ANNOTATOR_SCRIPT = String.raw`
     } catch {
       return null;
     }
+  }
+
+  function normalizedVerificationText(value) {
+    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function cancelTextVerification() {
+    if (!activeTextVerification) return;
+    activeTextVerification.observer.disconnect();
+    window.clearTimeout(activeTextVerification.timer);
+    activeTextVerification = null;
+  }
+
+  function verifyTextWhenReady(transactionId, selection, expectedText, timeoutMs) {
+    cancelTextVerification();
+    const duration = clamp(Number.isFinite(timeoutMs) ? timeoutMs : 6500, 250, 7500);
+    const expected = normalizedVerificationText(expectedText);
+    const verification = {
+      transactionId,
+      observer: null,
+      timer: 0
+    };
+
+    function finish(target) {
+      if (activeTextVerification !== verification) return;
+      const observedText = target instanceof Element ? normalizedText(target, 10000) : undefined;
+      verification.observer.disconnect();
+      window.clearTimeout(verification.timer);
+      activeTextVerification = null;
+      post({
+        type: 'dsh-pagecraft-text-verification',
+        transactionId,
+        found: target instanceof Element,
+        observedText
+      });
+    }
+
+    function check() {
+      if (activeTextVerification !== verification) return;
+      const target = findTextVerificationTarget(selection);
+      if (target instanceof Element && normalizedVerificationText(normalizedText(target, 10000)) === expected) {
+        finish(target);
+      }
+    }
+
+    verification.observer = new MutationObserver(check);
+    verification.observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    verification.timer = window.setTimeout(() => finish(findTextVerificationTarget(selection)), duration);
+    activeTextVerification = verification;
+    check();
   }
 
   function hideGuides() {
@@ -3494,13 +3826,17 @@ var ANNOTATOR_SCRIPT = String.raw`
       return;
     }
     if (event.data?.type === 'dsh-pagecraft-verify-text' && typeof event.data.transactionId === 'string') {
-      const target = findTextVerificationTarget(event.data.selection);
-      post({
-        type: 'dsh-pagecraft-text-verification',
-        transactionId: event.data.transactionId,
-        found: target instanceof Element,
-        observedText: target instanceof Element ? normalizedText(target, 10000) : undefined
-      });
+      if (typeof event.data.expectedText === 'string') {
+        verifyTextWhenReady(event.data.transactionId, event.data.selection, event.data.expectedText, event.data.timeoutMs);
+      } else {
+        const target = findTextVerificationTarget(event.data.selection);
+        post({
+          type: 'dsh-pagecraft-text-verification',
+          transactionId: event.data.transactionId,
+          found: target instanceof Element,
+          observedText: target instanceof Element ? normalizedText(target, 10000) : undefined
+        });
+      }
       return;
     }
     if (event.data?.type === 'dsh-pagecraft-convert-text-selection') {
@@ -5595,6 +5931,7 @@ export {
   isPresentationRequestSettled,
   isPresentationSlideSummary,
   isPresentationTextFile,
+  isPreviewTargetCurrentHost,
   isWorkspaceImageFile,
   isWorkspaceTextFile,
   listPresentationProjectAssets,
@@ -5611,6 +5948,7 @@ export {
   normalizeWorkspacePath,
   parsePlanRequestBody,
   parseSourceTextCandidates,
+  preparePresentationTextEdit,
   presentationJobStorageKey,
   presentationSourceLanguage,
   presentationWorkspaceLayoutStorageKey,
@@ -5647,6 +5985,7 @@ export {
   savePresentationPlan,
   savePresentationSourceFile,
   saveWorkspaceFile,
+  suppressCurrentHostPreview,
   uploadPresentationAsset,
   uploadPresentationProjectAsset,
   uploadWorkspaceImage,

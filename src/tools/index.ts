@@ -18,6 +18,7 @@ export type ToolFn = (rootDir: string, ...args: string[]) => Promise<string>
 
 export type ToolDef = {
   fn: ToolFn
+  withSignal?: (rootDir: string, args: string[], signal?: AbortSignal) => Promise<string>
   description: string
   argNames: string[]
   scope: ToolScope
@@ -104,7 +105,8 @@ export const builtinToolRegistry: Readonly<Record<string, ToolDef>> = {
     scope: 'write',
   },
   verifyCode: {
-    fn: verifyCodeTool,
+    fn: (rootDir, changedFiles) => verifyCodeTool(rootDir, changedFiles),
+    withSignal: (rootDir, args, signal) => verifyCodeTool(rootDir, args[0] ?? '', signal),
     description: '验证代码质量。第一层：自动检测并运行 tsc --noEmit / lint / build / test（可用则跑，不可用则跳过）。第二层：API 契约检查——提取后端路由定义与前端 API 调用，检查是否匹配。rootDir 为项目根目录。',
     argNames: ['rootDir', 'changedFiles'],
     scope: 'read',
@@ -282,6 +284,7 @@ export async function executeToolDefinition(
       .filter((n) => n !== 'rootDir') // rootDir injected separately above
       .map((n) => effectiveArgs[n] ?? '')
 
+    if (tool.withSignal) return await tool.withSignal(effectiveRootDir, argValues, signal)
     return await tool.fn(effectiveRootDir, ...argValues)
   } catch (e: unknown) {
     return `工具执行错误：${e instanceof Error ? e.message : String(e)}`

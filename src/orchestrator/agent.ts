@@ -268,6 +268,7 @@ export class Agent {
     signal?: AbortSignal,
     onEvent?: AgentEventHandler,
     onMetric?: MetricCallback,
+    userMessageId?: string,
   ): Promise<AgentResult> {
     const cfg = await loadModelConfig()
     const llm = createLlmClient(cfg, onMetric)
@@ -324,7 +325,7 @@ export class Agent {
     }
 
     try {
-      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext }))
+      await consumeStream(engine.submitMessage(userInput, { tools, signal, runtimeContext, uuid: userMessageId }))
 
       const abortRet = abortedResult(signal)
       if (abortRet) return abortRet

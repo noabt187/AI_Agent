@@ -274,16 +274,20 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
     sendJson(res, 400, { error: 'prompt 不能为空' })
     return
   }
-  startJsonStream(res)
   try {
     await enqueueSessionPrompt({
       sessionId,
       prompt,
+      onAccepted: () => { startJsonStream(res) },
       onStart: () => { writeStreamEvent(res, { type: 'start', sessionId }) },
       onEvent: async event => { writeStreamEvent(res, event) },
     })
     writeStreamEvent(res, { type: 'done', sessionId })
   } catch (error) {
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+      return
+    }
     writeStreamEvent(res, {
       type: 'error',
       message: error instanceof Error ? error.message : String(error),

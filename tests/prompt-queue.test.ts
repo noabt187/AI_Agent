@@ -72,3 +72,24 @@ test('deleting a session rejects queued jobs and waits for the active job to set
   await first
   assert.equal(queue.queued('s1'), 0)
 })
+
+test('abort waits for durable finish before allowing a queued successor', async () => {
+  const executing = deferred(), durable = deferred()
+  const order: string[] = []
+  const queue = new SessionPromptQueue(async item => {
+    if (item.prompt === 'first') await executing.promise
+    order.push(item.prompt)
+  }, () => executing.resolve())
+  const first = queue.enqueue({ ...job('s', 'first'), onFinish: async (_error, signal) => {
+    assert.equal(signal?.aborted, true)
+    await durable.promise
+    order.push('saved')
+  } })
+  const second = queue.enqueue(job('s', 'second'))
+  const abort = queue.abort('s')
+  await immediate()
+  assert.deepEqual(order, ['first'])
+  durable.resolve()
+  await Promise.all([abort, first, second])
+  assert.deepEqual(order, ['first', 'saved', 'second'])
+})

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { preparePresentationTextEdit } from './presentation-text-edit.ts'
 import {
   encodeSourceTextReplacement,
 } from './source-text-parsers.ts'
@@ -96,27 +97,41 @@ export class DirectTextEditService {
     replacementText: string,
   ): Promise<DirectTextEditStart> {
     validateReplacementText(replacementText)
-    const target = await resolveDomTextSource(cwd, selectedFolder, selection)
-    const original = await readWorkspaceFile(cwd, selectedFolder, target.path)
-    const currentRange = original.content.slice(target.start, target.end)
-    if (currentRange !== target.replacement) {
-      throw new WorkspaceExplorerError(
-        '定位完成后源码又发生了变化，请重新选择这段文字',
-        409,
-        'TEXT_SELECTION_STALE',
-      )
+    const presentationEdit = await preparePresentationTextEdit(cwd, selectedFolder, selection, replacementText)
+    let original: WorkspaceFile
+    let path: string
+    let line: number
+    let nextContent: string
+    if (presentationEdit !== null) {
+      original = presentationEdit.file
+      path = original.path
+      line = presentationEdit.line
+      nextContent = presentationEdit.nextContent
+    } else {
+      const target = await resolveDomTextSource(cwd, selectedFolder, selection)
+      original = await readWorkspaceFile(cwd, selectedFolder, target.path)
+      const currentRange = original.content.slice(target.start, target.end)
+      if (currentRange !== target.replacement) {
+        throw new WorkspaceExplorerError(
+          '定位完成后源码又发生了变化，请重新选择这段文字',
+          409,
+          'TEXT_SELECTION_STALE',
+        )
+      }
+      const encodedReplacement = encodeSourceTextReplacement(target, replacementText)
+      path = target.path
+      line = target.line
+      nextContent = `${original.content.slice(0, target.start)}${encodedReplacement}${original.content.slice(target.end)}`
     }
-    const encodedReplacement = encodeSourceTextReplacement(target, replacementText)
-    const nextContent = `${original.content.slice(0, target.start)}${encodedReplacement}${original.content.slice(target.end)}`
-    const written = await saveWorkspaceFile(cwd, selectedFolder, target.path, nextContent, original.hash)
+    const written = await saveWorkspaceFile(cwd, selectedFolder, path, nextContent, original.hash)
     const transactionId = randomUUID()
     const expiresAt = Date.now() + Math.max(this.verificationTimeoutMs, this.retentionMs)
     const transaction: PendingDirectTextEdit = {
       transactionId,
       cwd,
       selectedFolder,
-      path: target.path,
-      line: target.line,
+      path,
+      line,
       originalContent: original.content,
       originalHash: original.hash,
       writtenHash: written.hash,
@@ -126,8 +141,8 @@ export class DirectTextEditService {
     this.pending.set(transactionId, transaction)
     return {
       transactionId,
-      path: target.path,
-      line: target.line,
+      path,
+      line,
       previousText: selection.displayedText,
       replacementText,
       writtenHash: written.hash,

@@ -61,6 +61,7 @@ export interface DomTextSelection {
   attributes: Record<string, string>
   nearbyText: string[]
   slideId?: string
+  presentationElementPath?: number[]
   textKey?: string
 }
 
@@ -118,6 +119,16 @@ const TEXT_EXTENSIONS = new Set([
 
 const IMAGE_EXTENSIONS = new Set(['.gif', '.jpeg', '.jpg', '.png', '.webp'])
 
+const TEXT_FILENAMES = new Set([
+  '.editorconfig',
+  '.gitattributes',
+  '.gitignore',
+  'containerfile',
+  'dockerfile',
+  'license',
+  'makefile',
+])
+
 function extensionOf(path: string): string {
   const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   const dot = path.lastIndexOf('.')
@@ -148,7 +159,8 @@ export function normalizeWorkspacePath(value: unknown): string | null {
 }
 
 export function isWorkspaceTextFile(path: string): boolean {
-  return TEXT_EXTENSIONS.has(extensionOf(path))
+  const name = path.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() ?? ''
+  return TEXT_EXTENSIONS.has(extensionOf(path)) || TEXT_FILENAMES.has(name)
 }
 
 export function isWorkspaceImageFile(path: string): boolean {

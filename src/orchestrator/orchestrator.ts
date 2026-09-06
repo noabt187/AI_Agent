@@ -1,7 +1,6 @@
-import { exec } from 'node:child_process'
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { promisify } from 'node:util'
+import { runCommand } from '../utils/command.js'
 import type { AgentEventHandler, WorldState } from './types.js'
 import { Agent, isPureConfirmationInput } from './agent.js'
 import { legacyAgentRuntime, type AgentRuntime } from './runtime.js'
@@ -28,8 +27,6 @@ import {
   type RepositoryConfig,
 } from './types.js'
 
-const execAsync = promisify(exec)
-
 type AskConfirmFn = (question: string) => Promise<boolean>
 type AskInputFn = (question: string) => Promise<string>
 
@@ -39,6 +36,8 @@ export class Orchestrator {
   private askInput?: AskInputFn
   private agent: Agent
   private abortController?: AbortController
+  private externalSignal?: AbortSignal
+  private userMessageId?: string
   private metricRecorder: (metric: import('../llm/monitoredClient.js').LlmCallMetric) => void
 
   constructor(sessionId: string, initialState?: WorldState, runtime: AgentRuntime = legacyAgentRuntime) {
@@ -78,8 +77,10 @@ export class Orchestrator {
   setAskInput(fn: AskInputFn) { this.askInput = fn }
 
   private async emitOutput(message: string, onEvent?: AgentEventHandler) {
+    this.externalSignal?.throwIfAborted()
     console.log(message)
     await onEvent?.({ type: 'output', message })
+    this.externalSignal?.throwIfAborted()
   }
 
   abort() {
@@ -90,6 +91,7 @@ export class Orchestrator {
   }
 
   async persist(): Promise<void> {
+    this.externalSignal?.throwIfAborted()
     await saveOrchestratorState(this.state.sessionId, this.state)
   }
 
@@ -107,6 +109,7 @@ export class Orchestrator {
   }
 
   async setMemoryRecallMode(mode: MemoryRecallMode): Promise<void> {
+    this.externalSignal?.throwIfAborted()
     this.state.memorySettings = { recallMode: mode }
     await this.persist()
   }
@@ -132,6 +135,7 @@ export class Orchestrator {
     type?: MemoryType
     body: string
   }): Promise<{ memory: MemoryItem; created: boolean }> {
+    this.externalSignal?.throwIfAborted()
     return saveMemory({
       ...input,
       projectDir: this.getProjectDir(),
@@ -140,6 +144,7 @@ export class Orchestrator {
   }
 
   async forgetMemory(id: string): Promise<{ deleted: boolean; layer?: MemoryLayerId }> {
+    this.externalSignal?.throwIfAborted()
     return deleteMemoryByName(this.getProjectDir(), this.state.sessionId, id)
   }
 
@@ -151,6 +156,7 @@ export class Orchestrator {
 
       if (this.askInput) {
         const input = await this.askInput('请输入操作目录（直接回车使用默认，多个目录用逗号分隔）：')
+        this.externalSignal?.throwIfAborted()
         if (input.trim()) {
           this.state.allowedPaths = input.split(',').map((p) => p.trim()).filter(Boolean)
         } else {
@@ -165,8 +171,19 @@ export class Orchestrator {
     }
   }
 
-  async handleUserInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
+  async handleUserInput(userInput: string, onEvent?: AgentEventHandler, signal?: AbortSignal, userMessageId?: string): Promise<void> {
+    this.externalSignal = signal
+    this.userMessageId = userMessageId
+    try {
+      signal?.throwIfAborted()
+      await this.handleInput(userInput, onEvent)
+      signal?.throwIfAborted()
+    } finally { this.externalSignal = undefined; this.userMessageId = undefined }
+  }
+
+  private async handleInput(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     await this.ensureAllowedPaths(onEvent)
+    this.externalSignal?.throwIfAborted()
 
     const normalizedInput = userInput.trim().toLowerCase()
     if (normalizedInput === '取消' || normalizedInput === 'cancel' || normalizedInput === '不做了') {
@@ -201,13 +218,15 @@ export class Orchestrator {
     }
 
     try {
-      const compressed = await maybeCompressContext(this.state.sessionId)
+      const compressed = await maybeCompressContext(this.state.sessionId, undefined, undefined, this.externalSignal)
+      this.externalSignal?.throwIfAborted()
       if (compressed) {
         await this.emitOutput(`[上下文压缩] 消息过长，已压缩旧对话并保留最近 ${10} 轮`, onEvent)
       }
     } catch (err) {
+      this.externalSignal?.throwIfAborted()
       console.error('[上下文压缩] 压缩异常，继续执行:', err)
-      await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err) })
+      await onEvent?.({ type: 'error', message: err instanceof Error ? err.message : String(err), recoverable: true })
     }
 
     if (!this.state.goal && !this.state.confirmedRequirement) {
@@ -220,13 +239,15 @@ export class Orchestrator {
   private async runAgentTurn(userInput: string, onEvent?: AgentEventHandler): Promise<void> {
     const controller = new AbortController()
     this.abortController = controller
+    const signal = this.externalSignal ? AbortSignal.any([controller.signal, this.externalSignal]) : controller.signal
     let result: import('./types.js').AgentResult
     try {
-      result = await this.agent.run(this.state.sessionId, userInput, this.state, controller.signal, onEvent, this.metricRecorder)
+      signal.throwIfAborted()
+      result = await this.agent.run(this.state.sessionId, userInput, this.state, signal, onEvent, this.metricRecorder, this.userMessageId)
     } finally {
       if (this.abortController === controller) this.abortController = undefined
     }
-    if (controller.signal.aborted) {
+    if (signal.aborted) {
       await onEvent?.({ type: 'aborted', message: '中断完成' })
       return
     }
@@ -280,6 +301,7 @@ export class Orchestrator {
   }
 
   private async handleConfirmResponse(userInput: string, onEvent?: AgentEventHandler) {
+    this.externalSignal?.throwIfAborted()
     const pending = this.state.pendingConfirm!
     this.state.pendingConfirm = undefined
 
@@ -299,6 +321,7 @@ export class Orchestrator {
     if (this.askInput) {
       await this.emitOutput(`\n当前操作目录: ${this.state.allowedPaths.join(', ')}`, onEvent)
       const input = await this.askInput('请输入新的操作目录（多个目录用逗号分隔）：')
+      this.externalSignal?.throwIfAborted()
       if (input.trim()) {
         this.state.allowedPaths = input.split(',').map((p) => p.trim()).filter(Boolean)
         await this.persist()
@@ -412,9 +435,9 @@ export class Orchestrator {
 
     try {
       await this.emitOutput('\n[revert] 正在拉取远程最新版本...', onEvent)
-      await execAsync(`git fetch ${githubRepoUrl}`, { cwd: projectPath })
+      await runCommand('git', ['fetch', '--', githubRepoUrl], projectPath, 120000, this.externalSignal)
 
-      const { stdout: diffOutput } = await execAsync('git diff HEAD', { cwd: projectPath })
+      const { stdout: diffOutput } = await runCommand('git', ['diff', 'HEAD'], projectPath, 120000, this.externalSignal)
       if (!diffOutput.trim()) {
         await this.emitOutput('[revert] 没有检测到本地改动，无需回退。', onEvent)
         return
@@ -432,13 +455,15 @@ export class Orchestrator {
 
       if (this.askConfirm) {
         const confirmed = await this.askConfirm('\n确认丢弃以上所有改动？')
+        this.externalSignal?.throwIfAborted()
         if (!confirmed) {
           await this.emitOutput('[revert] 已取消。', onEvent)
           return
         }
       }
 
-      await execAsync('git checkout .', { cwd: projectPath })
+      this.externalSignal?.throwIfAborted()
+      await runCommand('git', ['checkout', '--', '.'], projectPath, 120000, this.externalSignal)
       await this.emitOutput('[revert] 已回退到 GitHub 最新版本。', onEvent)
     } catch (err) {
       console.error('[revert] 执行失败:', err instanceof Error ? err.message : err)

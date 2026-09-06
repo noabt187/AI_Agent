@@ -23,7 +23,7 @@ test('workspace paths allow root and descendants but reject escape paths', () =>
 })
 
 test('workspace contracts cover frontend text and stable session storage', () => {
-  for (const path of ['index.html', 'App.tsx', 'Slide.vue', 'Deck.svelte', 'copy.json', 'notes.mdx', 'icon.svg']) {
+  for (const path of ['index.html', 'App.tsx', 'Slide.vue', 'Deck.svelte', 'copy.json', 'notes.mdx', 'icon.svg', '.gitignore', '.gitattributes', '.editorconfig', 'Dockerfile', 'Containerfile', 'LICENSE', 'Makefile']) {
     assert.equal(isWorkspaceTextFile(path), true, path)
   }
   assert.equal(isWorkspaceTextFile('machine.png'), false)

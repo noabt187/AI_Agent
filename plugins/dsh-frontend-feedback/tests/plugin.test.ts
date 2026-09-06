@@ -35,6 +35,7 @@ import {
   isFeedbackSelection,
   isFeedbackDraftEmpty,
   isPresentationRequestSettled,
+  isPreviewTargetCurrentHost,
   migratePresentationWorkspace,
   movePreviewNavigation,
   normalizePreviewUrl,
@@ -59,6 +60,7 @@ import {
   normalizePresentationJobSnapshot,
   normalizePresentationPlan,
   resolvePreviewFrameLocation,
+  suppressCurrentHostPreview,
   savePresentationPlan,
   savePresentationSourceFile,
   uploadPresentationAsset,
@@ -228,13 +230,15 @@ test('preview URL persistence is session-scoped and rejects invalid stored value
   assert.notEqual(previewUrlStorageKey('session-a'), previewUrlStorageKey('session-b'))
   assert.equal(resolvePersistedPreviewUrl('http://127.0.0.1:8090'), 'http://127.0.0.1:8090/')
   assert.equal(resolvePersistedPreviewUrl('https://example.com/demo'), 'https://example.com/demo')
-  assert.equal(resolvePersistedPreviewUrl('file:///tmp/page.html'), DEFAULT_PREVIEW_URL)
-  assert.equal(resolvePersistedPreviewUrl('not a url'), DEFAULT_PREVIEW_URL)
-  assert.equal(resolvePersistedPreviewUrl(null), DEFAULT_PREVIEW_URL)
+  assert.equal(resolvePersistedPreviewUrl('file:///tmp/page.html'), null)
+  assert.equal(resolvePersistedPreviewUrl('not a url'), null)
+  assert.equal(resolvePersistedPreviewUrl(null), null)
+  assert.equal(DEFAULT_PREVIEW_URL, null)
 })
 
 test('preview navigation history is session-scoped, validated, and bounded', () => {
   assert.notEqual(previewHistoryStorageKey('session-a'), previewHistoryStorageKey('session-b'))
+  assert.deepEqual(resolvePersistedPreviewNavigation(null), { entries: [], index: -1 })
   assert.deepEqual(resolvePersistedPreviewNavigation(null, 'http://127.0.0.1:8090'), {
     entries: ['http://127.0.0.1:8090/'],
     index: 0,
@@ -256,6 +260,7 @@ test('preview navigation history is session-scoped, validated, and bounded', () 
     entries: ['https://example.com/fallback'],
     index: 0,
   })
+  assert.deepEqual(resolvePersistedPreviewNavigation('{broken'), { entries: [], index: -1 })
 })
 
 test('preview navigation operations truncate forward history and respect boundaries', () => {
@@ -383,6 +388,22 @@ test('feedback drafts are session-scoped, validated, bounded, and restorable', (
     comment: '',
     queued: [],
   })
+})
+
+test('restored current-host targets are suppressed while other valid history remains', () => {
+  const restored = suppressCurrentHostPreview({
+    entries: ['https://example.com/one', 'http://127.0.0.1:3080/self', 'https://example.com/two'],
+    index: 1,
+  }, 'http://localhost:3080/pagecraft')
+  assert.deepEqual(restored, {
+    entries: ['https://example.com/one', 'https://example.com/two'],
+    index: 0,
+  })
+  assert.deepEqual(suppressCurrentHostPreview({ entries: ['http://ui.localhost:3080/'], index: 0 }, 'http://localhost:3080/'), {
+    entries: [], index: -1,
+  })
+  assert.equal(isPreviewTargetCurrentHost('http://127.0.0.1:3080/', 'http://localhost:3080/'), true)
+  assert.equal(isPreviewTargetCurrentHost('http://localhost:5173/', 'http://localhost:3080/'), false)
 })
 
 test('presentation briefs and slide summaries are structured for PageCraft decks', () => {
@@ -938,10 +959,16 @@ test('client exposes one launcher and no duplicate conversation view', async () 
 
 test('preview runtime exposes the DOM text-selection verification protocol', async () => {
   const bundle = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const clientBundle = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
   assert.match(bundle, /dsh-pagecraft-text-selected/)
+  assert.match(bundle, /presentationElementPath/)
   assert.match(bundle, /dsh-pagecraft-verify-text/)
   assert.match(bundle, /dsh-pagecraft-text-verification/)
   assert.match(bundle, /dsh-pagecraft-convert-text-selection/)
+  assert.match(bundle, /function verifyTextWhenReady/)
+  assert.match(bundle, /new MutationObserver/)
+  assert.match(bundle, /characterData: true/)
+  assert.match(clientBundle, /expectedText: pending\.expectedText/)
 })
 
 test('response reader enforces the configured byte limit', async () => {

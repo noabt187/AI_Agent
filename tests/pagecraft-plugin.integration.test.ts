@@ -24,7 +24,10 @@ test('the repository PageCraft package installs and activates unchanged in an AI
   roots.push(home, workspace)
   writeFileSync(join(workspace, 'index.html'), '<main>PageCraft workspace</main>')
   const profileName = 'integration'
-  initProfile(resolveProfileDir(profileName, home), ['@ai-agent/base', '@ai-agent/web-app'])
+  const profileDir = resolveProfileDir(profileName, home)
+  initProfile(profileDir, ['@ai-agent/base', '@ai-agent/web-app'])
+  // Let the OS allocate a test-only port; never contend with the user's dev server.
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), '- id: web-server\n  config:\n    port: 0\n')
   const exitCode = runPluginCommand(profileName, [
     'add',
     `link:${pagecraftDir}`,

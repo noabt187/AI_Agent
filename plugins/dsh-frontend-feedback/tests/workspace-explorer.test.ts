@@ -67,6 +67,19 @@ test('workspace writes real files atomically and refuses stale hashes', async (t
   )
 })
 
+test('extensionless project files require valid UTF-8 text', async (t) => {
+  const cwd = await createWorkspaceFixture(t)
+  await writeFile(join(cwd, 'LICENSE'), 'MIT\n')
+  await writeFile(join(cwd, '.gitignore'), 'dist/\n')
+  assert.equal((await readWorkspaceFile(cwd, '.', 'LICENSE')).content, 'MIT\n')
+  assert.equal((await readWorkspaceFile(cwd, '.', '.gitignore')).content, 'dist/\n')
+  await writeFile(join(cwd, 'LICENSE'), Buffer.from([0xff, 0xfe, 0xfd]))
+  await assert.rejects(
+    () => readWorkspaceFile(cwd, '.', 'LICENSE'),
+    (error: any) => error.code === 'WORKSPACE_BINARY_FILE',
+  )
+})
+
 test('workspace mutations stay inside the selected root and history restores by hash', async (t) => {
   const cwd = await createWorkspaceFixture(t)
   await createWorkspaceEntry(cwd, 'slides', { parent: 'slides', name: 'notes.md', kind: 'file', content: '# Notes\n' })

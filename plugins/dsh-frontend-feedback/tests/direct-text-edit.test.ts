@@ -16,6 +16,13 @@ async function directEditFixture(t: TestContext, source: string): Promise<string
   return cwd
 }
 
+async function presentationFixture(t: TestContext, slides: Array<{ id: string; content: string }>): Promise<string> {
+  const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-presentation-edit-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  await writeFile(join(cwd, 'deck.json'), `${JSON.stringify({ slides }, null, 2)}\n`)
+  return cwd
+}
+
 function selection(displayedText: string): DomTextSelection {
   return {
     pageUrl: 'http://localhost:5173/',
@@ -26,6 +33,19 @@ function selection(displayedText: string): DomTextSelection {
     tagName: 'h1',
     attributes: {},
     nearbyText: [],
+  }
+}
+
+function presentationSelection(displayedText: string, overrides: Partial<DomTextSelection> = {}): DomTextSelection {
+  return {
+    ...selection(displayedText),
+    selector: 'section#slide-01 > div.layout-title > div.paper-title',
+    fingerprint: `slide-01|div|paper-title|${displayedText}`,
+    tagName: 'div',
+    attributes: { class: 'paper-title' },
+    slideId: 'slide-01',
+    presentationElementPath: [0, 1],
+    ...overrides,
   }
 }
 
@@ -80,5 +100,82 @@ test('direct text edits preserve syntax escaping and reject stale selections', a
   await assert.rejects(
     () => service.start(cwd, 'src', selection('不存在的标题'), '不会写入'),
     (error: any) => error.code === 'TEXT_SOURCE_NOT_FOUND',
+  )
+})
+
+test('direct text edit follows slideId into deck.json embedded HTML', async (t) => {
+  const title = 'AppAgent-Claw: CLI Is All You Need for GUI Automation'
+  const cwd = await presentationFixture(t, [
+    {
+      id: 'slide-01',
+      content: '<div class="layout-title"><div class="top-bar"></div><div class="paper-title">AppAgent-Claw:<br>CLI Is All You Need for GUI Automation</div></div>',
+    },
+    {
+      id: 'slide-02',
+      content: '<div class="paper-title">AppAgent-Claw:<br>CLI Is All You Need for GUI Automation</div>',
+    },
+  ])
+  const service = new DirectTextEditService()
+  t.after(() => service.dispose())
+
+  const started = await service.start(cwd, '.', presentationSelection(title), 'AppAgent-Claw')
+  assert.equal(started.path, 'deck.json')
+  const deck = JSON.parse(await readFile(join(cwd, 'deck.json'), 'utf8'))
+  assert.match(deck.slides[0].content, /<div class="paper-title">AppAgent-Claw<\/div>/)
+  assert.match(deck.slides[1].content, /AppAgent-Claw:<br>CLI Is All You Need/)
+
+  const result = await service.verify(cwd, {
+    transactionId: started.transactionId,
+    verified: true,
+    observedText: 'AppAgent-Claw',
+  })
+  assert.equal(result.status, 'committed')
+})
+
+test('presentation text edit falls back to a unique element in the selected slide', async (t) => {
+  const cwd = await presentationFixture(t, [{
+    id: 'slide-01',
+    content: '<div><h2 class="section-title">项目背景<br>与研究目标</h2></div>',
+  }])
+  const service = new DirectTextEditService()
+  t.after(() => service.dispose())
+
+  await service.start(cwd, '.', presentationSelection('项目背景 与研究目标', {
+    tagName: 'h2',
+    attributes: { class: 'section-title' },
+    presentationElementPath: undefined,
+  }), '研究背景')
+  const deck = JSON.parse(await readFile(join(cwd, 'deck.json'), 'utf8'))
+  assert.match(deck.slides[0].content, /<h2 class="section-title">研究背景<\/h2>/)
+})
+
+test('presentation text edit preserves browser text semantics for inline markup', async (t) => {
+  const cwd = await presentationFixture(t, [{
+    id: 'slide-01',
+    content: '<div class="layout-title"><div class="top-bar"></div><div class="paper-title">App<span>Agent</span>-Claw</div></div>',
+  }])
+  const service = new DirectTextEditService()
+  t.after(() => service.dispose())
+
+  await service.start(cwd, '.', presentationSelection('AppAgent-Claw'), 'PageCraft')
+  const deck = JSON.parse(await readFile(join(cwd, 'deck.json'), 'utf8'))
+  assert.match(deck.slides[0].content, /<div class="paper-title">PageCraft<\/div>/)
+})
+
+test('presentation text edit refuses ambiguous elements inside one slide', async (t) => {
+  const cwd = await presentationFixture(t, [{
+    id: 'slide-01',
+    content: '<div><p class="label">重复文字</p><p class="label">重复文字</p></div>',
+  }])
+  const service = new DirectTextEditService()
+  t.after(() => service.dispose())
+
+  await assert.rejects(
+    () => service.start(cwd, '.', presentationSelection('重复文字', {
+      tagName: 'p',
+      attributes: { class: 'label' },
+      presentationElementPath: undefined,
+    }), '新文字'),
+    (error: any) => error.code === 'TEXT_SOURCE_AMBIGUOUS',
   )
 })

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { access, readdir, stat } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
-import { dirname, parse, resolve } from 'node:path'
+import { dirname, isAbsolute, parse, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -60,32 +60,34 @@ async function listWindowsRoots(): Promise<DirectoryListing> {
 }
 
 export async function listDirectories(rawPath?: string, options: ListDirectoriesOptions = {}): Promise<DirectoryListing> {
+  const requestedPath = rawPath?.trim()
+  if (requestedPath && !isAbsolute(requestedPath)) throw new Error('请输入文件夹绝对路径')
   if (options.roots && isWindows()) {
     return listWindowsRoots()
   }
 
-  const currentPath = resolve(rawPath && rawPath.trim() ? rawPath : homedir())
-  const info = await stat(currentPath)
-  if (!info.isDirectory()) {
-    throw new Error('Path is not a directory')
-  }
-
-  const entries = await readdir(currentPath, { withFileTypes: true })
-  const dirs = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => ({
-      name: entry.name,
-      path: resolve(currentPath, entry.name),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  const parentPath = dirname(currentPath)
-  return {
-    path: currentPath,
-    parentPath: parentPath === currentPath || isWindowsRootPath(currentPath) ? null : parentPath,
-    entries: dirs,
-    isRootListing: false,
-    canListRoots: isWindows(),
+  const currentPath = resolve(options.roots ? parse(homedir()).root : requestedPath || homedir())
+  try {
+    const info = await stat(currentPath)
+    if (!info.isDirectory()) throw new Error('该路径是文件，请选择文件夹')
+    const entries = await readdir(currentPath, { withFileTypes: true })
+    const dirs = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ name: entry.name, path: resolve(currentPath, entry.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const parentPath = dirname(currentPath)
+    return {
+      path: currentPath,
+      parentPath: parentPath === currentPath || isWindowsRootPath(currentPath) ? null : parentPath,
+      entries: dirs,
+      isRootListing: false,
+      canListRoots: isWindows(),
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error('文件夹不存在，请检查路径或返回主目录')
+    if (code === 'EACCES' || code === 'EPERM') throw new Error('没有权限读取此文件夹，请选择其他目录')
+    throw error
   }
 }
 

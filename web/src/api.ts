@@ -64,9 +64,25 @@ export type SessionDetail = {
   running: boolean
   state: WorldState
   messages: Message[]
+  runs?: RunRecord[]
+}
+
+export type RunRecord = {
+  id: string
+  sessionId: string
+  prompt: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  createdAt: number
+  startedAt?: number
+  endedAt?: number
+  messageIds: string[]
+  userMessageId?: string
+  partialOutput?: string
+  error?: string
 }
 
 export type StreamEvent =
+  | { type: 'run'; run: RunRecord }
   | { type: 'start'; sessionId: string }
   | { type: 'output'; message: string }
   | { type: 'delta'; text: string }
@@ -172,8 +188,8 @@ export async function createSession(): Promise<string> {
   return payload.sessionId
 }
 
-export async function loadSession(sessionId: string): Promise<SessionDetail> {
-  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+export async function loadSession(sessionId: string, signal?: AbortSignal): Promise<SessionDetail> {
+  return jsonRequest<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal })
 }
 
 export async function updateSessionTitle(sessionId: string, title: string): Promise<SessionDetail> {

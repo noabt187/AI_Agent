@@ -1,15 +1,17 @@
 import { execFile, spawn } from 'node:child_process'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { Orchestrator } from '../orchestrator/orchestrator.js'
 import { legacyAgentRuntime, type AgentRuntime } from '../orchestrator/runtime.js'
 import { SessionPromptQueue, type PromptJob } from './promptQueue.js'
 import { loadMessages, loadSessionMeta, saveSessionMeta } from '../state/sessionStore.js'
+import { RunStore, type RunStatus } from '../state/runStore.js'
 import { isMemoryRecallMode, normalizeRepositoryConfig, type MemoryRecallMode, type RepositoryConfig } from '../orchestrator/types.js'
 import { isMemoryLayerId, isMemoryType } from '../memory/projectMemory.js'
 
 const stateDir = resolve(process.cwd(), 'state')
+const runStore = new RunStore(stateDir)
 const orchestrators = new Map<string, Orchestrator>()
 const liveCreatedAt = new Map<string, number>()
 const activeRuns = new Set<string>()
@@ -52,7 +54,7 @@ export function createSessionPromptQueue(): SessionPromptQueue {
       const orchestrator = await getOrchestrator(job.sessionId)
       markSessionRunning(job.sessionId)
       try {
-        await orchestrator.handleUserInput(job.prompt, job.onEvent)
+        await orchestrator.handleUserInput(job.prompt, job.onEvent, job.signal, job.userMessageId)
       } finally {
         markSessionIdle(job.sessionId)
       }
@@ -75,8 +77,75 @@ export function configureSessionRuntime(runtime: AgentRuntime, queue: SessionPro
   }
 }
 
-export function enqueueSessionPrompt(job: PromptJob): Promise<void> {
-  return promptQueue.enqueue(job)
+export async function enqueueSessionPrompt(job: PromptJob): Promise<void> {
+  const record = await runStore.create(job.sessionId, job.prompt)
+  // Delivery failure is not an execution failure: reconnecting clients recover
+  // durable state through the session endpoint.
+  const deliver: PromptJob['onEvent'] = async event => { try { await job.onEvent(event) } catch {} }
+  const emitRecord = async () => {
+    const runs = await runStore.list(job.sessionId)
+    await deliver({ type: 'run', run: runs.find(item => item.id === record.id)! })
+  }
+  let before: Set<string> | undefined
+  let outcome: RunStatus = 'completed'
+  let errorMessage: string | undefined
+  let partial = ''
+  let previousPartial = ''
+  let lastSaved = 0
+  let finished = false
+  const currentMessageIds = async () => before
+    ? (await loadMessages(job.sessionId)).filter(message => !before!.has(message.uuid)).map(message => message.uuid)
+    : []
+  const finish = async (error: unknown, signal?: AbortSignal) => {
+    if (finished) return
+    if (signal?.aborted) outcome = 'cancelled'
+    else if (error !== undefined) outcome = 'failed'
+    if (error !== undefined) errorMessage = error instanceof Error ? error.message : String(error)
+    await runStore.update(job.sessionId, record.id, {
+      status: outcome,
+      messageIds: await currentMessageIds(),
+      partialOutput: outcome === 'completed' ? undefined : partial || previousPartial,
+      error: errorMessage,
+    })
+    finished = true
+    await emitRecord()
+  }
+  const originalExecute = async (event: Parameters<PromptJob['onEvent']>[0]) => {
+    if (event.type === 'aborted') outcome = 'cancelled'
+    if (event.type === 'error' && !event.recoverable) { outcome = 'failed'; errorMessage = event.message }
+    if (event.type === 'tool_call') { if (partial.trim()) previousPartial = partial; partial = '' }
+    if (event.type === 'delta') {
+      partial += event.text
+      if (Date.now() - lastSaved > 1000) {
+        await runStore.update(job.sessionId, record.id, { partialOutput: partial, messageIds: await currentMessageIds() })
+        lastSaved = Date.now()
+      }
+    }
+    if (event.type === 'output' || event.type === 'tool_call' || event.type === 'result') {
+      if (event.type === 'output') partial = ''
+      await runStore.update(job.sessionId, record.id, { partialOutput: partial || previousPartial, messageIds: await currentMessageIds() })
+    }
+    await deliver(event)
+  }
+  try {
+    await job.onAccepted?.()
+    await emitRecord()
+    await promptQueue.enqueue({
+      ...job,
+      userMessageId: record.userMessageId,
+      onStart: async () => {
+        before = new Set((await loadMessages(job.sessionId)).map(message => message.uuid))
+        await runStore.update(job.sessionId, record.id, { status: 'running' })
+        await emitRecord()
+        await job.onStart?.()
+      },
+      onEvent: originalExecute,
+      onFinish: finish,
+    })
+  } catch (error) {
+    await finish(error, job.signal)
+    throw error
+  }
 }
 
 async function readCommandValue(cwd: string, file: string, args: string[]): Promise<string | undefined> {
@@ -143,7 +212,7 @@ export async function getOrchestrator(sessionId: string): Promise<Orchestrator> 
 }
 
 export function isSessionRunning(sessionId: string): boolean {
-  return activeRuns.has(sessionId)
+  return activeRuns.has(sessionId) || promptQueue.isRunning(sessionId)
 }
 
 export function markSessionRunning(sessionId: string): void {
@@ -186,14 +255,25 @@ export async function createSession(): Promise<string> {
 
 export async function loadSession(sessionId: string): Promise<unknown> {
   const orchestrator = await getOrchestrator(sessionId)
-  const messages = await loadMessages(sessionId)
   const meta = await loadSessionMeta(sessionId)
+  // A terminal record must never be paired with messages read before it finished.
+  // Bound retries during active writes and ask the client to poll again if busy.
+  let runs = await runStore.list(sessionId)
+  let messages: Awaited<ReturnType<typeof loadMessages>> = []
+  let stable = false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const before = JSON.stringify(runs)
+    messages = await loadMessages(sessionId)
+    runs = await runStore.list(sessionId)
+    if (before === JSON.stringify(runs)) { stable = true; break }
+  }
   return {
     id: sessionId,
     title: meta.title,
-    running: isSessionRunning(sessionId),
+    running: !stable || isSessionRunning(sessionId) || runs.some(run => run.status === 'queued' || run.status === 'running'),
     state: orchestrator.state,
     messages,
+    runs,
   }
 }
 
@@ -229,6 +309,9 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
 }
 
 export async function updateAllowedPaths(sessionId: string, allowedPaths: string[]): Promise<unknown> {
+  for (const path of allowedPaths) {
+    if (!isAbsolute(path) || !(await stat(path)).isDirectory()) throw new Error('操作目录必须是存在的绝对目录路径')
+  }
   const orchestrator = await getOrchestrator(sessionId)
   orchestrator.state.allowedPaths = allowedPaths
   await orchestrator.persist()

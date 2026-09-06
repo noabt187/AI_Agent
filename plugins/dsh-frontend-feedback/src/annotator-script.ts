@@ -75,6 +75,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
   let assetBindings = new Map();
   let assetApplyFrame = null;
   let hoveredImageSlot = null;
+  let activeTextVerification = null;
   const imageStates = new WeakMap();
   const slotStates = new WeakMap();
 
@@ -436,11 +437,29 @@ export const ANNOTATOR_SCRIPT = String.raw`
     return [presentation?.slideId || '', element.localName, selectorFor(element), siblingIndex].join('|').slice(0, 1000);
   }
 
+  function presentationElementPath(element, presentation) {
+    if (!presentation) return undefined;
+    const slide = element.closest('[data-pagecraft-slide-id]');
+    if (!(slide instanceof HTMLElement) || slide.getAttribute('data-pagecraft-slide-id') !== presentation.slideId) return undefined;
+    const path = [];
+    let current = element;
+    while (current instanceof Element && current !== slide) {
+      const parent = current.parentElement;
+      if (!(parent instanceof Element)) return undefined;
+      const index = Array.from(parent.children).indexOf(current);
+      if (index < 0) return undefined;
+      path.unshift(index);
+      current = parent;
+    }
+    return current === slide ? path : undefined;
+  }
+
   function describeText(element) {
     const target = textTargetFor(element);
     if (!target) return null;
     const presentation = presentationContextFor(target);
     const textKey = target.getAttribute('data-pagecraft-text-key') || undefined;
+    const elementPath = presentationElementPath(target, presentation);
     return {
       pageUrl: document.baseURI,
       framePath: [],
@@ -451,6 +470,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
       attributes: safeTextAttributes(target),
       nearbyText: nearbyTextFor(target),
       ...(presentation ? { slideId: presentation.slideId } : {}),
+      ...(elementPath ? { presentationElementPath: elementPath } : {}),
       ...(textKey ? { textKey } : {})
     };
   }
@@ -468,6 +488,56 @@ export const ANNOTATOR_SCRIPT = String.raw`
     } catch {
       return null;
     }
+  }
+
+  function normalizedVerificationText(value) {
+    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function cancelTextVerification() {
+    if (!activeTextVerification) return;
+    activeTextVerification.observer.disconnect();
+    window.clearTimeout(activeTextVerification.timer);
+    activeTextVerification = null;
+  }
+
+  function verifyTextWhenReady(transactionId, selection, expectedText, timeoutMs) {
+    cancelTextVerification();
+    const duration = clamp(Number.isFinite(timeoutMs) ? timeoutMs : 6500, 250, 7500);
+    const expected = normalizedVerificationText(expectedText);
+    const verification = {
+      transactionId,
+      observer: null,
+      timer: 0
+    };
+
+    function finish(target) {
+      if (activeTextVerification !== verification) return;
+      const observedText = target instanceof Element ? normalizedText(target, 10000) : undefined;
+      verification.observer.disconnect();
+      window.clearTimeout(verification.timer);
+      activeTextVerification = null;
+      post({
+        type: 'dsh-pagecraft-text-verification',
+        transactionId,
+        found: target instanceof Element,
+        observedText
+      });
+    }
+
+    function check() {
+      if (activeTextVerification !== verification) return;
+      const target = findTextVerificationTarget(selection);
+      if (target instanceof Element && normalizedVerificationText(normalizedText(target, 10000)) === expected) {
+        finish(target);
+      }
+    }
+
+    verification.observer = new MutationObserver(check);
+    verification.observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    verification.timer = window.setTimeout(() => finish(findTextVerificationTarget(selection)), duration);
+    activeTextVerification = verification;
+    check();
   }
 
   function hideGuides() {
@@ -1033,13 +1103,17 @@ export const ANNOTATOR_SCRIPT = String.raw`
       return;
     }
     if (event.data?.type === 'dsh-pagecraft-verify-text' && typeof event.data.transactionId === 'string') {
-      const target = findTextVerificationTarget(event.data.selection);
-      post({
-        type: 'dsh-pagecraft-text-verification',
-        transactionId: event.data.transactionId,
-        found: target instanceof Element,
-        observedText: target instanceof Element ? normalizedText(target, 10000) : undefined
-      });
+      if (typeof event.data.expectedText === 'string') {
+        verifyTextWhenReady(event.data.transactionId, event.data.selection, event.data.expectedText, event.data.timeoutMs);
+      } else {
+        const target = findTextVerificationTarget(event.data.selection);
+        post({
+          type: 'dsh-pagecraft-text-verification',
+          transactionId: event.data.transactionId,
+          found: target instanceof Element,
+          observedText: target instanceof Element ? normalizedText(target, 10000) : undefined
+        });
+      }
       return;
     }
     if (event.data?.type === 'dsh-pagecraft-convert-text-selection') {

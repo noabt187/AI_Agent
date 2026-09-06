@@ -1268,6 +1268,7 @@ export {
   isFeedbackComment,
   isFeedbackDraftEmpty,
   isFeedbackSelection,
+  isPreviewTargetCurrentHost,
   movePreviewNavigation,
   normalizePreviewUrl,
   previewHistoryStorageKey,
@@ -1277,6 +1278,7 @@ export {
   resolvePersistedPreviewNavigation,
   resolvePersistedPreviewUrl,
   resolvePreviewFrameLocation,
+  suppressCurrentHostPreview,
 } from './shared.ts'
 export {
   DEFAULT_MAX_DOCUMENT_BYTES,
@@ -1390,6 +1392,7 @@ export {
 } from './workspace-explorer.ts'
 export { WorkspaceWatchHub } from './workspace-watcher.ts'
 export { DirectTextEditService } from './direct-text-edit.ts'
+export { preparePresentationTextEdit } from './presentation-text-edit.ts'
 export {
   encodeSourceTextReplacement,
   parseSourceTextCandidates,

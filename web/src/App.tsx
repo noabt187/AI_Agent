@@ -45,7 +45,6 @@ import {
   loadSession,
   loadSessionMemory,
   loadSessionMetrics,
-  pickDirectory,
   revealMemoryItem,
   saveMemoryItem,
   consumePromptStream,
@@ -55,7 +54,6 @@ import {
   updateSkillEnabled,
   updateSessionTitle,
   uploadSkill,
-  type Message,
   type DirectoryListing,
   type ManagedSkill,
   type MemoryLayerId,
@@ -69,7 +67,9 @@ import {
   type SessionSummary,
   type StreamEvent,
 } from './api'
-import { messageContent } from './messageContent'
+import { browserDraftStore } from './sessionDrafts'
+import { SessionRuntime, recoverSession } from './sessionRuntime'
+import { readSelectedSession, saveSelectedSession, selectExistingSession } from './sessionSelection'
 import { SlotOutlet } from './plugins/SlotOutlet'
 import type { BrowserPluginRuntime } from './plugins/runtime'
 import type { PromptResult } from './plugins/types'
@@ -128,7 +128,6 @@ function buildSessionExportFilename(session: Pick<SessionSummary, 'id' | 'title'
 
 const negativeFeedbackReasons = ['不准确', '没有帮助', '没按要求做', '太啰嗦', '有风险']
 const modelThinkingStatus = '模型思考中'
-const abortDisplayMessage = '操作已取消'
 const composerMaxRows = 10
 const allowWriteConfirmWarning = '⚠️ 确认此方案后，Agent 将获得文件写入权限（增/删/改），请仔细核对方案内容。'
 const themeStorageKey = 'agent-console-theme'
@@ -137,30 +136,6 @@ const dismissedConfirmStoragePrefix = 'agent-console-dismissed-confirm:'
 function getInitialThemeMode(): ThemeMode {
   if (typeof window === 'undefined') return 'dark'
   return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
-}
-
-function toTimeline(messages: Message[]): TimelineItem[] {
-  const items = messages
-    .filter((message) => !message.isMeta && message.role !== 'system' && message.role !== 'tool')
-    .map((message) => {
-      const content = messageContent(message).trim()
-      return {
-        id: message.uuid,
-        role: (message.role === 'user' ? 'user' : 'assistant') as TimelineItem['role'],
-        content,
-      }
-    })
-    .filter((item) => item.content.length > 0)
-
-  return items.reduce<TimelineItem[]>((merged, item) => {
-    const previous = merged.at(-1)
-    if (previous?.role === 'assistant' && item.role === 'assistant') {
-      previous.content = `${previous.content}\n\n${item.content}`
-      return merged
-    }
-    merged.push(item)
-    return merged
-  }, [])
 }
 
 function formatTime(value: number): string {
@@ -232,10 +207,6 @@ function formatToolResult(name: string, result: string): string {
   }
   if (name === 'verifyCode') return summarizeLines(result, 5)
   return `${name} 完成`
-}
-
-function isWindowsClient(): boolean {
-  return navigator.platform.toLowerCase().includes('win') || navigator.userAgent.includes('Windows')
 }
 
 function inferPendingConfirm(timeline: TimelineItem[], running: boolean): PendingConfirm | undefined {
@@ -329,18 +300,15 @@ export interface AppProps {
 export function App({ pluginRuntime }: AppProps) {
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const streamingAssistantIdRef = useRef<string | null>(null)
-  const streamingRawTextRef = useRef('')
-  const streamingVisibleTextRef = useRef('')
   const selectedSessionIdRef = useRef('')
+  const [sessionRuntime] = useState(() => new SessionRuntime())
+  const recoveryControllers = useRef(new Map<string, AbortController>())
+  const sessionListRequest = useRef(0)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const skillContextMenuRef = useRef<HTMLDivElement | null>(null)
-  const abortingRef = useRef(false)
   const skillUploadInputRef = useRef<HTMLInputElement | null>(null)
   const skipSessionRenameBlurRef = useRef('')
-  const pendingStreamsRef = useRef(0)
-  const runningRef = useRef(false)
-  const submitPromptRef = useRef<(text: string, source: 'composer' | 'plugin') => Promise<PromptResult>>(
+  const submitPromptRef = useRef<(text: string, source: 'composer' | 'plugin', owner?: string) => Promise<PromptResult>>(
     async () => ({ ok: false, error: { message: 'AI Agent is still starting' } }),
   )
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -349,10 +317,20 @@ export function App({ pluginRuntime }: AppProps) {
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
   const [activityItems, setActivityItems] = useState<ActivityItem[]>([])
   const [activityExpanded, setActivityExpanded] = useState(false)
-  const [prompt, setPrompt] = useState('')
+  const [draftStore] = useState(browserDraftStore)
+  const [, redrawDraft] = useState(0)
+  const prompt = selectedSessionId ? draftStore.get(selectedSessionId).text : ''
+  function setPrompt(text: string) {
+    if (selectedSessionId) draftStore.set(selectedSessionId, text)
+    redrawDraft(n => n + 1)
+  }
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
   const [directoryError, setDirectoryError] = useState('')
+  const [directoryPathInput, setDirectoryPathInput] = useState('')
+  const [directoryBusy, setDirectoryBusy] = useState(false)
+  const directoryRequest = useRef(0)
+  const directoryOwner = useRef('')
   const [repositoryEditorOpen, setRepositoryEditorOpen] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [metricsViewMode, setMetricsViewMode] = useState<MetricsViewMode>('detail')
@@ -389,14 +367,9 @@ export function App({ pluginRuntime }: AppProps) {
   const [skillContextMenu, setSkillContextMenu] = useState<SkillContextMenu | null>(null)
   const [editingSessionId, setEditingSessionId] = useState('')
 
-  function setAborting(value: boolean) {
-    abortingRef.current = value
-    setAbortingState(value)
-  }
   const [editingSessionTitle, setEditingSessionTitle] = useState('')
   const [dismissedPendingConfirmKey, setDismissedPendingConfirmKey] = useState('')
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
-  runningRef.current = running
 
   const selectedSessionSummary = useMemo(
     () => sessions.find((item) => item.id === selectedSessionId) ?? null,
@@ -447,33 +420,80 @@ export function App({ pluginRuntime }: AppProps) {
   }
 
   async function refreshSessions(preferredId?: string | null) {
+    const request = ++sessionListRequest.current
+    const owner = selectedSessionIdRef.current
     const nextSessions = await listSessions()
+    if (request !== sessionListRequest.current) return
     setSessions(nextSessions)
-    const nextId = preferredId === undefined
-      ? selectedSessionId || nextSessions[0]?.id || ''
-      : preferredId || nextSessions[0]?.id || ''
+    const preferred = owner !== selectedSessionIdRef.current
+      ? selectedSessionIdRef.current
+      : preferredId ?? (selectedSessionIdRef.current || readSelectedSession(window.sessionStorage))
+    const nextId = selectExistingSession(nextSessions.map(item => item.id), preferred)
     setSelectedSessionId(nextId)
   }
 
-  async function refreshSession(
-    sessionId = selectedSessionId,
-    options: { updateTimeline?: boolean; syncRunning?: boolean } = {},
-  ) {
+  function syncRuntimeView(sessionId: string) {
+    pluginRuntime.sessions.notifyRunningChanged(sessionId)
+    if (selectedSessionIdRef.current !== sessionId) return
+    const view = sessionRuntime.view(sessionId)
+    setTimeline(view.timeline)
+    setActivityItems(view.activities)
+    setRunning(sessionRuntime.isRunning(sessionId))
+    setAbortingState(view.aborting)
+    setDeltaCount(view.deltaCount)
+    setStatus(view.status)
+  }
+
+  async function refreshSession(sessionId = selectedSessionId) {
     if (!sessionId) return
-    const updateTimeline = options.updateTimeline ?? true
+    const token = sessionRuntime.snapshotToken(sessionId)
     const detail = await loadSession(sessionId)
+    if (sessionId !== selectedSessionIdRef.current) return
+    if (!sessionRuntime.snapshot(sessionId, token, detail)) return
     setSession(detail)
-    if (updateTimeline) setTimeline(toTimeline(detail.messages))
-    if (options.syncRunning ?? true) {
-      runningRef.current = detail.running
-      setRunning(detail.running)
-      setStatus(detail.running ? modelThinkingStatus : '就绪')
-    }
+    syncRuntimeView(sessionId)
+  }
+
+  function stopRecovery(owner: string) {
+    recoveryControllers.current.get(owner)?.abort()
+    recoveryControllers.current.delete(owner)
+  }
+
+  function startRecovery(owner: string) {
+    stopRecovery(owner)
+    if (!owner || owner !== selectedSessionIdRef.current) return
+    const controller = new AbortController()
+    recoveryControllers.current.set(owner, controller)
+    void recoverSession({
+      signal: controller.signal,
+      load: async () => {
+        const token = sessionRuntime.snapshotToken(owner)
+        const detail = await loadSession(owner, controller.signal)
+        return { detail, token, running: detail.running && !sessionRuntime.hasStreams(owner) }
+      },
+      apply: ({ detail, token }) => {
+        if (owner !== selectedSessionIdRef.current) return
+        // Metadata is still needed when a live delta invalidates the timeline snapshot.
+        setSession(detail)
+        if (sessionRuntime.snapshot(owner, token, detail)) syncRuntimeView(owner)
+      },
+      onError: () => {
+        sessionRuntime.error(owner, '连接中断，正在重试同步…')
+        syncRuntimeView(owner)
+      },
+    }).finally(() => {
+      if (recoveryControllers.current.get(owner) === controller) recoveryControllers.current.delete(owner)
+    })
   }
 
   useEffect(() => {
-    void refreshSessions()
+    void refreshSessions().catch(() => setStatus('无法读取会话列表，请刷新重试'))
     void refreshSkills()
+    return () => {
+      selectedSessionIdRef.current = ''
+      for (const controller of recoveryControllers.current.values()) controller.abort()
+      recoveryControllers.current.clear()
+    }
   }, [])
 
   useEffect(() => {
@@ -486,18 +506,26 @@ export function App({ pluginRuntime }: AppProps) {
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId
-    if (selectedSessionId) void refreshSession(selectedSessionId)
+    closeDirectoryPicker()
+    setSession(null)
+    if (selectedSessionId) {
+      saveSelectedSession(selectedSessionId, window.sessionStorage)
+      syncRuntimeView(selectedSessionId)
+      startRecovery(selectedSessionId)
+    } else {
+      setTimeline([]); setActivityItems([]); setRunning(false); setAbortingState(false); setStatus('就绪')
+    }
     setDismissedPendingConfirmKey(loadDismissedPendingConfirmKey(selectedSessionId))
-    setActivityItems([])
     setActivityExpanded(false)
     setRepositoryError('')
+    return () => stopRecovery(selectedSessionId)
   }, [selectedSessionId])
 
   useEffect(() => {
     if (!selectedSessionId) return
     return pluginRuntime.sessions.bind(selectedSessionId, {
-      getRunning: () => runningRef.current,
-      prompt: text => submitPromptRef.current(text, 'plugin'),
+      getRunning: () => sessionRuntime.isRunning(selectedSessionId),
+      prompt: text => submitPromptRef.current(text, 'plugin', selectedSessionId),
     })
   }, [pluginRuntime, selectedSessionId])
 
@@ -701,8 +729,11 @@ export function App({ pluginRuntime }: AppProps) {
     if (!sessionId) return
     setMemoryError('')
     try {
-      setSessionMemory(await loadSessionMemory(sessionId))
+      const memory = await loadSessionMemory(sessionId)
+      if (sessionId !== selectedSessionIdRef.current) return
+      setSessionMemory(memory)
     } catch (err) {
+      if (sessionId !== selectedSessionIdRef.current) return
       setSessionMemory(null)
       setMemoryError(err instanceof Error ? err.message : String(err))
     }
@@ -902,29 +933,38 @@ export function App({ pluginRuntime }: AppProps) {
     return operationRoot || undefined
   }
 
-  async function openDirectoryPicker(startPath?: string, options: { roots?: boolean } = {}) {
+  async function openDirectoryPicker(startPath?: string, options: { roots?: boolean; home?: boolean } = {}) {
+    const owner = selectedSessionIdRef.current
+    if (!owner) return
+    directoryOwner.current = owner
+    const request = ++directoryRequest.current
     setDirectoryPickerOpen(true)
     setDirectoryError('')
+    setDirectoryBusy(true)
     try {
-      const listing = await listDirectories(options.roots ? undefined : startPath || getDirectoryStartPath(), options)
+      const listing = await listDirectories(options.roots || options.home ? undefined : startPath || getDirectoryStartPath(), options)
+      if (request !== directoryRequest.current || selectedSessionIdRef.current !== owner) return
       setDirectoryListing(listing)
+      setDirectoryPathInput(listing.isRootListing ? '' : listing.path)
     } catch (err) {
+      if (request !== directoryRequest.current || selectedSessionIdRef.current !== owner) return
       setDirectoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (request === directoryRequest.current) setDirectoryBusy(false)
     }
   }
 
+  function closeDirectoryPicker() {
+    directoryRequest.current += 1
+    directoryOwner.current = ''
+    setDirectoryPickerOpen(false)
+    setDirectoryBusy(false)
+    setDirectoryListing(null)
+    setDirectoryError('')
+  }
+
   async function handlePickDirectory() {
-    const startPath = getDirectoryStartPath()
-    if (isWindowsClient()) {
-      try {
-        const result = await pickDirectory(startPath)
-        if (result.path) {
-          await chooseDirectory(result.path)
-          return
-        }
-      } catch {}
-    }
-    await openDirectoryPicker(startPath)
+    await openDirectoryPicker(getDirectoryStartPath())
   }
 
   function openDirectoryParent() {
@@ -938,170 +978,24 @@ export function App({ pluginRuntime }: AppProps) {
   }
 
   async function chooseDirectory(path: string) {
-    if (!selectedSessionId) return
-    const detail = await updateAllowedPaths(selectedSessionId, [path])
-    setSession(detail)
-    await refreshMemory(selectedSessionId)
-    setDirectoryPickerOpen(false)
-    setDirectoryError('')
-    setStatus('目录已更新')
-  }
-
-  function appendItem(item: Omit<TimelineItem, 'id'>) {
-    setTimeline((current) => {
-      const previous = current.at(-1)
-      if (previous?.role === 'assistant' && item.role === 'assistant') {
-        return [
-          ...current.slice(0, -1),
-          {
-            ...previous,
-            content: `${previous.content}\n\n${item.content}`,
-          },
-        ]
-      }
-      return [
-        ...current,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          ...item,
-        },
-      ]
-    })
-  }
-
-  function appendAssistantDelta(text: string) {
-    if (!text) return
-    setTimeline((current) => {
-      const streamingId = streamingAssistantIdRef.current
-      if (streamingId) {
-        return current.map((item) => (
-          item.id === streamingId
-            ? { ...item, content: `${item.content}${text}` }
-            : item
-        ))
-      }
-
-      const previous = current.at(-1)
-      if (previous?.role === 'assistant') {
-        streamingAssistantIdRef.current = previous.id
-        return [
-          ...current.slice(0, -1),
-          { ...previous, content: `${previous.content}${text}` },
-        ]
-      }
-
-      const id = `stream-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      streamingAssistantIdRef.current = id
-      return [
-        ...current,
-        {
-          id,
-          role: 'assistant',
-          content: text,
-        },
-      ]
-    })
-  }
-
-  function finalizeAssistantOutput(message: string) {
-    const streamingId = streamingAssistantIdRef.current
-    streamingAssistantIdRef.current = null
-    streamingRawTextRef.current = ''
-    streamingVisibleTextRef.current = ''
-
-    if (!streamingId) {
-      appendItem({ role: 'assistant', content: message })
-      return
+    const owner = directoryOwner.current
+    if (!owner || owner !== selectedSessionIdRef.current || directoryBusy || directoryError) return
+    const request = ++directoryRequest.current
+    setDirectoryBusy(true)
+    try {
+      const detail = await updateAllowedPaths(owner, [path])
+      if (request !== directoryRequest.current || owner !== selectedSessionIdRef.current) return
+      setSession(detail)
+      closeDirectoryPicker()
+      setStatus('目录已更新')
+      await refreshMemory(owner)
+    } catch (err) {
+      if (request === directoryRequest.current) setDirectoryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (request === directoryRequest.current) setDirectoryBusy(false)
     }
-
-    setTimeline((current) => current.map((item) => (
-      item.id === streamingId
-        ? { ...item, content: message }
-        : item
-    )))
   }
 
-  function readPartialJsonStringField(raw: string, fieldName: string): string | null {
-    const marker = `"${fieldName}"`
-    const keyIndex = raw.indexOf(marker)
-    if (keyIndex === -1) return null
-
-    const colonIndex = raw.indexOf(':', keyIndex + marker.length)
-    if (colonIndex === -1) return null
-
-    let quoteIndex = colonIndex + 1
-    while (quoteIndex < raw.length && /\s/.test(raw[quoteIndex])) quoteIndex += 1
-    if (raw[quoteIndex] !== '"') return null
-
-    let value = ''
-    let escaped = false
-    for (let index = quoteIndex + 1; index < raw.length; index += 1) {
-      const char = raw[index]
-      if (escaped) {
-        if (char === 'n') value += '\n'
-        else if (char === 'r') value += '\r'
-        else if (char === 't') value += '\t'
-        else if (char === '"' || char === '\\' || char === '/') value += char
-        else if (char === 'u' && index + 4 < raw.length) {
-          const hex = raw.slice(index + 1, index + 5)
-          const codePoint = Number.parseInt(hex, 16)
-          value += Number.isNaN(codePoint) ? `\\u${hex}` : String.fromCharCode(codePoint)
-          index += 4
-        } else {
-          value += char
-        }
-        escaped = false
-        continue
-      }
-      if (char === '\\') {
-        escaped = true
-        continue
-      }
-      if (char === '"') return value
-      value += char
-    }
-
-    return value
-  }
-
-  function visibleStreamingText(raw: string): string {
-    const trimmedStart = raw.trimStart()
-    if (!trimmedStart.startsWith('{')) return raw
-    return readPartialJsonStringField(raw, 'message')
-      ?? readPartialJsonStringField(raw, 'prompt')
-      ?? ''
-  }
-
-  function appendActivity(content: string) {
-    const activitySessionId = selectedSessionId
-    if (!activitySessionId || activitySessionId !== selectedSessionIdRef.current) return
-    setActivityItems((current) => [
-      ...current,
-      {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        sessionId: activitySessionId,
-        content,
-      },
-    ])
-  }
-
-  function showAbortNotice() {
-    setActivityItems([])
-    setActivityExpanded(false)
-    setStatus(abortDisplayMessage)
-    setTimeline((current) => {
-      const lastUserIndex = current.map((item) => item.role).lastIndexOf('user')
-      const base = lastUserIndex >= 0 ? current.slice(0, lastUserIndex + 1) : current
-      return [
-        ...base,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          role: 'assistant',
-          content: abortDisplayMessage,
-        },
-      ]
-    })
-  }
 
   async function handleCopyResponse(itemId: string, content: string) {
     try {
@@ -1185,71 +1079,34 @@ export function App({ pluginRuntime }: AppProps) {
     void sendPrompt(previousPrompt)
   }
 
-  function handleStreamEvent(event: StreamEvent) {
-    if (event.type === 'start') {
-      streamingAssistantIdRef.current = null
-      streamingRawTextRef.current = ''
-      streamingVisibleTextRef.current = ''
-      setDeltaCount(0)
-      setStatus(modelThinkingStatus)
-      return
-    }
-    if (abortingRef.current) return
-    if (event.type === 'delta') {
-      streamingRawTextRef.current += event.text
-      const visibleText = visibleStreamingText(streamingRawTextRef.current)
-      const previousVisibleText = streamingVisibleTextRef.current
-      if (visibleText.length > previousVisibleText.length && visibleText.startsWith(previousVisibleText)) {
-        appendAssistantDelta(visibleText.slice(previousVisibleText.length))
-        streamingVisibleTextRef.current = visibleText
-      }
-      setDeltaCount((count) => count + 1)
-      setStatus('Agent 正在生成')
-      return
-    }
-    if (event.type === 'output') {
-      finalizeAssistantOutput(event.message)
-      return
-    }
-    if (event.type === 'aborted') {
-      showAbortNotice()
-      return
-    }
-    if (event.type === 'tool_call') {
-      setStatus('正在执行')
-      appendActivity(formatToolCall(event.name, event.arguments))
-      return
-    }
-    if (event.type === 'tool_result') {
-      setStatus('正在执行')
-      const summary = formatToolResult(event.name, event.result)
-      if (summary) appendActivity(summary)
-      return
-    }
-    if (event.type === 'error') {
-      appendItem({ role: 'error', content: event.message })
-      setStatus('出错')
-      return
-    }
-    if (event.type === 'done') {
-      setActivityItems([])
-      setActivityExpanded(false)
-      setStatus(pendingStreamsRef.current > 1 ? '下一条请求排队中' : '就绪')
-      setAborting(false)
-    }
+  function handleStreamEvent(sessionId: string, requestId: string, event: StreamEvent) {
+    const activity = event.type === 'tool_call'
+      ? formatToolCall(event.name, event.arguments)
+      : event.type === 'tool_result' ? formatToolResult(event.name, event.result) : undefined
+    sessionRuntime.event(sessionId, requestId, event, activity || undefined)
+    syncRuntimeView(sessionId)
   }
 
-  async function submitPrompt(value: string, source: 'composer' | 'plugin'): Promise<PromptResult> {
+  async function submitPrompt(value: string, source: 'composer' | 'plugin', owner?: string): Promise<PromptResult> {
     const text = value.trim()
-    const sessionId = selectedSessionIdRef.current || selectedSessionId
+    const sessionId = owner || selectedSessionIdRef.current
     if (!text) return { ok: false, error: { message: 'Prompt is empty' } }
     if (!sessionId) return { ok: false, error: { message: 'No active session' } }
-    if (source === 'composer' && runningRef.current) {
+    if (source === 'composer' && session?.id !== sessionId) {
+      return { ok: false, error: { message: '会话仍在同步，请稍后重试' } }
+    }
+    if (source === 'composer' && sessionRuntime.isRunning(sessionId)) {
       return { ok: false, error: { message: 'The active session is already running' } }
     }
-    if (source === 'composer') setPrompt('')
+    const draftRevision = source === 'composer' ? draftStore.get(sessionId).revision : undefined
     return new Promise<PromptResult>((resolve) => {
-      void consumeSubmittedPrompt(sessionId, text, resolve)
+      void consumeSubmittedPrompt(sessionId, text, result => {
+        if (result.ok && draftRevision !== undefined) {
+          draftStore.accept(sessionId, draftRevision)
+          redrawDraft(n => n + 1)
+        }
+        resolve(result)
+      })
     })
   }
 
@@ -1258,53 +1115,30 @@ export function App({ pluginRuntime }: AppProps) {
     text: string,
     resolveAcceptance: (result: PromptResult) => void,
   ): Promise<void> {
+    const requestId = crypto.randomUUID()
     let accepted = false
-    pendingStreamsRef.current += 1
-    setStatus(modelThinkingStatus)
-    runningRef.current = true
-    setRunning(true)
-    setActivityItems([])
-    setActivityExpanded(false)
-    if (selectedSessionIdRef.current === sessionId) appendItem({ role: 'user', content: text })
+    let recover = false
+    stopRecovery(sessionId)
+    sessionRuntime.begin(sessionId, requestId, text)
+    syncRuntimeView(sessionId)
     try {
       await consumePromptStream(
-        sessionId,
-        text,
-        event => {
-          if (selectedSessionIdRef.current === sessionId) handleStreamEvent(event)
-        },
-        () => {
-          accepted = true
-          resolveAcceptance({ ok: true })
-        },
+        sessionId, text,
+        event => handleStreamEvent(sessionId, requestId, event),
+        () => { accepted = true; resolveAcceptance({ ok: true }) },
       )
-      if (selectedSessionIdRef.current === sessionId) {
-        await refreshSession(sessionId, { updateTimeline: !abortingRef.current, syncRunning: false })
-        await refreshSessions(sessionId)
-      }
+      // EOF alone is not evidence that the server run is terminal.
+      recover = true
     } catch (err) {
-      if (!accepted) {
-        resolveAcceptance({
-          ok: false,
-          error: { message: err instanceof Error ? err.message : String(err) },
-        })
-      }
-      if (selectedSessionIdRef.current !== sessionId) return
-      if (abortingRef.current) {
-        showAbortNotice()
-      } else {
-        appendItem({ role: 'error', content: err instanceof Error ? err.message : String(err) })
-        setStatus('出错')
-      }
+      const message = err instanceof Error ? err.message : String(err)
+      if (!accepted) resolveAcceptance({ ok: false, error: { message } })
+      recover = accepted
+      sessionRuntime.event(sessionId, requestId, { type: 'error', message })
     } finally {
-      pendingStreamsRef.current = Math.max(0, pendingStreamsRef.current - 1)
-      if (selectedSessionIdRef.current === sessionId) {
-        setAborting(false)
-        if (pendingStreamsRef.current === 0) {
-          runningRef.current = false
-          setRunning(false)
-        }
-      }
+      sessionRuntime.end(sessionId, requestId, recover)
+      syncRuntimeView(sessionId)
+      startRecovery(sessionId)
+      void refreshSessions().catch(() => {})
     }
   }
 
@@ -1315,18 +1149,17 @@ export function App({ pluginRuntime }: AppProps) {
   submitPromptRef.current = submitPrompt
 
   async function handleAbort() {
-    if (!selectedSessionId || !running || abortingRef.current) return
-    setAborting(true)
-    setStatus('正在中断')
-    setActivityItems([])
-    setActivityExpanded(false)
+    const owner = selectedSessionIdRef.current
+    if (!owner || !sessionRuntime.isRunning(owner) || sessionRuntime.view(owner).aborting) return
+    sessionRuntime.aborting(owner, true)
+    syncRuntimeView(owner)
     try {
-      await abortSession(selectedSessionId)
-      showAbortNotice()
+      await abortSession(owner)
+      startRecovery(owner)
     } catch (err) {
-      appendActivity(`[中断失败] ${err instanceof Error ? err.message : String(err)}`)
-      setStatus('中断失败')
-      setAborting(false)
+      sessionRuntime.aborting(owner, false)
+      sessionRuntime.error(owner, `中断失败：${err instanceof Error ? err.message : String(err)}`)
+      syncRuntimeView(owner)
     }
   }
 
@@ -1484,7 +1317,7 @@ export function App({ pluginRuntime }: AppProps) {
             >
               {themeMode === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button className="iconButton" title="刷新" onClick={() => void refreshSession()}>
+            <button className="iconButton" title="刷新" onClick={() => startRecovery(selectedSessionId)}>
               <RefreshCcw size={18} />
             </button>
             <button className="iconButton" title="收起侧边栏" onClick={() => setSidebarCollapsed(true)}>
@@ -1684,7 +1517,7 @@ export function App({ pluginRuntime }: AppProps) {
             </div>
 
             <div className="controlGroup pathControl">
-              <button className="choosePathButton" onClick={() => void handlePickDirectory()}>
+              <button className="choosePathButton" disabled={!selectedSessionId} onClick={() => void handlePickDirectory()}>
                 <FolderOpen size={17} />
                 选择操作目录
               </button>
@@ -2056,7 +1889,7 @@ export function App({ pluginRuntime }: AppProps) {
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="输入需求或问题"
-            disabled={!selectedSessionId || running}
+            disabled={session?.id !== selectedSessionId || !selectedSessionId || running}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault()
@@ -2069,7 +1902,7 @@ export function App({ pluginRuntime }: AppProps) {
               <CircleStop size={19} />
             </button>
           ) : (
-            <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId}>
+            <button className="sendButton" title="发送" disabled={!prompt.trim() || !selectedSessionId || session?.id !== selectedSessionId}>
               <Send size={19} />
             </button>
           )}
@@ -2082,23 +1915,30 @@ export function App({ pluginRuntime }: AppProps) {
             <header>
               <div>
                 <h3>选择操作目录</h3>
-                <p>{directoryListing?.path || '正在读取文件夹'}</p>
+                <p>{directoryBusy ? '正在读取文件夹…' : directoryError ? '读取失败，请重新输入或返回主目录' : directoryListing?.path || '请选择文件夹'}</p>
               </div>
-              <button className="miniIconButton static" title="关闭" onClick={() => setDirectoryPickerOpen(false)}>
+              <button className="miniIconButton static" title="关闭" onClick={closeDirectoryPicker}>
                 <X size={17} />
               </button>
             </header>
 
             {directoryError ? <div className="directoryError">{directoryError}</div> : null}
+            <form className="directoryToolbar" onSubmit={event => { event.preventDefault(); if (directoryPathInput.trim()) void openDirectoryPicker(directoryPathInput.trim()) }}>
+              <input aria-label="文件夹绝对路径" placeholder="输入文件夹绝对路径" value={directoryPathInput} onChange={event => setDirectoryPathInput(event.target.value)} />
+              <button disabled={directoryBusy || !directoryPathInput.trim()}>打开路径</button>
+            </form>
+            {directoryBusy ? <p role="status">正在读取或保存目录…</p> : null}
 
             <div className="directoryToolbar">
               <button
-                disabled={!directoryListing?.parentPath && !(directoryListing?.canListRoots && !directoryListing.isRootListing)}
+                disabled={directoryBusy || (!directoryListing?.parentPath && !(directoryListing?.canListRoots && !directoryListing.isRootListing))}
                 onClick={openDirectoryParent}
               >
                 {directoryListing?.parentPath ? '上一级' : '盘符列表'}
               </button>
-              <button disabled={!directoryListing || directoryListing.isRootListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
+              <button disabled={directoryBusy} onClick={() => void openDirectoryPicker(undefined, { home: true })}>主目录</button>
+              <button disabled={directoryBusy} onClick={() => void openDirectoryPicker(undefined, { roots: true })}>磁盘根目录</button>
+              <button disabled={directoryBusy || !!directoryError || !directoryListing || directoryListing.isRootListing} onClick={() => directoryListing && void chooseDirectory(directoryListing.path)}>
                 选择当前文件夹
               </button>
             </div>

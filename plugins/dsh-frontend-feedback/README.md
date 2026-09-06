@@ -129,7 +129,7 @@ PageCraft has five main layers:
 2. **Annotation** — an injected script for DOM hit testing, adjustable rectangles, alignment guides, container discovery, and slide metadata.
 3. **Agent handoff** — a queue that turns visual feedback into `[frontend-feedback]` or `[presentation-feedback]` work orders.
 4. **Real workspace** — a session-scoped file service that keeps the physical directory tree, CodeMirror editor, image preview, disk watcher, atomic saves, conflict detection, and bounded history synchronized with external tools.
-5. **Direct text transaction** — a bounded static resolver maps selected DOM text to one local source range, writes the smallest change, verifies the refreshed DOM, and conditionally rolls back on failure. Presentation manifests remain responsible only for deck semantics and managed image bindings.
+5. **Direct text transaction** — PageCraft decks follow `slideId → deck.json → slide.content → element path`; ordinary pages use the bounded static resolver. Both paths write only a verified local target, refresh the DOM, and conditionally roll back on failure. Presentation manifests remain responsible only for deck semantics and managed image bindings.
 
 ## Configuration
 
@@ -177,7 +177,7 @@ Run `npm run build` after source changes and refresh Harness. `npm run check` bu
 - External sites may deliberately block embedding, automation, or proxied resources.
 - Document import supports PDF, DOCX, Markdown, and UTF-8 text up to 25 MB. Scanned PDFs require OCR and are rejected in this version.
 - Presentation mode currently creates and refines browser-based decks; native PPTX/PDF export and master-slide editing are future work.
-- Direct text editing is intentionally conservative: dynamic API data, computed runtime strings, ambiguous literals, generated bundles, and source outside the opened folder are never guessed. Stable `data-pagecraft-text-key` markers make deck edits deterministic but are not required for unique static text.
+- Direct text editing is intentionally conservative: dynamic API data, computed runtime strings, ambiguous literals, generated bundles, and source outside the opened folder are never guessed. PageCraft decks use the owning slide and its element path to edit HTML stored inside `deck.json`; stable `data-pagecraft-text-key` markers remain supported but are not required.
 - Managed image-slot editing requires a PageCraft presentation manifest and stable `data-pagecraft-image-key` markers. Older decks can be migrated only when PageCraft can identify one unambiguous deck source.
 
 ## Roadmap

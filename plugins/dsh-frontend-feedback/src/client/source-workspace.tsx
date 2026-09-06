@@ -52,10 +52,18 @@ import {
   workspaceEntryByPath,
 } from './workspace-state.ts'
 import type { WorkspaceTreeState } from './workspace-state.ts'
+import {
+  IndexedDbDraftStorage,
+  SourceDraftCache,
+  diskSaveStatus,
+  draftAfterQueuedOperation,
+  isDraftCacheAllowed,
+} from './source-drafts.ts'
+import type { SourceDraftScope } from './source-drafts.ts'
 
 interface WorkspaceExplorerProps {
   sessionId: string
-  previewSrc: string
+  previewSrc: string | null
   onClose(): void
   onRefresh(): void
   onNavigate(url: string): void
@@ -66,6 +74,7 @@ interface OpenFile {
   file: WorkspaceFile
   draft: string
   conflict: WorkspaceFile | null
+  draftRevision: number | null
 }
 
 interface PendingTextVerification {
@@ -277,6 +286,7 @@ export function WorkspaceExplorer({
   const [focus, setFocus] = useState<WorkspaceFocus>(initialLayout.focus)
   const [status, setStatus] = useState('正在读取当前 DSH 工作区…')
   const [busy, setBusy] = useState(false)
+  const [pendingPersistence, setPendingPersistence] = useState(0)
   const [conflict, setConflict] = useState<{ mine: string; current: WorkspaceFile } | null>(null)
   const [history, setHistory] = useState<WorkspaceHistoryEntry[]>([])
   const [folderPickerOpen, setFolderPickerOpen] = useState(false)
@@ -293,6 +303,7 @@ export function WorkspaceExplorer({
   const shellRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef(tree)
   const openFilesRef = useRef(openFiles)
+  const draftCache = useMemo(() => new SourceDraftCache(new IndexedDbDraftStorage()), [])
   const lastSequenceRef = useRef(0)
   const loadedLayoutRootRef = useRef<string | null>(null)
   const active = openFiles.find(item => item.file.path === activePath) ?? null
@@ -300,6 +311,23 @@ export function WorkspaceExplorer({
   const layoutKey = summary === null ? fallbackLayoutKey : workspaceLayoutStorageKey(summary.rootPath, sessionId)
   treeRef.current = tree
   openFilesRef.current = openFiles
+
+  const draftScope = useCallback((path: string): SourceDraftScope | null => summary === null ? null : ({
+    sessionId,
+    rootPath: summary.rootPath,
+    selectedFolder,
+    path,
+  }), [selectedFolder, sessionId, summary])
+
+  useEffect(() => {
+    function beforeUnload(event: BeforeUnloadEvent): void {
+      if (pendingPersistence === 0 && !openFilesRef.current.some(item => item.draft !== item.file.content)) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => window.removeEventListener('beforeunload', beforeUnload)
+  }, [pendingPersistence])
 
   useEffect(() => {
     storeLayout(layoutKey, { treeVisible, split, focus })
@@ -394,9 +422,9 @@ export function WorkspaceExplorer({
   const revealEditedFile = useCallback((file: WorkspaceFile, line: number): void => {
     setOpenFiles(items => {
       const existing = items.find(item => item.file.path === file.path)
-      if (existing === undefined) return [...items, { file, draft: file.content, conflict: null }]
+      if (existing === undefined) return [...items, { file, draft: file.content, conflict: null, draftRevision: null }]
       return items.map(item => item.file.path === file.path
-        ? { file, draft: file.content, conflict: null }
+        ? { file, draft: file.content, conflict: null, draftRevision: null }
         : item)
     })
     setActivePath(file.path)
@@ -501,6 +529,8 @@ export function WorkspaceExplorer({
             type: 'dsh-pagecraft-verify-text',
             transactionId: pending.started.transactionId,
             selection: pending.selection,
+            expectedText: pending.expectedText,
+            timeoutMs: 6_500,
           }, '*')
         }
         return
@@ -580,8 +610,24 @@ export function WorkspaceExplorer({
     try {
       const query = apiQuery(sessionId, { selectedFolder, path: entry.path })
       const file = await apiJson<WorkspaceFile>(await fetch(`${PAGECRAFT_WORKSPACE_FILE_PATH}?${query}`, { cache: 'no-store' }))
-      setOpenFiles(items => [...items, { file, draft: file.content, conflict: null }])
-      setStatus(`已打开 ${entry.path}`)
+      const scope = draftScope(file.path)
+      let opened: OpenFile = { file, draft: file.content, conflict: null, draftRevision: null }
+      if (scope !== null) {
+        try {
+          const restored = await draftCache.restore(scope, file.hash)
+          if (restored.kind === 'recovered') {
+            opened = { ...opened, draft: restored.content, draftRevision: restored.revision }
+            setStatus(`已恢复 ${entry.path} 的浏览器草稿（尚未写入磁盘）。`)
+          } else if (restored.kind === 'conflict') {
+            opened = { ...opened, draft: restored.content, conflict: file, draftRevision: restored.revision }
+            setConflict({ mine: restored.content, current: file })
+            setStatus(`${entry.path} 的磁盘内容已变化，请处理恢复冲突。`)
+          } else setStatus(`已打开 ${entry.path}`)
+        } catch (error) {
+          setStatus(`无法读取浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      setOpenFiles(items => [...items, opened])
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
@@ -600,10 +646,37 @@ export function WorkspaceExplorer({
 
   function updateDraft(value: string): void {
     if (activePath === null) return
-    setOpenFiles(items => items.map(item => item.file.path === activePath ? { ...item, draft: value } : item))
+    const draftPath = activePath
+    setOpenFiles(items => items.map(item => item.file.path === draftPath ? { ...item, draft: value } : item))
+    const item = openFilesRef.current.find(candidate => candidate.file.path === draftPath)
+    const scope = draftScope(draftPath)
+    if (item === undefined || scope === null) return
+    if (!isDraftCacheAllowed(draftPath)) {
+      setStatus('安全提示：敏感文件草稿不会缓存在浏览器中；请及时保存到磁盘。')
+      return
+    }
+    setPendingPersistence(count => count + 1)
+    void draftCache.persist(scope, item.file.hash, value).then((result) => {
+      if (result.ok) {
+        const current = openFilesRef.current.find(open => open.file.path === draftPath)
+        if (current?.draft === value && current.file.content === value) {
+          void draftCache.clearSaved(scope, result.revision).catch(error => {
+            setStatus(`磁盘已保存，但浏览器草稿清理失败：${error instanceof Error ? error.message : String(error)}`)
+          })
+        } else {
+          setOpenFiles(items => items.map(open => open.file.path === draftPath && open.draft === value
+            ? { ...open, draftRevision: result.revision }
+            : open))
+        }
+      } else {
+        setStatus(`浏览器草稿保存失败：${result.error.message} 请保存到磁盘后再关闭。`)
+      }
+    }).finally(() => setPendingPersistence(count => Math.max(0, count - 1)))
   }
 
   async function writeFile(item: OpenFile, baseHash = item.file.hash): Promise<void> {
+    const savedContent = item.draft
+    const savedRevision = item.draftRevision
     setBusy(true)
     try {
       const file = await apiJson<WorkspaceFile>(await fetch(
@@ -614,9 +687,34 @@ export function WorkspaceExplorer({
           body: JSON.stringify({ selectedFolder, path: item.file.path, content: item.draft, baseHash }),
         },
       ))
-      setOpenFiles(items => items.map(open => open.file.path === file.path ? { file, draft: file.content, conflict: null } : open))
+      const latestAtWrite = openFilesRef.current.find(open => open.file.path === file.path)
+      const hadNewerEdit = latestAtWrite !== undefined && latestAtWrite.draft !== savedContent
+      setOpenFiles(items => items.map(open => open.file.path === file.path
+        ? hadNewerEdit
+          ? { ...open, file, conflict: null }
+          : { file, draft: file.content, conflict: null, draftRevision: null }
+        : open))
+      const scope = draftScope(file.path)
+      let persistenceWarning: string | null = null
+      const afterCleanup = await draftAfterQueuedOperation(
+        savedContent,
+        () => scope !== null && savedRevision !== null ? draftCache.clearSaved(scope, savedRevision) : Promise.resolve(),
+        () => openFilesRef.current.find(open => open.file.path === file.path)?.draft,
+      )
+      if (afterCleanup.error !== null) {
+        persistenceWarning = `磁盘已保存，但浏览器草稿清理失败：${afterCleanup.error.message}`
+      }
+      if (scope !== null && afterCleanup.newerDraft !== null) {
+        const newestDraft = afterCleanup.newerDraft
+        const persisted = await draftCache.persist(scope, file.hash, newestDraft)
+        if (persisted.ok) {
+          setOpenFiles(items => items.map(open => open.file.path === file.path && open.draft === newestDraft
+            ? { ...open, draftRevision: persisted.revision }
+            : open))
+        } else persistenceWarning = `磁盘已保存，但较新的浏览器草稿保存失败：${persisted.error.message} 较新的修改仍未保存。`
+      }
       setConflict(null)
-      setStatus(`已保存 ${file.path}。正在同步预览…`)
+      setStatus(diskSaveStatus(file.path, afterCleanup.newerDraft !== null, persistenceWarning))
       window.setTimeout(onRefresh, 450)
     } catch (error) {
       if (error instanceof WorkspaceApiError) {
@@ -637,6 +735,35 @@ export function WorkspaceExplorer({
   function handleClose(): void {
     if (openFiles.some(item => item.draft !== item.file.content) && !window.confirm('还有未保存的修改，确定关闭文件工作区吗？')) return
     onClose()
+  }
+
+  async function discardActiveDraft(): Promise<void> {
+    if (active === null || !window.confirm(`丢弃 ${active.file.path} 的未保存修改吗？`)) return
+    const discardedDraft = active.draft
+    const scope = draftScope(active.file.path)
+    setBusy(true)
+    try {
+      const afterDiscard = await draftAfterQueuedOperation(
+        discardedDraft,
+        () => scope === null ? Promise.resolve() : draftCache.discard(scope),
+        () => openFilesRef.current.find(item => item.file.path === active.file.path)?.draft,
+      )
+      if (afterDiscard.error !== null) {
+        setStatus(`无法丢弃浏览器草稿：${afterDiscard.error.message}`)
+        return
+      }
+      if (afterDiscard.newerDraft !== null) {
+        setStatus(`${active.file.path} 在丢弃期间有新的修改；新修改已保留且仍未保存。`)
+        return
+      }
+      setOpenFiles(items => items.map(item => item.file.path === active.file.path
+        ? { ...item, draft: item.file.content, conflict: null, draftRevision: null }
+        : item))
+      setConflict(null)
+      setStatus(`已丢弃 ${active.file.path} 的浏览器草稿。`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function toggleEntry(entry: WorkspaceEntry): Promise<void> {
@@ -734,7 +861,7 @@ export function WorkspaceExplorer({
           body: JSON.stringify({ selectedFolder, path: active.file.path, historyId: entry.id, baseHash: active.file.hash }),
         },
       ))
-      setOpenFiles(items => items.map(item => item.file.path === file.path ? { file, draft: file.content, conflict: null } : item))
+      setOpenFiles(items => items.map(item => item.file.path === file.path ? { file, draft: file.content, conflict: null, draftRevision: null } : item))
       setHistory([])
       setStatus('历史版本已恢复。')
       window.setTimeout(onRefresh, 450)
@@ -949,6 +1076,7 @@ export function WorkspaceExplorer({
               <span>{status}</span>
               <div style={sourceStyles.statusActions}>
                 {active !== null ? <button type="button" onClick={() => { void loadHistory() }} style={sourceStyles.statusButton}>历史版本</button> : null}
+                {dirty ? <button type="button" onClick={() => { void discardActiveDraft() }} style={sourceStyles.statusButton}>丢弃修改</button> : null}
                 <span>{active?.file.language ?? ''}{dirty ? ' · 未保存' : active === null ? '' : ' · 已保存'}</span>
               </div>
             </footer>
@@ -960,20 +1088,20 @@ export function WorkspaceExplorer({
             <div style={sourceStyles.previewHeader}>
               <strong>实时预览</strong>
               <div style={sourceStyles.previewActions}>
-                <button type="button" onClick={() => choosePreviewMode('text')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'text' ? sourceStyles.textModeButtonActive : {}) }}>选择文字</button>
-                <button type="button" onClick={() => choosePreviewMode('element')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'element' ? sourceStyles.toolbarButtonActive : {}) }}>选择元素</button>
-                <button type="button" onClick={() => choosePreviewMode('area')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'area' ? sourceStyles.areaModeButtonActive : {}) }}>框选区域</button>
-                <button type="button" onClick={onRefresh} style={sourceStyles.statusButton}>刷新</button>
+                <button type="button" disabled={previewSrc === null} onClick={() => choosePreviewMode('text')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'text' ? sourceStyles.textModeButtonActive : {}) }}>选择文字</button>
+                <button type="button" disabled={previewSrc === null} onClick={() => choosePreviewMode('element')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'element' ? sourceStyles.toolbarButtonActive : {}) }}>选择元素</button>
+                <button type="button" disabled={previewSrc === null} onClick={() => choosePreviewMode('area')} style={{ ...sourceStyles.statusButton, ...(previewSelectionMode === 'area' ? sourceStyles.areaModeButtonActive : {}) }}>框选区域</button>
+                <button type="button" disabled={previewSrc === null} onClick={onRefresh} style={sourceStyles.statusButton}>刷新</button>
               </div>
             </div>
-            <iframe
+            {previewSrc === null ? <div data-pagecraft-workspace-empty-preview="" style={sourceStyles.emptyPreview}>尚未设置预览地址；可继续浏览和编辑项目文件。</div> : <iframe
               ref={previewRef}
               title="PageCraft 文件实时预览"
               src={previewSrc}
               sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"
               style={sourceStyles.previewFrame}
               onLoad={() => postPreviewMode(previewSelectionMode)}
-            />
+            />}
             {textSelection !== null ? (
               <div style={sourceStyles.textEditPanel}>
                 <div style={sourceStyles.textEditHeader}>
@@ -1035,8 +1163,17 @@ export function WorkspaceExplorer({
             <div style={sourceStyles.conflictActions}>
               <button type="button" onClick={() => {
                 const current = conflict.current
-                setOpenFiles(items => items.map(item => item.file.path === current.path ? { file: current, draft: current.content, conflict: null } : item))
-                setConflict(null)
+                const scope = draftScope(current.path)
+                void (async () => {
+                  try {
+                    if (scope !== null) await draftCache.discard(scope)
+                    setOpenFiles(items => items.map(item => item.file.path === current.path ? { file: current, draft: current.content, conflict: null, draftRevision: null } : item))
+                    setConflict(null)
+                    setStatus(`已载入 ${current.path} 的磁盘版本并丢弃对应浏览器草稿。`)
+                  } catch (error) {
+                    setStatus(`无法丢弃浏览器草稿：${error instanceof Error ? error.message : String(error)}`)
+                  }
+                })()
               }} style={sourceStyles.secondaryButton}>载入最新版本</button>
               <button type="button" onClick={() => {
                 if (active === null) return
@@ -1113,6 +1250,7 @@ const sourceStyles: Record<string, CSSProperties> = {
   textModeButtonActive: { color: '#0c1b12', borderColor: '#8bd0a0', background: '#a9e2b7', fontWeight: 800 },
   areaModeButtonActive: { color: '#25170a', borderColor: '#e0a76f', background: '#f2c28f', fontWeight: 800 },
   previewFrame: { flex: 1, width: '100%', minHeight: 0, border: 0, background: '#fff' },
+  emptyPreview: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, color: '#6e7d74', textAlign: 'center' },
   textEditPanel: { flex: 'none', display: 'grid', gap: 8, padding: 10, borderTop: '1px solid #34473d', color: '#dce8e0', background: '#111915' },
   textEditHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11 },
   textEditInput: { width: '100%', minHeight: 72, resize: 'vertical', boxSizing: 'border-box', padding: 9, border: '1px solid #3b5547', borderRadius: 7, color: '#eff7f1', background: '#0a100d', font: '12px/1.5 ui-sans-serif, system-ui, sans-serif' },
