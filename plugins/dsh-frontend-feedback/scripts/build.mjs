@@ -41,5 +41,6 @@ await build({
     js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageId)}, factory: (require) => { var module = { exports: {} }; var exports = module.exports;`,
   },
   footer: { js: 'return module.exports; } });' },
+  loader: { '.png': 'dataurl' },
   legalComments: 'none',
 })
