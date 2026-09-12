@@ -3,10 +3,24 @@ import test from 'node:test'
 import {
   applyDirectoryListing,
   applyWorkspaceEvent,
+  expandWorkspacePath,
   initialWorkspaceTreeState,
   invalidateWorkspacePaths,
   reconcileOpenFile,
 } from '../src/client/workspace-state.ts'
+
+test('revealing a presentation source expands every directory from the project root', () => {
+  const state = expandWorkspacePath(
+    initialWorkspaceTreeState('.'),
+    '.pagecraft/presentations/presentation-demo',
+  )
+  assert.deepEqual(Array.from(state.expanded), [
+    '.',
+    '.pagecraft',
+    '.pagecraft/presentations',
+    '.pagecraft/presentations/presentation-demo',
+  ])
+})
 
 test('lazy workspace state preserves exact parents and expansion', () => {
   let state = initialWorkspaceTreeState('slides')

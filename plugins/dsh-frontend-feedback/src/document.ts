@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import type { IncomingMessage } from 'node:http'
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
 import { PDFParse } from 'pdf-parse'
 import {
-  isPresentationJobId,
-  normalizePresentationJobSnapshot,
+  isPresentationId,
+  normalizePresentationSnapshot,
   normalizePresentationPlan,
 } from './presentation.ts'
 import type {
-  PresentationJobSnapshot,
+  PresentationSnapshot,
   PresentationPlan,
   PresentationSourceSummary,
 } from './presentation.ts'
@@ -20,7 +21,7 @@ export const DEFAULT_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
 export const DEFAULT_MAX_EXTRACTED_TEXT_CHARACTERS = 2_000_000
 
 const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt'])
-const JOB_FILE_LIMIT = 4 * 1024 * 1024
+const PRESENTATION_FILE_LIMIT = 4 * 1024 * 1024
 
 export class PresentationDocumentError extends Error {
   override readonly name = 'PresentationDocumentError'
@@ -45,7 +46,7 @@ export interface ExtractedPresentationDocument {
 export interface CreatePresentationSourceOptions {
   maxTextCharacters?: number
   now?: Date
-  jobId?: string
+  presentationId?: string
   signal?: AbortSignal
 }
 
@@ -242,11 +243,11 @@ function presentationRoot(cwd: string): string {
   return resolve(cwd, '.pagecraft', 'presentations')
 }
 
-export function resolvePresentationJobDirectory(cwd: string, jobId: string): string {
-  if (!isPresentationJobId(jobId)) throw new PresentationDocumentError('演示任务 ID 无效')
+export function resolvePresentationDirectory(cwd: string, presentationId: string): string {
+  if (!isPresentationId(presentationId)) throw new PresentationDocumentError('演示文稿 ID 无效')
   const root = presentationRoot(cwd)
-  const directory = resolve(root, jobId)
-  if (!directory.startsWith(`${root}${sep}`)) throw new PresentationDocumentError('演示任务目录越界', 400, 'JOB_PATH_ESCAPE')
+  const directory = resolve(root, presentationId)
+  if (!directory.startsWith(`${root}${sep}`)) throw new PresentationDocumentError('演示文稿目录越界', 400, 'PRESENTATION_PATH_ESCAPE')
   return directory
 }
 
@@ -286,14 +287,14 @@ export async function createPresentationSource(
   fileName: string,
   bytes: Buffer,
   options: CreatePresentationSourceOptions = {},
-): Promise<PresentationJobSnapshot> {
+): Promise<PresentationSnapshot> {
   throwIfCancelled(options.signal)
   const originalName = safeOriginalName(fileName)
   const extracted = await extractPresentationDocument(fileName, bytes, options.maxTextCharacters, options.signal)
   throwIfCancelled(options.signal)
   const now = options.now ?? new Date()
-  const jobId = options.jobId ?? `presentation-${now.getTime().toString(36)}-${randomUUID().slice(0, 8)}`
-  const directory = resolvePresentationJobDirectory(cwd, jobId)
+  const presentationId = options.presentationId ?? `presentation-${now.getTime().toString(36)}-${randomUUID().slice(0, 8)}`
+  const directory = resolvePresentationDirectory(cwd, presentationId)
   const originalPath = join(directory, `original${extracted.extension === '.markdown' ? '.md' : extracted.extension}`)
   const sourcePath = join(directory, 'source.md')
   const sourceJsonPath = join(directory, 'source.json')
@@ -310,7 +311,7 @@ export async function createPresentationSource(
   })
 
   const source: PresentationSourceSummary = {
-    jobId,
+    presentationId,
     originalName,
     sourcePath: workspaceRelative(cwd, sourcePath),
     planPath: workspaceRelative(cwd, planPath),
@@ -319,8 +320,8 @@ export async function createPresentationSource(
     textCharacters: extracted.text.length,
     warnings: extracted.warnings,
   }
-  const snapshot: PresentationJobSnapshot = {
-    jobId,
+  const snapshot: PresentationSnapshot = {
+    presentationId,
     phase: 'source_ready',
     source,
     slides: [],
@@ -333,16 +334,69 @@ export async function createPresentationSource(
 
 async function readJson(path: string): Promise<unknown> {
   const content = await readFile(path)
-  if (content.length > JOB_FILE_LIMIT) throw new PresentationDocumentError('演示任务文件超过读取上限', 413, 'JOB_FILE_TOO_LARGE')
+  if (content.length > PRESENTATION_FILE_LIMIT) throw new PresentationDocumentError('演示文稿文件超过读取上限', 413, 'PRESENTATION_FILE_TOO_LARGE')
   try {
     return JSON.parse(content.toString('utf8'))
   } catch (error) {
-    throw new PresentationDocumentError(`演示任务 JSON 损坏：${basename(path)}`, 422, 'JOB_JSON_INVALID', { cause: error })
+    throw new PresentationDocumentError(`演示文稿 JSON 损坏：${basename(path)}`, 422, 'PRESENTATION_JSON_INVALID', { cause: error })
   }
 }
 
-export async function readPresentationJob(cwd: string, jobId: string): Promise<PresentationJobSnapshot> {
-  const directory = resolvePresentationJobDirectory(cwd, jobId)
+function comparablePreviewUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    url.hash = ''
+    if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase())) {
+      url.hostname = 'localhost'
+    }
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+export async function resolvePresentationIdByPreviewUrl(cwd: string, rawPreviewUrl: unknown): Promise<string> {
+  const previewUrl = comparablePreviewUrl(rawPreviewUrl)
+  if (previewUrl === null) {
+    throw new PresentationDocumentError('预览地址无效', 400, 'PRESENTATION_PREVIEW_URL_INVALID')
+  }
+
+  let entries: Dirent[]
+  try {
+    entries = await readdir(presentationRoot(cwd), { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new PresentationDocumentError('当前工作区没有旧版 PageCraft 演示文稿', 404, 'PRESENTATION_NOT_FOUND')
+    }
+    throw error
+  }
+
+  const matches: string[] = []
+  for (const entry of entries.slice(0, 500)) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !isPresentationId(entry.name)) continue
+    let status: unknown
+    try {
+      status = await readJson(resolve(presentationRoot(cwd), entry.name, 'status.json'))
+    } catch {
+      continue
+    }
+    if (status === null || typeof status !== 'object' || Array.isArray(status)) continue
+    if (comparablePreviewUrl((status as Record<string, unknown>).previewUrl) === previewUrl) {
+      matches.push(entry.name)
+    }
+  }
+
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    throw new PresentationDocumentError('多个旧版 PPT 使用了相同预览地址，无法安全判断要修改哪一套', 409, 'PRESENTATION_PREVIEW_AMBIGUOUS')
+  }
+  throw new PresentationDocumentError('没有找到与该预览地址对应的旧版 PPT', 404, 'PRESENTATION_NOT_FOUND')
+}
+
+export async function readPresentation(cwd: string, presentationId: string): Promise<PresentationSnapshot> {
+  const directory = resolvePresentationDirectory(cwd, presentationId)
   const source = await readJson(join(directory, 'source.json'))
   const status = await readJson(join(directory, 'status.json'))
   let plan: unknown
@@ -354,20 +408,20 @@ export async function readPresentationJob(cwd: string, jobId: string): Promise<P
   }
   let raw: Record<string, unknown> | null = null
   if (status !== null && typeof status === 'object') {
-    raw = { ...(status as Record<string, unknown>), jobId, source }
+    raw = { ...(status as Record<string, unknown>), presentationId, source }
     if (plan !== undefined) raw.plan = plan
   }
-  const normalized = normalizePresentationJobSnapshot(raw)
-  if (normalized === null) throw new PresentationDocumentError('演示任务状态无法识别', 422, 'JOB_STATUS_INVALID')
+  const normalized = normalizePresentationSnapshot(raw)
+  if (normalized === null) throw new PresentationDocumentError('演示文稿状态无法识别', 422, 'PRESENTATION_STATUS_INVALID')
   return normalized
 }
 
-export async function savePresentationPlan(cwd: string, jobId: string, value: unknown): Promise<PresentationJobSnapshot> {
+export async function savePresentationPlan(cwd: string, presentationId: string, value: unknown): Promise<PresentationSnapshot> {
   const plan = normalizePresentationPlan(value)
   if (plan === null) throw new PresentationDocumentError('目录格式无效：至少需要 3 张标题完整、ID 唯一的幻灯片', 400, 'PLAN_INVALID')
-  const current = await readPresentationJob(cwd, jobId)
-  const directory = resolvePresentationJobDirectory(cwd, jobId)
-  const updated: PresentationJobSnapshot = {
+  const current = await readPresentation(cwd, presentationId)
+  const directory = resolvePresentationDirectory(cwd, presentationId)
+  const updated: PresentationSnapshot = {
     ...current,
     phase: 'outline_ready',
     plan,

@@ -3,6 +3,29 @@ import test from 'node:test'
 import { SessionRuntime, recoverSession } from '../web/src/sessionRuntime.js'
 import { sessionTimeline } from '../web/src/sessionTimeline.js'
 
+test('task interaction waits for a verified terminal snapshot and rejects late/wrong-run task events', () => {
+  const runtime = new SessionRuntime()
+  const task = { id:'t', revision:1, objective:'plan', phase:'active' as const, lastRunId:'r', previousContext:[], completedTaskIds:[], failedTaskIds:[] }
+  const detail = { id:'s', running:false, messages:[], runs:[], state:{ sessionId:'s', allowedPaths:[], task } }
+  runtime.snapshot('s', runtime.snapshotToken('s'), detail)
+  runtime.begin('s', 'req', 'plan')
+  assert.equal(runtime.interactionRuntime('s').submitting, true)
+  const run = { id:'r', sessionId:'s', prompt:'plan', status:'running' as const, createdAt:1, messageIds:[] }
+  runtime.event('s', 'req', { type:'run', run })
+  assert.equal(runtime.interactionRuntime('s').submitting, false)
+  runtime.event('s', 'req', { type:'task', runId:'other', task:{ ...task, phase:'completed', lastRunId:'other' } })
+  assert.equal(runtime.detail('s')?.state.task?.phase, 'active')
+  runtime.event('s', 'req', { type:'run', run:{ ...run, status:'cancelled' } })
+  runtime.event('s', 'req', { type:'task', runId:'r', task:{ ...task, phase:'completed' } })
+  runtime.event('s', 'req', { type:'run', run:{ ...run, status:'completed' } })
+  assert.equal(runtime.detail('s')?.state.task?.phase, 'active')
+  assert.equal(runtime.detail('s')?.runs?.[0].status, 'cancelled')
+  assert.equal(runtime.interactionRuntime('s').syncing, true)
+  runtime.end('s', 'req', true)
+  runtime.snapshot('s', runtime.snapshotToken('s'), { ...detail, state:{ ...detail.state, task:{ ...task, phase:'paused' } }, runs:[{ ...run, status:'cancelled' }] })
+  assert.equal(runtime.interactionRuntime('s').syncing, false)
+})
+
 test('retry clears only the matching request partial output and keeps other sessions intact', () => {
   const runtime = new SessionRuntime()
   runtime.begin('A', 'a', 'retry me')

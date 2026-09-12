@@ -15,18 +15,21 @@ import {
   PresentationDocumentError,
   createPresentationSource,
   parsePlanRequestBody,
-  readPresentationJob,
+  readPresentation,
   readRequestBodyWithLimit,
-  resolvePresentationJobDirectory,
+  resolvePresentationIdByPreviewUrl,
+  resolvePresentationDirectory,
   savePresentationPlan,
 } from './document.ts'
 import {
   PRESENTATION_ASSETS_PATH,
   PRESENTATION_ASSET_BINDING_PATH,
   PRESENTATION_ASSET_PATH,
-  PRESENTATION_JOB_PATH,
+  PRESENTATION_PATH,
   PRESENTATION_PLAN_PATH,
+  PRESENTATION_RESOLVE_PATH,
   PRESENTATION_SOURCE_PATH,
+  isPresentationId,
 } from './presentation.ts'
 import {
   PRESENTATION_WORKSPACE_ASSET_PATH,
@@ -213,6 +216,8 @@ async function handlePreview(req: IncomingMessage, res: ServerResponse, config: 
     sendPreviewError(res, 400, '缺少 url 查询参数')
     return
   }
+  const rawPresentationId = requestUrl.searchParams.get('presentationId')
+  const presentationId = isPresentationId(rawPresentationId) ? rawPresentationId : undefined
 
   const policy = {
     allowRemoteHosts: config.allowRemoteHosts,
@@ -240,7 +245,7 @@ async function handlePreview(req: IncomingMessage, res: ServerResponse, config: 
       return
     }
     const html = await readHtmlWithLimit(upstream, config.maxHtmlBytes ?? DEFAULT_MAX_HTML_BYTES)
-    const output = buildPreviewHtml(html, finalTarget.href)
+    const output = buildPreviewHtml(html, finalTarget.href, presentationId)
     res.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
@@ -439,6 +444,16 @@ function presentationRequest(req: IncomingMessage, ctx: PluginContext): Presenta
 
 function workspaceSelection(requestUrl: URL): string {
   return requestUrl.searchParams.get('selectedFolder')?.trim() || '.'
+}
+
+function presentationIdFromRequest(requestUrl: URL): string {
+  const presentationId = requestUrl.searchParams.get('presentationId')?.trim()
+    || requestUrl.searchParams.get('jobId')?.trim()
+    || ''
+  if (!isPresentationId(presentationId)) {
+    throw new PresentationDocumentError('缺少有效的 presentationId', 400, 'PRESENTATION_ID_REQUIRED')
+  }
+  return presentationId
 }
 
 function workspaceTextOptions(config: Config): { maxTextBytes: number } {
@@ -739,13 +754,24 @@ async function handlePresentationSource(
   }
 }
 
-async function handlePresentationJob(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
+async function handlePresentation(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'GET')) return
   try {
     const { requestUrl, cwd } = presentationRequest(req, ctx)
-    const jobId = requestUrl.searchParams.get('jobId')?.trim() ?? ''
-    const snapshot = await readPresentationJob(cwd, jobId)
+    const presentationId = presentationIdFromRequest(requestUrl)
+    const snapshot = await readPresentation(cwd, presentationId)
     sendJson(res, 200, snapshot)
+  } catch (error) {
+    sendPresentationError(res, error)
+  }
+}
+
+async function handlePresentationResolve(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
+  if (rejectUnsupportedMethod(req, res, 'GET')) return
+  try {
+    const { requestUrl, cwd } = presentationRequest(req, ctx)
+    const presentationId = await resolvePresentationIdByPreviewUrl(cwd, requestUrl.searchParams.get('url'))
+    sendJson(res, 200, { presentationId })
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -755,10 +781,10 @@ async function handlePresentationPlan(req: IncomingMessage, res: ServerResponse,
   if (rejectUnsupportedMethod(req, res, 'POST')) return
   try {
     const { requestUrl, cwd } = presentationRequest(req, ctx)
-    const jobId = requestUrl.searchParams.get('jobId')?.trim() ?? ''
+    const presentationId = presentationIdFromRequest(requestUrl)
     const body = await readRequestBodyWithLimit(req, 1024 * 1024)
     const plan = parsePlanRequestBody(body)
-    const snapshot = await savePresentationPlan(cwd, jobId, plan)
+    const snapshot = await savePresentationPlan(cwd, presentationId, plan)
     sendJson(res, 200, snapshot)
   } catch (error) {
     sendPresentationError(res, error)
@@ -775,9 +801,9 @@ async function handlePresentationAssets(
   const cancellation = trackRequestCancellation(req, res)
   try {
     const { requestUrl, cwd } = presentationRequest(req, ctx)
-    const jobId = requestUrl.searchParams.get('jobId')?.trim() ?? ''
+    const presentationId = presentationIdFromRequest(requestUrl)
     if (req.method === 'GET') {
-      sendJson(res, 200, await readPresentationAssets(cwd, jobId))
+      sendJson(res, 200, await readPresentationAssets(cwd, presentationId))
       return
     }
     const fileName = requestUrl.searchParams.get('filename')?.trim() ?? ''
@@ -787,7 +813,7 @@ async function handlePresentationAssets(
       config.maxPresentationAssetBytes ?? DEFAULT_MAX_PRESENTATION_ASSET_BYTES,
       cancellation.signal,
     )
-    sendJson(res, 201, await uploadPresentationAsset(cwd, jobId, fileName, body))
+    sendJson(res, 201, await uploadPresentationAsset(cwd, presentationId, fileName, body))
   } catch (error) {
     sendPresentationError(res, error)
   } finally {
@@ -799,13 +825,13 @@ async function handlePresentationAsset(req: IncomingMessage, res: ServerResponse
   if (rejectUnsupportedMethods(req, res, ['GET', 'DELETE'])) return
   try {
     const { requestUrl, cwd } = presentationRequest(req, ctx)
-    const jobId = requestUrl.searchParams.get('jobId')?.trim() ?? ''
+    const presentationId = presentationIdFromRequest(requestUrl)
     const assetId = requestUrl.searchParams.get('assetId')?.trim() ?? ''
     if (req.method === 'DELETE') {
-      sendJson(res, 200, await deletePresentationAsset(cwd, jobId, assetId))
+      sendJson(res, 200, await deletePresentationAsset(cwd, presentationId, assetId))
       return
     }
-    const { asset, body } = await readPresentationAsset(cwd, jobId, assetId)
+    const { asset, body } = await readPresentationAsset(cwd, presentationId, assetId)
     res.writeHead(200, {
       'content-type': asset.mimeType,
       'content-length': body.length,
@@ -823,7 +849,7 @@ async function handlePresentationAssetBinding(req: IncomingMessage, res: ServerR
   if (rejectUnsupportedMethod(req, res, 'POST')) return
   try {
     const { requestUrl, cwd } = presentationRequest(req, ctx)
-    const jobId = requestUrl.searchParams.get('jobId')?.trim() ?? ''
+    const presentationId = presentationIdFromRequest(requestUrl)
     const parsed = JSON.parse((await readRequestBodyWithLimit(req, 64 * 1024)).toString('utf8')) as unknown
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new PresentationDocumentError('图片绑定请求格式无效', 400, 'INVALID_BINDING_JSON')
@@ -834,7 +860,7 @@ async function handlePresentationAssetBinding(req: IncomingMessage, res: ServerR
     const focalPoint = value.focalPoint !== null && typeof value.focalPoint === 'object'
       ? value.focalPoint as { x?: number; y?: number }
       : undefined
-    const manifest = await bindPresentationAsset(cwd, jobId, slotId, {
+    const manifest = await bindPresentationAsset(cwd, presentationId, slotId, {
       assetId,
       fit: value.fit === 'contain' ? 'contain' : 'cover',
       focalPoint,
@@ -852,8 +878,8 @@ async function handlePresentationAssetBinding(req: IncomingMessage, res: ServerR
 async function handlePresentationWorkspace(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'GET')) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
-    sendJson(res, 200, await readPresentationWorkspaceSummary(cwd))
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
+    sendJson(res, 200, await readPresentationWorkspaceSummary(cwd, presentationIdFromRequest(requestUrl)))
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -862,8 +888,8 @@ async function handlePresentationWorkspace(req: IncomingMessage, res: ServerResp
 async function handlePresentationWorkspaceTree(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'GET')) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
-    sendJson(res, 200, await readPresentationWorkspaceTree(cwd))
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
+    sendJson(res, 200, await readPresentationWorkspaceTree(cwd, presentationIdFromRequest(requestUrl)))
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -878,14 +904,16 @@ async function handlePresentationWorkspaceFile(
   if (rejectUnsupportedMethods(req, res, ['GET', 'PUT'])) return
   try {
     const { cwd, requestUrl } = presentationRequest(req, ctx)
+    const presentationId = presentationIdFromRequest(requestUrl)
     const options = { maxSourceBytes: config.maxPresentationSourceBytes ?? DEFAULT_MAX_PRESENTATION_SOURCE_BYTES }
     if (req.method === 'GET') {
-      sendJson(res, 200, await readPresentationSourceFile(cwd, requestUrl.searchParams.get('path'), options))
+      sendJson(res, 200, await readPresentationSourceFile(cwd, presentationId, requestUrl.searchParams.get('path'), options))
       return
     }
     const value = await readJsonRequest(req, options.maxSourceBytes + 64 * 1024)
     sendJson(res, 200, await savePresentationSourceFile(
       cwd,
+      presentationId,
       value.path,
       typeof value.content === 'string' ? value.content : '',
       typeof value.baseHash === 'string' ? value.baseHash : '',
@@ -899,11 +927,12 @@ async function handlePresentationWorkspaceFile(
 async function handlePresentationWorkspaceEntry(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
   if (rejectUnsupportedMethods(req, res, ['POST', 'PATCH', 'DELETE'])) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
+    const presentationId = presentationIdFromRequest(requestUrl)
     const value = await readJsonRequest(req, 128 * 1024)
     if (req.method === 'POST') {
       const kind = value.kind === 'directory' ? 'directory' : 'file'
-      sendJson(res, 201, await createPresentationEntry(cwd, {
+      sendJson(res, 201, await createPresentationEntry(cwd, presentationId, {
         path: typeof value.path === 'string' ? value.path : '',
         kind,
         content: typeof value.content === 'string' ? value.content : undefined,
@@ -911,10 +940,10 @@ async function handlePresentationWorkspaceEntry(req: IncomingMessage, res: Serve
       return
     }
     if (req.method === 'PATCH') {
-      sendJson(res, 200, await renamePresentationEntry(cwd, value.path, value.nextPath))
+      sendJson(res, 200, await renamePresentationEntry(cwd, presentationId, value.path, value.nextPath))
       return
     }
-    sendJson(res, 200, await deletePresentationEntry(cwd, value.path))
+    sendJson(res, 200, await deletePresentationEntry(cwd, presentationId, value.path))
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -924,7 +953,7 @@ async function handlePresentationWorkspaceHistory(req: IncomingMessage, res: Ser
   if (rejectUnsupportedMethod(req, res, 'GET')) return
   try {
     const { cwd, requestUrl } = presentationRequest(req, ctx)
-    sendJson(res, 200, await readPresentationFileHistory(cwd, requestUrl.searchParams.get('path')))
+    sendJson(res, 200, await readPresentationFileHistory(cwd, presentationIdFromRequest(requestUrl), requestUrl.searchParams.get('path')))
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -938,10 +967,11 @@ async function handlePresentationWorkspaceRestore(
 ): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'POST')) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
     const value = await readJsonRequest(req, 64 * 1024)
     sendJson(res, 200, await restorePresentationFileHistory(
       cwd,
+      presentationIdFromRequest(requestUrl),
       value.path,
       typeof value.historyId === 'string' ? value.historyId : '',
       typeof value.baseHash === 'string' ? value.baseHash : '',
@@ -962,13 +992,14 @@ async function handlePresentationWorkspaceAsset(
   const cancellation = trackRequestCancellation(req, res)
   try {
     const { cwd, requestUrl } = presentationRequest(req, ctx)
+    const presentationId = presentationIdFromRequest(requestUrl)
     if (req.method === 'GET') {
       const path = requestUrl.searchParams.get('path')
       if (path === null) {
-        sendJson(res, 200, await listPresentationProjectAssets(cwd))
+        sendJson(res, 200, await listPresentationProjectAssets(cwd, presentationId))
         return
       }
-      const { body, mimeType } = await readPresentationProjectAsset(cwd, path)
+      const { body, mimeType } = await readPresentationProjectAsset(cwd, presentationId, path)
       res.writeHead(200, {
         'content-type': mimeType,
         'content-length': body.length,
@@ -981,7 +1012,7 @@ async function handlePresentationWorkspaceAsset(
     }
     if (req.method === 'DELETE') {
       const value = await readJsonRequest(req, 64 * 1024)
-      sendJson(res, 200, await deletePresentationProjectAsset(cwd, value.path))
+      sendJson(res, 200, await deletePresentationProjectAsset(cwd, presentationId, value.path))
       return
     }
     const fileName = requestUrl.searchParams.get('filename')?.trim() ?? ''
@@ -990,7 +1021,7 @@ async function handlePresentationWorkspaceAsset(
       config.maxPresentationAssetBytes ?? DEFAULT_MAX_PRESENTATION_ASSET_BYTES,
       cancellation.signal,
     )
-    sendJson(res, 201, await uploadPresentationProjectAsset(cwd, fileName, body))
+    sendJson(res, 201, await uploadPresentationProjectAsset(cwd, presentationId, fileName, body))
   } catch (error) {
     sendPresentationError(res, error)
   } finally {
@@ -1006,12 +1037,12 @@ async function handlePresentationWorkspaceBindAsset(
 ): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'POST')) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
     const value = await readJsonRequest(req, 64 * 1024)
     const focal = value.focalPoint !== null && typeof value.focalPoint === 'object'
       ? value.focalPoint as { x?: number; y?: number }
       : undefined
-    sendJson(res, 200, await bindPresentationProjectAsset(cwd, {
+    sendJson(res, 200, await bindPresentationProjectAsset(cwd, presentationIdFromRequest(requestUrl), {
       slotId: typeof value.slotId === 'string' ? value.slotId : undefined,
       slideId: typeof value.slideId === 'string' ? value.slideId : undefined,
       imageKey: typeof value.imageKey === 'string' ? value.imageKey : undefined,
@@ -1029,12 +1060,12 @@ async function handlePresentationWorkspaceBindAsset(
 async function handlePresentationWorkspaceMigrate(req: IncomingMessage, res: ServerResponse, ctx: PluginContext): Promise<void> {
   if (rejectUnsupportedMethod(req, res, 'POST')) return
   try {
-    const { cwd } = presentationRequest(req, ctx)
+    const { cwd, requestUrl } = presentationRequest(req, ctx)
     const value = await readJsonRequest(req, 64 * 1024)
-    sendJson(res, 200, await migratePresentationWorkspace(
-      cwd,
-      typeof value.jobId === 'string' ? value.jobId : undefined,
-    ))
+    const presentationId = typeof value.presentationId === 'string'
+      ? value.presentationId
+      : presentationIdFromRequest(requestUrl)
+    sendJson(res, 200, await migratePresentationWorkspace(cwd, presentationId))
   } catch (error) {
     sendPresentationError(res, error)
   }
@@ -1132,9 +1163,15 @@ export function apply(ctx: PluginContext, config: Config = {}): void {
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
-    path: PRESENTATION_JOB_PATH,
-    handler: (req, res) => handlePresentationJob(req, res, ctx),
-  }), 'frontend-feedback: presentation job route')
+    path: PRESENTATION_PATH,
+    handler: (req, res) => handlePresentation(req, res, ctx),
+  }), 'frontend-feedback: presentation route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PRESENTATION_RESOLVE_PATH,
+    handler: (req, res) => handlePresentationResolve(req, res, ctx),
+  }), 'frontend-feedback: presentation identity resolver route')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -1290,9 +1327,10 @@ export {
   createPresentationSource,
   extractPresentationDocument,
   parsePlanRequestBody,
-  readPresentationJob,
+  readPresentation,
   readRequestBodyWithLimit,
-  resolvePresentationJobDirectory,
+  resolvePresentationIdByPreviewUrl,
+  resolvePresentationDirectory,
   savePresentationPlan,
 } from './document.ts'
 export {
@@ -1322,23 +1360,26 @@ export {
   buildPresentationCreationPrompt,
   buildPresentationDocumentPrompt,
   buildPresentationOutlinePrompt,
-  isPresentationJobId,
+  isPresentationId,
   isPresentationImageSlotId,
   isPresentationRequestSettled,
   isPresentationSlideSummary,
-  normalizePresentationJobSnapshot,
+  normalizePresentationSnapshot,
   normalizePresentationPlan,
-  presentationJobStorageKey,
+  legacyPresentationJobStorageKey,
+  presentationStorageKey,
   PRESENTATION_ASSETS_PATH,
   PRESENTATION_ASSET_BINDING_PATH,
   PRESENTATION_ASSET_PATH,
-  PRESENTATION_JOB_PATH,
+  PRESENTATION_PATH,
   PRESENTATION_PLAN_PATH,
+  PRESENTATION_RESOLVE_PATH,
   PRESENTATION_SOURCE_PATH,
   resolvePresentationSlides,
 } from './presentation.ts'
 export {
-  PRESENTATION_PROJECT_MANIFEST,
+  LEGACY_PRESENTATION_PROJECT_MANIFEST,
+  PRESENTATION_MANIFEST_NAME,
   PRESENTATION_WORKSPACE_ASSET_PATH,
   PRESENTATION_WORKSPACE_BIND_ASSET_PATH,
   PRESENTATION_WORKSPACE_ENTRY_PATH,

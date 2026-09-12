@@ -58,6 +58,27 @@ export function toggleDirectory(state: WorkspaceTreeState, path: string): Worksp
   return { ...state, expanded }
 }
 
+export function expandWorkspacePath(state: WorkspaceTreeState, path: string): WorkspaceTreeState {
+  const root = state.selectedFolder
+  const relativePath = root === '.'
+    ? path
+    : path === root
+      ? ''
+      : path.startsWith(`${root}/`)
+        ? path.slice(root.length + 1)
+        : null
+  if (relativePath === null) return state
+
+  const expanded = new Set(state.expanded)
+  expanded.add(root)
+  let current = root === '.' ? '' : root
+  for (const segment of relativePath.split('/').filter(Boolean)) {
+    current = current.length === 0 ? segment : `${current}/${segment}`
+    expanded.add(current)
+  }
+  return { ...state, expanded }
+}
+
 export function invalidateWorkspacePaths(state: WorkspaceTreeState, paths: string[]): WorkspaceTreeState {
   const stale = new Set(state.stale)
   for (const path of paths) stale.add(path === '.' && state.selectedFolder !== '.' ? state.selectedFolder : path)

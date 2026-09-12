@@ -14,7 +14,7 @@ import type {
 
 interface AssetLibraryDialogProps {
   sessionId: string
-  jobId: string
+  presentationId: string
   manifest: PresentationAssetManifest
   selectedSlot: PresentationImageSlotSelection | null
   onClose(): void
@@ -29,8 +29,8 @@ export function emptyPresentationAssetManifest(): PresentationAssetManifest {
   return { assets: [], bindings: [], updatedAt: new Date(0).toISOString() }
 }
 
-function queryFor(sessionId: string, jobId: string): URLSearchParams {
-  return new URLSearchParams({ sessionId, jobId })
+function queryFor(sessionId: string, presentationId: string): URLSearchParams {
+  return new URLSearchParams({ sessionId, presentationId })
 }
 
 async function responseJson(response: Response): Promise<PresentationAssetManifest> {
@@ -39,14 +39,14 @@ async function responseJson(response: Response): Promise<PresentationAssetManife
   return value
 }
 
-export function presentationAssetUrl(sessionId: string, jobId: string, assetId: string): string {
-  const query = queryFor(sessionId, jobId)
+export function presentationAssetUrl(sessionId: string, presentationId: string, assetId: string): string {
+  const query = queryFor(sessionId, presentationId)
   query.set('assetId', assetId)
   return `${window.location.origin}${PRESENTATION_ASSET_PATH}?${query}`
 }
 
-export async function loadPresentationAssets(sessionId: string, jobId: string): Promise<PresentationAssetManifest> {
-  const query = queryFor(sessionId, jobId)
+export async function loadPresentationAssets(sessionId: string, presentationId: string): Promise<PresentationAssetManifest> {
+  const query = queryFor(sessionId, presentationId)
   return responseJson(await fetch(`${PRESENTATION_ASSETS_PATH}?${query}`, { cache: 'no-store' }))
 }
 
@@ -62,7 +62,7 @@ function useCount(manifest: PresentationAssetManifest, assetId: string): number 
 
 export function AssetLibraryDialog({
   sessionId,
-  jobId,
+  presentationId,
   manifest,
   selectedSlot,
   onClose,
@@ -100,7 +100,7 @@ export function AssetLibraryDialog({
     try {
       let nextManifest = manifest
       for (const file of files) {
-        const query = queryFor(sessionId, jobId)
+        const query = queryFor(sessionId, presentationId)
         query.set('filename', file.name)
         nextManifest = await responseJson(await fetch(`${PRESENTATION_ASSETS_PATH}?${query}`, {
           method: 'POST',
@@ -124,7 +124,7 @@ export function AssetLibraryDialog({
   async function refresh(): Promise<void> {
     setError('')
     try {
-      onManifestChange(await loadPresentationAssets(sessionId, jobId))
+      onManifestChange(await loadPresentationAssets(sessionId, presentationId))
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : String(refreshError))
     }
@@ -135,7 +135,7 @@ export function AssetLibraryDialog({
     setSaving(true)
     setError('')
     try {
-      const query = queryFor(sessionId, jobId)
+      const query = queryFor(sessionId, presentationId)
       const next = await responseJson(await fetch(`${PRESENTATION_ASSET_BINDING_PATH}?${query}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -159,7 +159,7 @@ export function AssetLibraryDialog({
     if (!window.confirm(`确定删除图片“${asset.name}”吗？此操作不会删除正在使用的图片。`)) return
     setError('')
     try {
-      const query = queryFor(sessionId, jobId)
+      const query = queryFor(sessionId, presentationId)
       query.set('assetId', asset.id)
       const next = await responseJson(await fetch(`${PRESENTATION_ASSET_PATH}?${query}`, { method: 'DELETE' }))
       onManifestChange(next)
@@ -230,7 +230,7 @@ export function AssetLibraryDialog({
                         onClick={() => setSelectedAssetId(asset.id)}
                         style={assetStyles.thumbnailButton}
                       >
-                        <img src={presentationAssetUrl(sessionId, jobId, asset.id)} alt={asset.name} style={assetStyles.thumbnail} />
+                        <img src={presentationAssetUrl(sessionId, presentationId, asset.id)} alt={asset.name} style={assetStyles.thumbnail} />
                       </button>
                       <div style={assetStyles.cardInfo}>
                         <strong title={asset.name} style={assetStyles.assetName}>{asset.name}</strong>
@@ -262,7 +262,7 @@ export function AssetLibraryDialog({
                   <span>先从左侧选择一张图片</span>
                 ) : (
                   <img
-                    src={presentationAssetUrl(sessionId, jobId, selectedAsset.id)}
+                    src={presentationAssetUrl(sessionId, presentationId, selectedAsset.id)}
                     alt="当前裁剪预览"
                     style={{ ...assetStyles.cropPreviewImage, objectFit: fit, objectPosition: `${focalX * 100}% ${focalY * 100}%` }}
                   />

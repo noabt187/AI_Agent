@@ -16,6 +16,7 @@ import type {
 
 interface ProjectAssetLibraryDialogProps {
   sessionId: string
+  presentationId: string
   selectedSlot: PresentationImageSlotSelection | null
   onClose(): void
   onRefresh(): void
@@ -31,12 +32,12 @@ async function readJson<T>(response: Response): Promise<T> {
   return value as T
 }
 
-function query(sessionId: string, values: Record<string, string> = {}): URLSearchParams {
-  return new URLSearchParams({ sessionId, ...values })
+function query(sessionId: string, presentationId: string, values: Record<string, string> = {}): URLSearchParams {
+  return new URLSearchParams({ sessionId, presentationId, ...values })
 }
 
-function assetPreviewUrl(sessionId: string, path: string): string {
-  return `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, { path })}`
+function assetPreviewUrl(sessionId: string, presentationId: string, path: string): string {
+  return `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, presentationId, { path })}`
 }
 
 function describeBytes(bytes: number): string {
@@ -45,6 +46,7 @@ function describeBytes(bytes: number): string {
 
 export function ProjectAssetLibraryDialog({
   sessionId,
+  presentationId,
   selectedSlot,
   onClose,
   onRefresh,
@@ -63,7 +65,7 @@ export function ProjectAssetLibraryDialog({
     setBusy(true)
     try {
       const nextSummary = await readJson<PresentationWorkspaceSummary>(await fetch(
-        `${PRESENTATION_WORKSPACE_PATH}?${query(sessionId)}`,
+        `${PRESENTATION_WORKSPACE_PATH}?${query(sessionId, presentationId)}`,
         { cache: 'no-store' },
       ))
       setSummary(nextSummary)
@@ -72,7 +74,7 @@ export function ProjectAssetLibraryDialog({
         return
       }
       const list = await readJson<PresentationProjectAssetList>(await fetch(
-        `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId)}`,
+        `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, presentationId)}`,
         { cache: 'no-store' },
       ))
       setAssets(list.assets)
@@ -87,7 +89,7 @@ export function ProjectAssetLibraryDialog({
     }
   }
 
-  useEffect(() => { void load() }, [sessionId])
+  useEffect(() => { void load() }, [presentationId, sessionId])
 
   async function upload(files: FileList | null): Promise<void> {
     if (files === null || files.length === 0) return
@@ -96,7 +98,7 @@ export function ProjectAssetLibraryDialog({
       let list: PresentationProjectAssetList = { assets }
       for (const file of Array.from(files)) {
         list = await readJson<PresentationProjectAssetList>(await fetch(
-          `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, { filename: file.name })}`,
+          `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, presentationId, { filename: file.name })}`,
           { method: 'POST', body: file },
         ))
       }
@@ -116,11 +118,11 @@ export function ProjectAssetLibraryDialog({
     setBusy(true)
     try {
       const deck = await readJson<PresentationWorkspaceFile>(await fetch(
-        `${PRESENTATION_WORKSPACE_FILE_PATH}?${query(sessionId, { path: summary.manifest.deck })}`,
+        `${PRESENTATION_WORKSPACE_FILE_PATH}?${query(sessionId, presentationId, { path: summary.manifest.deck })}`,
         { cache: 'no-store' },
       ))
       const result = await readJson<{ file: PresentationWorkspaceFile; assets: PresentationProjectAsset[] }>(await fetch(
-        `${PRESENTATION_WORKSPACE_BIND_ASSET_PATH}?${query(sessionId)}`,
+        `${PRESENTATION_WORKSPACE_BIND_ASSET_PATH}?${query(sessionId, presentationId)}`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -138,7 +140,7 @@ export function ProjectAssetLibraryDialog({
       ))
       setAssets(result.assets)
       setStatus('图片引用已写入 deck.json，正在刷新项目预览。')
-      window.setTimeout(onRefresh, 450)
+      onRefresh()
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
@@ -151,7 +153,7 @@ export function ProjectAssetLibraryDialog({
     setBusy(true)
     try {
       const list = await readJson<PresentationProjectAssetList>(await fetch(
-        `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId)}`,
+        `${PRESENTATION_WORKSPACE_ASSET_PATH}?${query(sessionId, presentationId)}`,
         {
           method: 'DELETE',
           headers: { 'content-type': 'application/json' },
@@ -194,7 +196,7 @@ export function ProjectAssetLibraryDialog({
                 onClick={() => setSelectedPath(asset.path)}
                 style={{ ...projectAssetStyles.assetCard, ...(selectedPath === asset.path ? projectAssetStyles.assetCardActive : {}) }}
               >
-                <img src={assetPreviewUrl(sessionId, asset.path)} alt={asset.name} style={projectAssetStyles.thumbnail} />
+                <img src={assetPreviewUrl(sessionId, presentationId, asset.path)} alt={asset.name} style={projectAssetStyles.thumbnail} />
                 <strong style={projectAssetStyles.assetName}>{asset.name}</strong>
                 <span style={projectAssetStyles.assetMeta}>{asset.width}×{asset.height} · {describeBytes(asset.bytes)}</span>
                 {asset.references.length > 0 ? <span style={projectAssetStyles.reference}>用于 {asset.references.join('、')}</span> : null}
@@ -208,7 +210,7 @@ export function ProjectAssetLibraryDialog({
               <>
                 <div style={projectAssetStyles.previewBox}>
                   <img
-                    src={assetPreviewUrl(sessionId, selectedAsset.path)}
+                    src={assetPreviewUrl(sessionId, presentationId, selectedAsset.path)}
                     alt={selectedAsset.name}
                     style={{ ...projectAssetStyles.previewImage, objectFit: fit, objectPosition: `${focalPoint.x * 100}% ${focalPoint.y * 100}%` }}
                   />

@@ -69,12 +69,14 @@ pnpm dsh web
 1. 将 PageCraft 切换到“演示文稿”，点击“上传文档生成”。
 2. 上传 PDF、DOCX、Markdown、TXT，或直接粘贴资料；填写观众、目标页数和演讲目标。
 3. PageCraft 先把内容提取到当前工作区，Agent 只生成一版可以编辑的目录。生成页面前可以调整顺序、修改标题、增加或删除页面。
-4. 确认目录后，Agent 按小批次逐页生成。PageCraft 会持久保存任务、显示每页进度，并在预览地址就绪后自动打开。
+4. 确认目录后，Agent 按小批次逐页生成。PageCraft 会持久保存演示文稿、显示每页进度，并在预览地址就绪后自动打开。
 5. PageCraft 识别渲染后的各张幻灯片，继续使用 DOM 或可调整区域进行逐页评注。
 6. 打开“项目图片”，或直接点击预览中的图片槽位，上传 PNG、JPEG、WebP、GIF。可以选择“铺满裁剪”或“完整显示”、调整图片焦点，并把结果保存进项目。
 7. 打开“文件”，浏览 PPT 在磁盘上的真实目录结构。在实时预览旁编辑标准 `deck.json`、渲染组件和主题；按 `Ctrl+S` 保存，明确处理 Agent 同时修改造成的冲突，恢复近期版本，或直接修改选中的幻灯片文字。
 
-导入文档、目录和生成状态保存在 `.pagecraft/presentations/`；可编辑的 PPT 源码通常放在 `src/presentation/`，用户图片放在 `public/pagecraft-assets/`。项目根目录中的 `pagecraft-presentation.json` 描述演示数据和受管理图片的位置，但不会重新组织文件管理器；图片始终显示在真实磁盘目录中。相同图片按内容去重；仍被幻灯片引用时不能误删。由于图片引用已经写入项目，PageCraft 小浏览器和普通浏览器标签页会显示同一结果。
+每套 PPT 都有一个永久不变的 `presentationId`，并且只对应一个目录：`.pagecraft/presentations/<presentationId>/`。原始文档、目录、生成状态、唯一的 `deck.json`、渲染文件、主题、图片和这套 PPT 自己的 `pagecraft.json` 都保存在这里。预览、文件工作区和图片库必须携带同一个 ID；ID 不一致时 PageCraft 会拒绝修改，避免一个工作区里的多套 PPT 串到错误文件。对于旧 PPT，PageCraft 会直接复用原来的 `presentation-*` 文件夹名作为 ID，也可以根据旧 `status.json` 中保存的预览地址认出它，并自动补上缺失的 `pagecraft.json`。旧版 `jobId` 字段只用于这次兼容迁移，新数据统一写 `presentationId`。
+
+图片是该 PPT 的 `assets/` 目录中的真实文件；相同图片按内容去重，仍被幻灯片引用时不能误删。使用旧版预览服务器的 PPT 在迁移时会继续使用原来的公共图片目录，避免原浏览器地址突然失效。图片引用会写入唯一的 `deck.json`，所以 PageCraft 小浏览器和普通浏览器标签页会显示同一结果。
 
 ## Agent 收到什么？
 

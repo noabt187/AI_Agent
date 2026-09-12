@@ -223,7 +223,11 @@ export async function handleCoreRequest(
     }
 
     if (sessionId && method === 'POST' && pathname.endsWith('/abort')) {
-      await abortSession(sessionId)
+      const body = await readJson(req)
+      if (body.expectedRunId !== undefined && (typeof body.expectedRunId !== 'string' || !body.expectedRunId.trim())) {
+        throw new TaskStateError('malformed_run', '无效运行标识', 400)
+      }
+      await abortSession(sessionId, body.expectedRunId as string | undefined)
       sendJson(res, 200, { ok: true })
       return
     }
@@ -282,6 +286,7 @@ async function handleStream(sessionId: string, req: IncomingMessage, res: Server
       sessionId,
       prompt,
       control: body.control,
+      origin: body.origin as import('../state/runStore.js').RunOrigin | undefined,
       onAccepted: () => { startJsonStream(res) },
       onStart: () => { writeStreamEvent(res, { type: 'start', sessionId }) },
       onEvent: async event => { writeStreamEvent(res, event) },

@@ -78,6 +78,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
   let activeTextVerification = null;
   const imageStates = new WeakMap();
   const slotStates = new WeakMap();
+  const brokenImageReports = new WeakMap();
 
   const isUi = (node) => node instanceof Element && Boolean(node.closest('[data-dsh-annotator-ui]'));
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -87,6 +88,19 @@ export const ANNOTATOR_SCRIPT = String.raw`
     event.preventDefault();
     event.stopPropagation();
   };
+
+  function reportImageLoadError(target) {
+    if (!(target instanceof HTMLImageElement) || isUi(target)) return;
+    const url = target.currentSrc || target.src || target.getAttribute('src') || '';
+    if (!url || brokenImageReports.get(target) === url) return;
+    brokenImageReports.set(target, url);
+    const slot = target.closest('[data-pagecraft-image-slot]');
+    post({
+      type: 'dsh-pagecraft-image-load-error',
+      url,
+      slotId: slot?.getAttribute('data-pagecraft-image-slot') || undefined
+    });
+  }
 
   function selectorFor(element) {
     if (element.id) return '#' + CSS.escape(element.id);
@@ -1187,6 +1201,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
     highlight(event.target);
     updateImageSlotOverlay(event.target);
   }, true);
+  document.addEventListener('error', (event) => reportImageLoadError(event.target), true);
   document.addEventListener('click', (event) => {
     if (!(event.target instanceof Element) || isUi(event.target)) return;
     const imageSlot = mode === 'area' ? null : imageSlotFor(event.target);
@@ -1335,6 +1350,13 @@ export const ANNOTATOR_SCRIPT = String.raw`
   renderState();
   scheduleDeckState(true);
   scheduleAssetApplication();
-  post({ type: 'dsh-frontend-feedback-ready', url: document.baseURI, modes: ['element', 'area', 'text'] });
+  post({
+    type: 'dsh-frontend-feedback-ready',
+    url: document.baseURI,
+    modes: ['element', 'area', 'text'],
+    presentationId: typeof window.__PAGECRAFT_PRESENTATION_ID__ === 'string'
+      ? window.__PAGECRAFT_PRESENTATION_ID__
+      : undefined
+  });
 })();
 `

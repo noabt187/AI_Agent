@@ -270,6 +270,7 @@ export function resolvePreviewFrameLocation(
   targetUrl: string,
   harnessUrl: string,
   revision = 0,
+  presentationId?: string,
 ): PreviewFrameLocation {
   const target = new URL(targetUrl)
   const harness = new URL(harnessUrl)
@@ -301,6 +302,7 @@ export function resolvePreviewFrameLocation(
   const endpoint = new URL('/api/frontend-feedback/preview', previewOrigin)
   endpoint.searchParams.set('url', target.href)
   endpoint.searchParams.set('revision', String(revision))
+  if (presentationId !== undefined) endpoint.searchParams.set('presentationId', presentationId)
   endpoint.hash = target.hash
   return { src: endpoint.href, allowSameOrigin }
 }
