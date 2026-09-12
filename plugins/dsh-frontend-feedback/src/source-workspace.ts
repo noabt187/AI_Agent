@@ -18,10 +18,11 @@ import {
   readPresentationAsset,
   readPresentationAssets,
 } from './assets.ts'
-import { resolvePresentationJobDirectory } from './document.ts'
-import { isPresentationImageSlotId, isPresentationJobId } from './presentation.ts'
+import { resolvePresentationDirectory } from './document.ts'
+import { isPresentationId, isPresentationImageSlotId } from './presentation.ts'
 import {
-  PRESENTATION_PROJECT_MANIFEST,
+  LEGACY_PRESENTATION_PROJECT_MANIFEST,
+  PRESENTATION_MANIFEST_NAME,
   isPresentationTextFile,
   normalizePresentationProjectManifest,
   normalizePresentationProjectPath,
@@ -124,16 +125,24 @@ function normalizedPath(value: unknown): string {
   return path
 }
 
-function manifestFile(cwd: string): string {
-  return resolve(workspaceRoot(cwd), PRESENTATION_PROJECT_MANIFEST)
+function manifestPath(cwd: string, presentationId: string): string {
+  return resolve(resolvePresentationDirectory(cwd, presentationId), PRESENTATION_MANIFEST_NAME)
 }
 
-function protectedPaths(manifest: PresentationProjectManifest): Set<string> {
-  return new Set([PRESENTATION_PROJECT_MANIFEST, manifest.deck, manifest.theme])
+function manifestRelativePath(cwd: string, presentationId: string): string {
+  return relative(workspaceRoot(cwd), manifestPath(cwd, presentationId)).replaceAll('\\', '/')
 }
 
-function sourcePathAllowed(manifest: PresentationProjectManifest, path: string): boolean {
-  return path === PRESENTATION_PROJECT_MANIFEST || manifest.editableFiles.includes(path)
+function legacyManifestPath(cwd: string): string {
+  return resolve(workspaceRoot(cwd), LEGACY_PRESENTATION_PROJECT_MANIFEST)
+}
+
+function protectedPaths(manifest: PresentationProjectManifest, manifestPath: string): Set<string> {
+  return new Set([manifestPath, manifest.deck, manifest.theme])
+}
+
+function sourcePathAllowed(manifest: PresentationProjectManifest, path: string, manifestPath: string): boolean {
+  return path === manifestPath || manifest.editableFiles.includes(path)
 }
 
 function entryPathAllowed(manifest: PresentationProjectManifest, path: string): boolean {
@@ -195,13 +204,17 @@ async function writeTextAtomic(path: string, content: string): Promise<void> {
   }
 }
 
-async function readManifest(cwd: string): Promise<PresentationProjectManifest> {
+async function readManifest(cwd: string, presentationId: string): Promise<PresentationProjectManifest> {
+  if (!isPresentationId(presentationId)) {
+    throw new PresentationWorkspaceError('演示文稿 ID 无效', 400, 'PRESENTATION_ID_INVALID')
+  }
   try {
-    const value = JSON.parse(await readFile(manifestFile(cwd), 'utf8'))
-    const manifest = normalizePresentationProjectManifest(value)
-    if (manifest === null) throw new PresentationWorkspaceError('pagecraft-presentation.json 格式无效', 422, 'PRESENTATION_MANIFEST_INVALID')
+    const value = JSON.parse(await readFile(manifestPath(cwd, presentationId), 'utf8'))
+    const manifest = normalizePresentationProjectManifest(value, presentationId)
+    if (manifest === null) throw new PresentationWorkspaceError('pagecraft.json 格式无效', 422, 'PRESENTATION_MANIFEST_INVALID')
     await Promise.all([
       validateResolvedPath(cwd, manifest.sourceRoot, manifest.sourceRoot, true),
+      validateResolvedPath(cwd, manifest.entry, manifest.sourceRoot, true),
       validateResolvedPath(cwd, manifest.deck, manifest.sourceRoot, true),
       validateResolvedPath(cwd, manifest.theme, manifest.sourceRoot, true),
     ])
@@ -209,16 +222,22 @@ async function readManifest(cwd: string): Promise<PresentationProjectManifest> {
   } catch (error) {
     if (error instanceof PresentationWorkspaceError) throw error
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new PresentationWorkspaceError('当前项目还没有 PageCraft PPT 源码清单', 404, 'PRESENTATION_MANIFEST_NOT_FOUND')
+      throw new PresentationWorkspaceError('该演示文稿还没有 PageCraft 源码清单', 404, 'PRESENTATION_MANIFEST_NOT_FOUND')
     }
     if (error instanceof SyntaxError) {
-      throw new PresentationWorkspaceError('pagecraft-presentation.json 不是有效 JSON', 422, 'PRESENTATION_MANIFEST_INVALID', undefined, { cause: error })
+      throw new PresentationWorkspaceError('pagecraft.json 不是有效 JSON', 422, 'PRESENTATION_MANIFEST_INVALID', undefined, { cause: error })
     }
     throw error
   }
 }
 
-function fileSnapshot(path: string, content: string, updatedAt: string, manifest: PresentationProjectManifest): PresentationWorkspaceFile {
+function fileSnapshot(
+  path: string,
+  content: string,
+  updatedAt: string,
+  manifest: PresentationProjectManifest,
+  ownManifestPath: string,
+): PresentationWorkspaceFile {
   return {
     path,
     content,
@@ -226,7 +245,7 @@ function fileSnapshot(path: string, content: string, updatedAt: string, manifest
     bytes: Buffer.byteLength(content, 'utf8'),
     updatedAt,
     language: presentationSourceLanguage(path),
-    protected: protectedPaths(manifest).has(path),
+    protected: protectedPaths(manifest, ownManifestPath).has(path),
   }
 }
 
@@ -361,29 +380,36 @@ async function storeHistory(
   await Promise.all(stale.map(file => unlink(file).catch(() => {})))
 }
 
-async function updateManifest(cwd: string, manifest: PresentationProjectManifest): Promise<void> {
-  const normalized = normalizePresentationProjectManifest(manifest)
+async function updateManifest(cwd: string, presentationId: string, manifest: PresentationProjectManifest): Promise<void> {
+  const normalized = normalizePresentationProjectManifest(manifest, presentationId)
   if (normalized === null) throw new PresentationWorkspaceError('更新后的演示文稿清单无效', 422, 'PRESENTATION_MANIFEST_INVALID')
-  await writeJsonAtomic(manifestFile(cwd), normalized)
+  await writeJsonAtomic(manifestPath(cwd, presentationId), normalized)
 }
 
-async function currentSourceFile(cwd: string, path: string, manifest: PresentationProjectManifest, maxBytes: number): Promise<PresentationWorkspaceFile> {
-  if (!sourcePathAllowed(manifest, path)) {
+async function currentSourceFile(
+  cwd: string,
+  presentationId: string,
+  path: string,
+  manifest: PresentationProjectManifest,
+  maxBytes: number,
+): Promise<PresentationWorkspaceFile> {
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
+  if (!sourcePathAllowed(manifest, path, ownManifestPath)) {
     throw new PresentationWorkspaceError('文件不在演示文稿可编辑清单中', 403, 'PRESENTATION_FILE_FORBIDDEN')
   }
-  if (path !== PRESENTATION_PROJECT_MANIFEST && !isPresentationTextFile(path)) {
+  if (path !== ownManifestPath && !isPresentationTextFile(path)) {
     throw new PresentationWorkspaceError('该文件类型不能作为文本编辑', 415, 'PRESENTATION_FILE_TYPE_UNSUPPORTED')
   }
-  const allowedRoot = path === PRESENTATION_PROJECT_MANIFEST ? '.' : manifest.sourceRoot
-  const absolute = path === PRESENTATION_PROJECT_MANIFEST
-    ? manifestFile(cwd)
+  const allowedRoot = path === ownManifestPath ? dirname(ownManifestPath) : manifest.sourceRoot
+  const absolute = path === ownManifestPath
+    ? manifestPath(cwd, presentationId)
     : await validateResolvedPath(cwd, path, allowedRoot, true)
   const metadata = await stat(absolute)
   if (!metadata.isFile()) throw new PresentationWorkspaceError('目标不是文本文件', 415, 'PRESENTATION_ENTRY_NOT_FILE')
   if (metadata.size > maxBytes) throw new PresentationWorkspaceError('源码文件超过编辑大小限制', 413, 'PRESENTATION_FILE_TOO_LARGE')
   const content = await readFile(absolute, 'utf8')
   if (content.includes('\u0000')) throw new PresentationWorkspaceError('二进制文件不能在源码编辑器中打开', 415, 'PRESENTATION_FILE_BINARY')
-  return fileSnapshot(path, content, metadata.mtime.toISOString(), manifest)
+  return fileSnapshot(path, content, metadata.mtime.toISOString(), manifest, ownManifestPath)
 }
 
 function validateJsonContent(path: string, content: string): void {
@@ -526,37 +552,54 @@ function referencedSlides(deck: unknown, publicUrl: string): string[] {
     .filter(Boolean)
 }
 
-export async function readPresentationWorkspaceSummary(cwd: string): Promise<PresentationWorkspaceSummary> {
-  const workspacePath = workspaceRoot(cwd)
+export async function readPresentationWorkspaceSummary(
+  cwd: string,
+  presentationId: string,
+): Promise<PresentationWorkspaceSummary> {
+  const workspacePath = resolvePresentationDirectory(cwd, presentationId)
   try {
-    return { available: true, workspacePath, manifest: await readManifest(cwd) }
+    return { available: true, presentationId, workspacePath, manifest: await readManifest(cwd, presentationId) }
   } catch (error) {
     if (error instanceof PresentationWorkspaceError && error.code === 'PRESENTATION_MANIFEST_NOT_FOUND') {
-      return { available: false, workspacePath, reason: error.message, migrationAvailable: true }
+      try {
+        return await migratePresentationWorkspace(cwd, presentationId)
+      } catch (migrationError) {
+        if (migrationError instanceof PresentationWorkspaceError) {
+          return {
+            available: false,
+            presentationId,
+            workspacePath,
+            reason: migrationError.message,
+            migrationAvailable: migrationError.code !== 'PRESENTATION_DECK_NOT_READY',
+          }
+        }
+        throw migrationError
+      }
     }
     if (error instanceof PresentationWorkspaceError) {
-      return { available: false, workspacePath, reason: error.message, migrationAvailable: false }
+      return { available: false, presentationId, workspacePath, reason: error.message, migrationAvailable: false }
     }
     throw error
   }
 }
 
-export async function readPresentationWorkspaceTree(cwd: string): Promise<PresentationWorkspaceTreeEntry[]> {
-  const manifest = await readManifest(cwd)
+export async function readPresentationWorkspaceTree(cwd: string, presentationId: string): Promise<PresentationWorkspaceTreeEntry[]> {
+  const manifest = await readManifest(cwd, presentationId)
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
   const sourcePaths = manifest.editableFiles.filter(asyncPath => asyncPath.startsWith(`${manifest.sourceRoot}/`))
   const sourceDirectories = await discoverSourceDirectories(cwd, manifest)
   const assetPaths = await discoverAssetPaths(cwd, manifest)
   return [
     {
-      path: PRESENTATION_PROJECT_MANIFEST,
-      name: PRESENTATION_PROJECT_MANIFEST,
+      path: ownManifestPath,
+      name: PRESENTATION_MANIFEST_NAME,
       kind: 'file',
       protected: true,
     },
     treeFromPaths(
       manifest.sourceRoot,
       [...sourceDirectories, ...sourcePaths],
-      protectedPaths(manifest),
+      protectedPaths(manifest, ownManifestPath),
       new Set(sourceDirectories),
     ),
     treeFromPaths(manifest.assets, assetPaths, new Set()),
@@ -565,48 +608,51 @@ export async function readPresentationWorkspaceTree(cwd: string): Promise<Presen
 
 export async function readPresentationSourceFile(
   cwd: string,
+  presentationId: string,
   rawPath: unknown,
   options: SourceWorkspaceOptions = {},
 ): Promise<PresentationWorkspaceFile> {
-  const manifest = await readManifest(cwd)
-  return currentSourceFile(cwd, normalizedPath(rawPath), manifest, options.maxSourceBytes ?? DEFAULT_MAX_PRESENTATION_SOURCE_BYTES)
+  const manifest = await readManifest(cwd, presentationId)
+  return currentSourceFile(cwd, presentationId, normalizedPath(rawPath), manifest, options.maxSourceBytes ?? DEFAULT_MAX_PRESENTATION_SOURCE_BYTES)
 }
 
 export async function savePresentationSourceFile(
   cwd: string,
+  presentationId: string,
   rawPath: unknown,
   content: string,
   baseHash: string,
   options: SourceWorkspaceOptions = {},
 ): Promise<PresentationWorkspaceFile> {
-  const manifest = await readManifest(cwd)
+  const manifest = await readManifest(cwd, presentationId)
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
   const path = normalizedPath(rawPath)
   const maxBytes = options.maxSourceBytes ?? DEFAULT_MAX_PRESENTATION_SOURCE_BYTES
   if (Buffer.byteLength(content, 'utf8') > maxBytes) {
     throw new PresentationWorkspaceError('源码内容超过保存大小限制', 413, 'PRESENTATION_FILE_TOO_LARGE')
   }
-  const current = await currentSourceFile(cwd, path, manifest, maxBytes)
+  const current = await currentSourceFile(cwd, presentationId, path, manifest, maxBytes)
   if (current.hash !== baseHash) {
     throw new PresentationWorkspaceError('文件已经被 Agent 或其他编辑器修改', 409, 'PRESENTATION_FILE_CONFLICT', { current })
   }
   validateJsonContent(path, content)
-  if (path === PRESENTATION_PROJECT_MANIFEST && normalizePresentationProjectManifest(JSON.parse(content)) === null) {
+  if (path === ownManifestPath && normalizePresentationProjectManifest(JSON.parse(content), presentationId) === null) {
     throw new PresentationWorkspaceError('演示文稿清单格式无效', 422, 'PRESENTATION_MANIFEST_INVALID')
   }
   await storeHistory(cwd, path, current.content, options)
-  const absolute = path === PRESENTATION_PROJECT_MANIFEST
-    ? manifestFile(cwd)
+  const absolute = path === ownManifestPath
+    ? manifestPath(cwd, presentationId)
     : await validateResolvedPath(cwd, path, manifest.sourceRoot, true)
   await writeTextAtomic(absolute, content)
   const metadata = await stat(absolute)
-  const nextManifest = path === PRESENTATION_PROJECT_MANIFEST
-    ? normalizePresentationProjectManifest(JSON.parse(content)) ?? manifest
+  const nextManifest = path === ownManifestPath
+    ? normalizePresentationProjectManifest(JSON.parse(content), presentationId) ?? manifest
     : manifest
-  return fileSnapshot(path, content, metadata.mtime.toISOString(), nextManifest)
+  return fileSnapshot(path, content, metadata.mtime.toISOString(), nextManifest, ownManifestPath)
 }
 
-export async function createPresentationEntry(cwd: string, input: PresentationEntryInput): Promise<PresentationWorkspaceTreeEntry[]> {
-  const manifest = await readManifest(cwd)
+export async function createPresentationEntry(cwd: string, presentationId: string, input: PresentationEntryInput): Promise<PresentationWorkspaceTreeEntry[]> {
+  const manifest = await readManifest(cwd, presentationId)
   const path = safeCreatedPath(manifest, input.path)
   const target = await validateResolvedPath(cwd, path, manifest.sourceRoot, false)
   if (input.kind === 'directory') {
@@ -616,19 +662,20 @@ export async function createPresentationEntry(cwd: string, input: PresentationEn
     validateJsonContent(path, input.content ?? '')
     await writeFile(target, input.content ?? '', { encoding: 'utf8', flag: 'wx' })
     manifest.editableFiles = [...manifest.editableFiles, path]
-    await updateManifest(cwd, manifest)
+    await updateManifest(cwd, presentationId, manifest)
   }
-  return readPresentationWorkspaceTree(cwd)
+  return readPresentationWorkspaceTree(cwd, presentationId)
 }
 
-export async function renamePresentationEntry(cwd: string, rawPath: unknown, rawNextPath: unknown): Promise<PresentationWorkspaceTreeEntry[]> {
-  const manifest = await readManifest(cwd)
+export async function renamePresentationEntry(cwd: string, presentationId: string, rawPath: unknown, rawNextPath: unknown): Promise<PresentationWorkspaceTreeEntry[]> {
+  const manifest = await readManifest(cwd, presentationId)
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
   const path = safeCreatedPath(manifest, rawPath)
   const nextPath = safeCreatedPath(manifest, rawNextPath)
-  if (protectedPaths(manifest).has(path)) throw new PresentationWorkspaceError('受保护文件不能重命名', 409, 'PRESENTATION_ENTRY_PROTECTED')
+  if (protectedPaths(manifest, ownManifestPath).has(path)) throw new PresentationWorkspaceError('受保护文件不能重命名', 409, 'PRESENTATION_ENTRY_PROTECTED')
   const source = await validateResolvedPath(cwd, path, manifest.sourceRoot, true)
   const target = await validateResolvedPath(cwd, nextPath, manifest.sourceRoot, false)
-  if (source === target) return readPresentationWorkspaceTree(cwd)
+  if (source === target) return readPresentationWorkspaceTree(cwd, presentationId)
   const metadata = await lstat(source)
   if (metadata.isFile() && !isPresentationTextFile(nextPath)) {
     throw new PresentationWorkspaceError('源码文件只能重命名为支持的文本类型', 415, 'PRESENTATION_FILE_TYPE_UNSUPPORTED')
@@ -646,27 +693,29 @@ export async function renamePresentationEntry(cwd: string, rawPath: unknown, raw
     if (file.startsWith(`${path}/`)) return `${nextPath}${file.slice(path.length)}`
     return file
   })
-  await updateManifest(cwd, manifest)
-  return readPresentationWorkspaceTree(cwd)
+  await updateManifest(cwd, presentationId, manifest)
+  return readPresentationWorkspaceTree(cwd, presentationId)
 }
 
-export async function deletePresentationEntry(cwd: string, rawPath: unknown): Promise<PresentationWorkspaceTreeEntry[]> {
-  const manifest = await readManifest(cwd)
+export async function deletePresentationEntry(cwd: string, presentationId: string, rawPath: unknown): Promise<PresentationWorkspaceTreeEntry[]> {
+  const manifest = await readManifest(cwd, presentationId)
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
   const path = safeCreatedPath(manifest, rawPath)
-  if (protectedPaths(manifest).has(path)) throw new PresentationWorkspaceError('受保护文件不能删除', 409, 'PRESENTATION_ENTRY_PROTECTED')
+  if (protectedPaths(manifest, ownManifestPath).has(path)) throw new PresentationWorkspaceError('受保护文件不能删除', 409, 'PRESENTATION_ENTRY_PROTECTED')
   const target = await validateResolvedPath(cwd, path, manifest.sourceRoot, true)
   const metadata = await lstat(target)
   if (metadata.isDirectory()) await rm(target, { recursive: true })
   else await unlink(target)
   manifest.editableFiles = manifest.editableFiles.filter(file => file !== path && !file.startsWith(`${path}/`))
-  await updateManifest(cwd, manifest)
-  return readPresentationWorkspaceTree(cwd)
+  await updateManifest(cwd, presentationId, manifest)
+  return readPresentationWorkspaceTree(cwd, presentationId)
 }
 
-export async function readPresentationFileHistory(cwd: string, rawPath: unknown): Promise<PresentationWorkspaceHistoryEntry[]> {
-  const manifest = await readManifest(cwd)
+export async function readPresentationFileHistory(cwd: string, presentationId: string, rawPath: unknown): Promise<PresentationWorkspaceHistoryEntry[]> {
+  const manifest = await readManifest(cwd, presentationId)
+  const ownManifestPath = manifestRelativePath(cwd, presentationId)
   const path = normalizedPath(rawPath)
-  if (!sourcePathAllowed(manifest, path)) throw new PresentationWorkspaceError('文件不在可编辑清单中', 403, 'PRESENTATION_FILE_FORBIDDEN')
+  if (!sourcePathAllowed(manifest, path, ownManifestPath)) throw new PresentationWorkspaceError('文件不在可编辑清单中', 403, 'PRESENTATION_FILE_FORBIDDEN')
   const directory = historyDirectory(cwd, path)
   try {
     const files = (await readdir(directory)).filter(name => name.endsWith('.json')).sort().reverse()
@@ -684,6 +733,7 @@ export async function readPresentationFileHistory(cwd: string, rawPath: unknown)
 
 export async function restorePresentationFileHistory(
   cwd: string,
+  presentationId: string,
   rawPath: unknown,
   historyId: string,
   baseHash: string,
@@ -693,12 +743,12 @@ export async function restorePresentationFileHistory(
   if (!/^[0-9TZ-]+-[a-f0-9]{12}$/.test(historyId)) throw new PresentationWorkspaceError('历史版本 ID 无效', 400, 'PRESENTATION_HISTORY_ID_INVALID')
   const value = JSON.parse(await readFile(resolve(historyDirectory(cwd, path), `${historyId}.json`), 'utf8')) as StoredHistoryEntry
   if (value.path !== path || typeof value.content !== 'string') throw new PresentationWorkspaceError('历史版本数据无效', 422, 'PRESENTATION_HISTORY_INVALID')
-  return savePresentationSourceFile(cwd, path, value.content, baseHash, options)
+  return savePresentationSourceFile(cwd, presentationId, path, value.content, baseHash, options)
 }
 
-export async function listPresentationProjectAssets(cwd: string): Promise<PresentationProjectAssetList> {
-  const manifest = await readManifest(cwd)
-  const deckFile = await readPresentationSourceFile(cwd, manifest.deck)
+export async function listPresentationProjectAssets(cwd: string, presentationId: string): Promise<PresentationProjectAssetList> {
+  const manifest = await readManifest(cwd, presentationId)
+  const deckFile = await readPresentationSourceFile(cwd, presentationId, manifest.deck)
   const deck = JSON.parse(deckFile.content) as unknown
   const assets: PresentationProjectAsset[] = []
   for (const path of await discoverAssetPaths(cwd, manifest)) {
@@ -726,8 +776,13 @@ export async function listPresentationProjectAssets(cwd: string): Promise<Presen
   return { assets }
 }
 
-export async function uploadPresentationProjectAsset(cwd: string, fileName: string, body: Buffer): Promise<PresentationProjectAssetList> {
-  const manifest = await readManifest(cwd)
+export async function uploadPresentationProjectAsset(
+  cwd: string,
+  presentationId: string,
+  fileName: string,
+  body: Buffer,
+): Promise<PresentationProjectAssetList> {
+  const manifest = await readManifest(cwd, presentationId)
   const image = inspectPresentationImage(body)
   const digest = sha256(body)
   const path = `${manifest.assets}/${safeAssetStem(fileName)}-${digest.slice(0, 8)}${assetExtension(image)}`
@@ -736,19 +791,20 @@ export async function uploadPresentationProjectAsset(cwd: string, fileName: stri
   await writeFile(target, body, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'EEXIST') throw error
   })
-  return listPresentationProjectAssets(cwd)
+  return listPresentationProjectAssets(cwd, presentationId)
 }
 
 export async function bindPresentationProjectAsset(
   cwd: string,
+  presentationId: string,
   input: ProjectAssetBindingInput,
   options: SourceWorkspaceOptions = {},
 ): Promise<{ file: PresentationWorkspaceFile; assets: PresentationProjectAsset[] }> {
-  const manifest = await readManifest(cwd)
+  const manifest = await readManifest(cwd, presentationId)
   const assetPath = normalizedPath(input.assetPath)
   if (!assetPathAllowed(manifest, assetPath)) throw new PresentationWorkspaceError('图片不在项目素材目录中', 403, 'PRESENTATION_ASSET_FORBIDDEN')
   await validateResolvedPath(cwd, assetPath, manifest.assets, true)
-  const deckFile = await readPresentationSourceFile(cwd, manifest.deck, options)
+  const deckFile = await readPresentationSourceFile(cwd, presentationId, manifest.deck, options)
   if (deckFile.hash !== input.baseHash) {
     throw new PresentationWorkspaceError('deck.json 已被其他操作修改', 409, 'PRESENTATION_FILE_CONFLICT', { current: deckFile })
   }
@@ -788,53 +844,34 @@ export async function bindPresentationProjectAsset(
     if (slide === undefined) throw new PresentationWorkspaceError('找不到图片槽位对应的幻灯片', 404, 'PRESENTATION_SLIDE_NOT_FOUND')
     slide.visual = { type: 'image', src, alt, fit, position }
   }
-  const file = await savePresentationSourceFile(cwd, manifest.deck, `${JSON.stringify(deck, null, 2)}\n`, deckFile.hash, options)
-  return { file, assets: (await listPresentationProjectAssets(cwd)).assets }
+  const file = await savePresentationSourceFile(cwd, presentationId, manifest.deck, `${JSON.stringify(deck, null, 2)}\n`, deckFile.hash, options)
+  return { file, assets: (await listPresentationProjectAssets(cwd, presentationId)).assets }
 }
 
-export async function deletePresentationProjectAsset(cwd: string, rawPath: unknown): Promise<PresentationProjectAssetList> {
-  const manifest = await readManifest(cwd)
+export async function deletePresentationProjectAsset(cwd: string, presentationId: string, rawPath: unknown): Promise<PresentationProjectAssetList> {
+  const manifest = await readManifest(cwd, presentationId)
   const path = normalizedPath(rawPath)
   if (!assetPathAllowed(manifest, path)) throw new PresentationWorkspaceError('图片不在项目素材目录中', 403, 'PRESENTATION_ASSET_FORBIDDEN')
   const publicUrl = publicAssetUrl(manifest, path)
-  const deck = JSON.parse((await readPresentationSourceFile(cwd, manifest.deck)).content) as unknown
+  const deck = JSON.parse((await readPresentationSourceFile(cwd, presentationId, manifest.deck)).content) as unknown
   const references = referencedSlides(deck, publicUrl)
   if (references.length > 0) {
     throw new PresentationWorkspaceError('图片仍被幻灯片使用，请先替换对应槽位', 409, 'PRESENTATION_ASSET_IN_USE', { references })
   }
   await unlink(await validateResolvedPath(cwd, path, manifest.assets, true))
-  return listPresentationProjectAssets(cwd)
+  return listPresentationProjectAssets(cwd, presentationId)
 }
 
-export async function readPresentationProjectAsset(cwd: string, rawPath: unknown): Promise<{ body: Buffer; mimeType: string }> {
-  const manifest = await readManifest(cwd)
+export async function readPresentationProjectAsset(
+  cwd: string,
+  presentationId: string,
+  rawPath: unknown,
+): Promise<{ body: Buffer; mimeType: string }> {
+  const manifest = await readManifest(cwd, presentationId)
   const path = normalizedPath(rawPath)
   if (!assetPathAllowed(manifest, path)) throw new PresentationWorkspaceError('图片不在项目素材目录中', 403, 'PRESENTATION_ASSET_FORBIDDEN')
   const body = await readFile(await validateResolvedPath(cwd, path, manifest.assets, true))
   return { body, mimeType: inspectPresentationImage(body).mimeType }
-}
-
-async function discoverPresentationSourceFiles(cwd: string): Promise<string[]> {
-  const root = workspaceRoot(cwd)
-  const ignored = new Set(['.git', '.pagecraft', 'node_modules', 'dist', 'build', '.next', 'coverage'])
-  const files: string[] = []
-
-  async function walk(directory: string, depth: number): Promise<void> {
-    if (depth > 5 || files.length >= 2000) return
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.isSymbolicLink() || ignored.has(entry.name)) continue
-      const absolute = resolve(directory, entry.name)
-      if (entry.isDirectory()) {
-        await walk(absolute, depth + 1)
-        continue
-      }
-      if (!entry.isFile()) continue
-      files.push(relative(root, absolute).replaceAll('\\', '/'))
-    }
-  }
-
-  await walk(root, 0)
-  return files
 }
 
 async function discoverFilesInside(cwd: string, relativeRoot: string): Promise<string[]> {
@@ -873,14 +910,14 @@ function presentationTitle(deck: unknown, cwd: string): string {
 
 async function migrateLegacyTaskAssets(
   cwd: string,
-  jobId: string,
+  presentationId: string,
   manifest: PresentationProjectManifest,
   deck: DeckDocument,
 ): Promise<DeckDocument> {
-  if (!isPresentationJobId(jobId)) return deck
+  if (!isPresentationId(presentationId)) return deck
   let legacy
   try {
-    legacy = await readPresentationAssets(cwd, jobId)
+    legacy = await readPresentationAssets(cwd, presentationId)
   } catch {
     return deck
   }
@@ -888,7 +925,7 @@ async function migrateLegacyTaskAssets(
   const copied = new Map<string, string>()
   await mkdir(resolve(workspaceRoot(cwd), manifest.assets), { recursive: true })
   for (const asset of legacy.assets) {
-    const { body } = await readPresentationAsset(cwd, jobId, asset.id)
+    const { body } = await readPresentationAsset(cwd, presentationId, asset.id)
     const image = inspectPresentationImage(body)
     const path = `${manifest.assets}/${safeAssetStem(asset.name)}-${sha256(body).slice(0, 8)}${assetExtension(image)}`
     await writeFile(await validateResolvedPath(cwd, path, manifest.assets, false), body, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
@@ -912,81 +949,99 @@ async function migrateLegacyTaskAssets(
   return deck
 }
 
-export async function migratePresentationWorkspace(cwd: string, legacyJobId?: string): Promise<PresentationWorkspaceSummary> {
-  const current = await readPresentationWorkspaceSummary(cwd)
-  if (current.available) return current
-  let files = await discoverPresentationSourceFiles(cwd)
-  const candidates: Array<{ path: string; deck: DeckDocument }> = []
+interface LegacyAssetRouting {
+  assets: string
+  publicAssetBase: string
+}
 
-  if (legacyJobId !== undefined && isPresentationJobId(legacyJobId)) {
-    const taskRoot = relative(workspaceRoot(cwd), resolvePresentationJobDirectory(cwd, legacyJobId)).replaceAll('\\', '/')
-    const taskFiles = await discoverFilesInside(cwd, taskRoot)
-    const taskDeckPath = `${taskRoot}/deck.json`
-    if (taskFiles.includes(taskDeckPath)) {
-      try {
-        const taskDeck = JSON.parse(await readFile(resolve(workspaceRoot(cwd), taskDeckPath), 'utf8')) as DeckDocument
-        if (taskDeck !== null && typeof taskDeck === 'object' && !Array.isArray(taskDeck)) {
-          candidates.push({ path: taskDeckPath, deck: taskDeck })
-          files = Array.from(new Set([...files, ...taskFiles]))
-        }
-      } catch {
-        // The exact task deck is incomplete or invalid; fall back to safe project discovery.
-      }
-    }
+async function legacyAssetRouting(
+  cwd: string,
+  presentationId: string,
+  sourceRoot: string,
+  files: string[],
+): Promise<LegacyAssetRouting | null> {
+  const serverPath = `${sourceRoot}/server.js`
+  if (!files.includes(serverPath)) return null
+  try {
+    const server = await readFile(resolve(workspaceRoot(cwd), serverPath), 'utf8')
+    if (!server.includes(LEGACY_PRESENTATION_PROJECT_MANIFEST)) return null
+    const value = JSON.parse(await readFile(legacyManifestPath(cwd), 'utf8'))
+    const manifest = normalizePresentationProjectManifest(value, presentationId)
+    return manifest === null
+      ? null
+      : { assets: manifest.assets, publicAssetBase: manifest.publicAssetBase }
+  } catch {
+    return null
+  }
+}
+
+export async function migratePresentationWorkspace(
+  cwd: string,
+  presentationId: string,
+): Promise<PresentationWorkspaceSummary> {
+  if (!isPresentationId(presentationId)) {
+    throw new PresentationWorkspaceError('演示文稿 ID 无效', 400, 'PRESENTATION_ID_INVALID')
+  }
+  try {
+    const manifest = await readManifest(cwd, presentationId)
+    return { available: true, presentationId, workspacePath: resolvePresentationDirectory(cwd, presentationId), manifest }
+  } catch (error) {
+    if (!(error instanceof PresentationWorkspaceError) || error.code !== 'PRESENTATION_MANIFEST_NOT_FOUND') throw error
   }
 
-  const discoveryPaths = candidates.length > 0 ? [] : files.filter(file => file.endsWith('/deck.json'))
-  for (const path of discoveryPaths) {
-    try {
-      const deck = JSON.parse(await readFile(resolve(workspaceRoot(cwd), path), 'utf8')) as DeckDocument
-      if (deckSlides(deck).length > 0) candidates.push({ path, deck })
-    } catch {
-      // Invalid or unrelated deck.json files are not migration candidates.
-    }
+  const sourceRoot = relative(workspaceRoot(cwd), resolvePresentationDirectory(cwd, presentationId)).replaceAll('\\', '/')
+  const files = await discoverFilesInside(cwd, sourceRoot)
+  const deckPath = `${sourceRoot}/deck.json`
+  if (!files.includes(deckPath)) {
+    throw new PresentationWorkspaceError('该演示文稿还没有 deck.json，生成完成后才能打开源码工作区', 409, 'PRESENTATION_DECK_NOT_READY')
   }
-  if (candidates.length !== 1) {
-    throw new PresentationWorkspaceError(
-      candidates.length === 0
-        ? '没有找到位于独立源码目录中的标准 deck.json，需要 Agent 完成一次迁移'
-        : '找到多个可能的 deck.json，无法安全判断目标，需要 Agent 完成一次迁移',
-      409,
-      'PRESENTATION_MIGRATION_AMBIGUOUS',
-      { candidates: candidates.map(candidate => candidate.path) },
-    )
+  let deck: DeckDocument
+  try {
+    deck = JSON.parse(await readFile(resolve(workspaceRoot(cwd), deckPath), 'utf8')) as DeckDocument
+  } catch (error) {
+    throw new PresentationWorkspaceError('deck.json 无法读取', 422, 'PRESENTATION_DECK_INVALID', undefined, { cause: error })
   }
-  const candidate = candidates[0]
-  const sourceRoot = dirname(candidate.path).replaceAll('\\', '/')
-  if (sourceRoot === '.' || sourceRoot.length === 0) {
-    throw new PresentationWorkspaceError('根目录中的 deck.json 无法安全自动迁移，需要 Agent 整理到独立演示目录', 409, 'PRESENTATION_MIGRATION_AMBIGUOUS')
+
+  const legacyAssets = await legacyAssetRouting(cwd, presentationId, sourceRoot, files)
+  const entry = files.includes(`${sourceRoot}/render.html`)
+    ? `${sourceRoot}/render.html`
+    : files.find(path => path.startsWith(`${sourceRoot}/`) && /\.html?$/i.test(path))
+  if (entry === undefined) {
+    throw new PresentationWorkspaceError('该演示文稿没有可预览的 HTML 入口', 409, 'PRESENTATION_ENTRY_NOT_FOUND')
   }
-  const theme = `${sourceRoot}/theme.css`
-  if (!files.includes(theme)) await writeFile(resolve(workspaceRoot(cwd), theme), ':root { color-scheme: light; }\n', { flag: 'wx' })
+  const preferredTheme = files.includes(`${sourceRoot}/theme.css`) ? `${sourceRoot}/theme.css` : `${sourceRoot}/render.css`
+  if (!files.includes(preferredTheme)) {
+    await writeFile(resolve(workspaceRoot(cwd), `${sourceRoot}/theme.css`), ':root { color-scheme: light; }\n', { flag: 'wx' })
+  }
+  const theme = files.includes(preferredTheme) ? preferredTheme : `${sourceRoot}/theme.css`
   const editableFiles = Array.from(new Set([
-    candidate.path,
+    deckPath,
     theme,
     ...files.filter(path => path.startsWith(`${sourceRoot}/`) && isPresentationTextFile(path)),
   ])).sort()
   const manifest: PresentationProjectManifest = {
-    name: presentationTitle(candidate.deck, cwd),
+    presentationId,
+    name: presentationTitle(deck, resolvePresentationDirectory(cwd, presentationId)),
+    entry,
     sourceRoot,
-    deck: candidate.path,
+    deck: deckPath,
     theme,
-    assets: 'public/pagecraft-assets',
-    publicAssetBase: '/pagecraft-assets',
+    assets: legacyAssets?.assets ?? `${sourceRoot}/assets`,
+    publicAssetBase: legacyAssets?.publicAssetBase ?? '/assets',
     editableFiles,
   }
   await mkdir(resolve(workspaceRoot(cwd), manifest.assets), { recursive: true })
-  await updateManifest(cwd, manifest)
-  const originalDeck = `${JSON.stringify(candidate.deck, null, 2)}\n`
+  await updateManifest(cwd, presentationId, manifest)
+  const originalDeck = `${JSON.stringify(deck, null, 2)}\n`
   const migratedDeck = await migrateLegacyTaskAssets(
     cwd,
-    legacyJobId ?? '',
+    presentationId,
     manifest,
     JSON.parse(originalDeck) as DeckDocument,
   )
   if (`${JSON.stringify(migratedDeck, null, 2)}\n` !== originalDeck) {
-    await storeHistory(cwd, candidate.path, originalDeck, {})
-    await writeTextAtomic(resolve(workspaceRoot(cwd), candidate.path), `${JSON.stringify(migratedDeck, null, 2)}\n`)
+    await storeHistory(cwd, deckPath, originalDeck, {})
+    await writeTextAtomic(resolve(workspaceRoot(cwd), deckPath), `${JSON.stringify(migratedDeck, null, 2)}\n`)
   }
-  return { available: true, workspacePath: workspaceRoot(cwd), manifest }
+  return { available: true, presentationId, workspacePath: resolvePresentationDirectory(cwd, presentationId), manifest }
 }

@@ -141,15 +141,18 @@ export function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
 }
 
-export function buildPreviewHtml(html: string, targetUrl: string): string {
+export function buildPreviewHtml(html: string, targetUrl: string, presentationId?: string): string {
   const baseTag = `<base href="${escapeHtml(targetUrl)}">`
   const runtimeScript = buildPreviewRuntimeScript(targetUrl).replace(/<\/script/gi, '<\\/script')
   const runtimeTag = `<script>${runtimeScript}</script>`
+  const identityTag = presentationId === undefined
+    ? ''
+    : `<script>window.__PAGECRAFT_PRESENTATION_ID__=${JSON.stringify(presentationId).replaceAll('<', '\\u003c')}</script>`
   const safeScript = ANNOTATOR_SCRIPT.replace(/<\/script/gi, '<\\/script')
   const scriptTag = `<script>${safeScript}</script>`
   const withBase = /<head[^>]*>/i.test(html)
-    ? html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}${runtimeTag}`)
-    : `${baseTag}${runtimeTag}${html}`
+    ? html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}${runtimeTag}${identityTag}`)
+    : `${baseTag}${runtimeTag}${identityTag}${html}`
 
   return /<\/body>/i.test(withBase)
     ? withBase.replace(/<\/body>/i, `${scriptTag}</body>`)

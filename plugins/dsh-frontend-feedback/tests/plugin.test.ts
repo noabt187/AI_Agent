@@ -55,9 +55,10 @@ import {
   resolvePersistedPreviewNavigation,
   resolvePersistedFeedbackDraft,
   resolvePersistedPreviewUrl,
+  resolvePresentationIdByPreviewUrl,
   resolvePresentationSlides,
   renamePresentationEntry,
-  normalizePresentationJobSnapshot,
+  normalizePresentationSnapshot,
   normalizePresentationPlan,
   resolvePreviewFrameLocation,
   suppressCurrentHostPreview,
@@ -67,10 +68,13 @@ import {
   uploadPresentationProjectAsset,
 } from '../lib/index.js'
 
-async function createPresentationWorkspace(cwd: string): Promise<void> {
-  await mkdir(join(cwd, 'src', 'presentation'), { recursive: true })
-  await mkdir(join(cwd, 'public', 'pagecraft-assets'), { recursive: true })
-  await writeFile(join(cwd, 'src', 'presentation', 'deck.json'), `${JSON.stringify({
+const WORKSPACE_PRESENTATION_ID = 'presentation-workspace-1234'
+const WORKSPACE_PRESENTATION_ROOT = `.pagecraft/presentations/${WORKSPACE_PRESENTATION_ID}`
+
+async function createPresentationWorkspace(cwd: string): Promise<string> {
+  const directory = join(cwd, '.pagecraft', 'presentations', WORKSPACE_PRESENTATION_ID)
+  await mkdir(join(directory, 'assets'), { recursive: true })
+  await writeFile(join(directory, 'deck.json'), `${JSON.stringify({
     title: '测试演示文稿',
     slides: [
       { id: 'slide-01', title: '开场', body: '欢迎使用 PageCraft' },
@@ -78,21 +82,26 @@ async function createPresentationWorkspace(cwd: string): Promise<void> {
       { id: 'slide-03', title: '总结', body: '下一步' },
     ],
   }, null, 2)}\n`)
-  await writeFile(join(cwd, 'src', 'presentation', 'theme.css'), ':root { --pagecraft-accent: #228b5a; }\n')
-  await writeFile(join(cwd, 'src', 'presentation', 'slides.tsx'), 'export function Slides() { return null }\n')
-  await writeFile(join(cwd, 'pagecraft-presentation.json'), `${JSON.stringify({
+  await writeFile(join(directory, 'theme.css'), ':root { --pagecraft-accent: #228b5a; }\n')
+  await writeFile(join(directory, 'render.html'), '<!doctype html><title>Deck</title>\n')
+  await writeFile(join(directory, 'slides.tsx'), 'export function Slides() { return null }\n')
+  await writeFile(join(directory, 'pagecraft.json'), `${JSON.stringify({
+    presentationId: WORKSPACE_PRESENTATION_ID,
     name: '测试演示文稿',
-    sourceRoot: 'src/presentation',
-    deck: 'src/presentation/deck.json',
-    theme: 'src/presentation/theme.css',
-    assets: 'public/pagecraft-assets',
-    publicAssetBase: '/pagecraft-assets',
+    entry: `${WORKSPACE_PRESENTATION_ROOT}/render.html`,
+    sourceRoot: WORKSPACE_PRESENTATION_ROOT,
+    deck: `${WORKSPACE_PRESENTATION_ROOT}/deck.json`,
+    theme: `${WORKSPACE_PRESENTATION_ROOT}/theme.css`,
+    assets: `${WORKSPACE_PRESENTATION_ROOT}/assets`,
+    publicAssetBase: '/assets',
     editableFiles: [
-      'src/presentation/deck.json',
-      'src/presentation/slides.tsx',
-      'src/presentation/theme.css',
+      `${WORKSPACE_PRESENTATION_ROOT}/deck.json`,
+      `${WORKSPACE_PRESENTATION_ROOT}/render.html`,
+      `${WORKSPACE_PRESENTATION_ROOT}/slides.tsx`,
+      `${WORKSPACE_PRESENTATION_ROOT}/theme.css`,
     ],
   }, null, 2)}\n`)
+  return WORKSPACE_PRESENTATION_ID
 }
 
 function createTextPdf(): Buffer {
@@ -127,7 +136,11 @@ test('preview URL policy defaults to loopback and permits explicit hosts', () =>
 })
 
 test('preview HTML receives base URL and annotator before body close', () => {
-  const result = buildPreviewHtml('<html><head><title>x</title></head><body>Hello</body></html>', 'http://localhost:5173/path/')
+  const result = buildPreviewHtml(
+    '<html><head><title>x</title></head><body>Hello</body></html>',
+    'http://localhost:5173/path/',
+    'presentation-preview-1234',
+  )
   assert.match(result, /<head><base href="http:\/\/localhost:5173\/path\/">/)
   assert.match(result, /\/api\/frontend-feedback\/resource/)
   assert.match(result, /window\.fetch =/)
@@ -146,6 +159,8 @@ test('preview HTML receives base URL and annotator before body close', () => {
   assert.match(result, /data-pagecraft-image-key/)
   assert.match(result, /dsh-pagecraft-asset-bindings/)
   assert.match(result, /dsh-pagecraft-image-slot-selected/)
+  assert.match(result, /__PAGECRAFT_PRESENTATION_ID__/)
+  assert.match(result, /presentation-preview-1234/)
   assert.doesNotMatch(result, /dsh-frontend-feedback-active/)
   assert.doesNotMatch(result, /dsh-frontend-feedback-set-active/)
   assert.doesNotMatch(result, /ui\('button', 'toggle'/)
@@ -208,9 +223,15 @@ test('preview redirects are validated before the next request', async () => {
 })
 
 test('preview frame uses a distinct loopback origin for untrusted pages', () => {
-  const remote = resolvePreviewFrameLocation('https://www.baidu.com/', 'http://localhost:3080/', 3)
+  const remote = resolvePreviewFrameLocation(
+    'https://www.baidu.com/',
+    'http://localhost:3080/',
+    3,
+    'presentation-preview-1234',
+  )
   assert.equal(new URL(remote.src).origin, 'http://127.0.0.1:3080')
   assert.equal(new URL(remote.src).searchParams.get('url'), 'https://www.baidu.com/')
+  assert.equal(new URL(remote.src).searchParams.get('presentationId'), 'presentation-preview-1234')
   assert.equal(remote.allowSameOrigin, true)
 
   const fragment = resolvePreviewFrameLocation('http://localhost:5173/docs#install', 'http://localhost:3080/', 4)
@@ -451,7 +472,7 @@ test('presentation briefs and slide summaries are structured for PageCraft decks
 
 test('document presentation prompts separate outline planning from progressive generation', () => {
   const source = {
-    jobId: 'presentation-test-1234',
+    presentationId: 'presentation-test-1234',
     originalName: 'report.pdf',
     sourcePath: '.pagecraft/presentations/presentation-test-1234/source.md',
     planPath: '.pagecraft/presentations/presentation-test-1234/plan.json',
@@ -480,7 +501,7 @@ test('document presentation prompts separate outline planning from progressive g
   assert.match(build, /phase=failed/)
 })
 
-test('presentation plans and job snapshots reject malformed or duplicate slide data', () => {
+test('presentation plans and snapshots reject malformed or duplicate slide data', () => {
   const plan = normalizePresentationPlan({
     title: '测试演示',
     audience: '团队',
@@ -494,10 +515,33 @@ test('presentation plans and job snapshots reject malformed or duplicate slide d
   })
   assert.equal(plan?.slides.length, 3)
   assert.equal(normalizePresentationPlan({ title: '不足', slides: [{ id: 'a', title: '一' }] }), null)
-  assert.equal(normalizePresentationJobSnapshot({ jobId: 'bad', phase: 'ready' }), null)
+  assert.equal(normalizePresentationSnapshot({ presentationId: 'bad', phase: 'ready' }), null)
 })
 
-test('queued presentation generation remains pending until the job actually starts', () => {
+test('legacy jobId snapshots migrate to one presentationId in memory', () => {
+  const legacy = normalizePresentationSnapshot({
+    jobId: 'presentation-legacy-1234',
+    phase: 'source_ready',
+    source: {
+      jobId: 'presentation-legacy-1234',
+      originalName: 'legacy.md',
+      sourcePath: '.pagecraft/presentations/presentation-legacy-1234/source.md',
+      planPath: '.pagecraft/presentations/presentation-legacy-1234/plan.json',
+      deckPath: '.pagecraft/presentations/presentation-legacy-1234/deck.json',
+      statusPath: '.pagecraft/presentations/presentation-legacy-1234/status.json',
+      textCharacters: 120,
+      warnings: [],
+    },
+    slides: [],
+    updatedAt: '2026-09-11T00:00:00.000Z',
+  })
+  assert.equal(legacy?.presentationId, 'presentation-legacy-1234')
+  assert.equal(legacy?.source.presentationId, 'presentation-legacy-1234')
+  assert.equal('jobId' in (legacy ?? {}), false)
+  assert.equal('jobId' in (legacy?.source ?? {}), false)
+})
+
+test('queued presentation generation remains pending until generation actually starts', () => {
   assert.equal(isPresentationRequestSettled('planning', 'source_ready'), false)
   assert.equal(isPresentationRequestSettled('planning', 'outline_ready'), true)
   assert.equal(isPresentationRequestSettled('generating', 'outline_ready'), false)
@@ -517,7 +561,7 @@ test('text documents are normalized, persisted, and paired with an editable plan
     cwd,
     '项目说明.md',
     Buffer.from('# 项目说明\n\n这是用于生成演示文稿的正文。', 'utf8'),
-    { jobId: 'presentation-test-5678', now: new Date('2026-08-24T00:00:00.000Z') },
+    { presentationId: 'presentation-test-5678', now: new Date('2026-08-24T00:00:00.000Z') },
   )
   assert.equal(created.phase, 'source_ready')
   assert.equal(created.source.originalName, '项目说明.md')
@@ -526,7 +570,7 @@ test('text documents are normalized, persisted, and paired with an editable plan
   assert.match(sourceText, /以下内容是演示文稿的参考资料/)
   assert.match(sourceText, /这是用于生成演示文稿的正文/)
 
-  const saved = await savePresentationPlan(cwd, created.jobId, {
+  const saved = await savePresentationPlan(cwd, created.presentationId, {
     title: '项目说明',
     audience: '客户',
     goal: '介绍项目',
@@ -547,14 +591,40 @@ test('PDF parsing preserves the original upload buffer for persistence', async (
   const bytes = createTextPdf()
   const original = Buffer.from(bytes)
   const created = await createPresentationSource(cwd, 'sample.pdf', bytes, {
-    jobId: 'presentation-pdf-1234',
+    presentationId: 'presentation-pdf-1234',
     now: new Date('2026-08-24T00:00:00.000Z'),
   })
 
   assert.equal(bytes.byteLength, original.byteLength)
   assert.deepEqual(bytes, original)
-  const saved = await readFile(join(cwd, '.pagecraft', 'presentations', created.jobId, 'original.pdf'))
+  const saved = await readFile(join(cwd, '.pagecraft', 'presentations', created.presentationId, 'original.pdf'))
   assert.deepEqual(saved, original)
+})
+
+test('old presentations without ID fields are recovered from their folder and preview URL', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-legacy-identity-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const presentationId = 'presentation-legacy-noid-1234'
+  const directory = join(cwd, '.pagecraft', 'presentations', presentationId)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'status.json'), JSON.stringify({
+    phase: 'ready',
+    previewUrl: 'http://127.0.0.1:8095/#slide-2',
+  }))
+
+  assert.equal(
+    await resolvePresentationIdByPreviewUrl(cwd, 'http://localhost:8095/'),
+    presentationId,
+  )
+
+  const duplicateId = 'presentation-legacy-copy-5678'
+  const duplicateDirectory = join(cwd, '.pagecraft', 'presentations', duplicateId)
+  await mkdir(duplicateDirectory, { recursive: true })
+  await writeFile(join(duplicateDirectory, 'status.json'), JSON.stringify({ previewUrl: 'http://localhost:8095/' }))
+  await assert.rejects(
+    () => resolvePresentationIdByPreviewUrl(cwd, 'http://127.0.0.1:8095/'),
+    /多个旧版 PPT 使用了相同预览地址/,
+  )
 })
 
 test('document parsing stops before work begins when cancelled', async () => {
@@ -579,23 +649,23 @@ test('document intake rejects unsupported, disguised, and binary text files', as
 test('presentation assets are deduplicated, bound to slots, restored, and deletion-protected', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-assets-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  const job = await createPresentationSource(
+  const presentation = await createPresentationSource(
     cwd,
     'source.md',
     Buffer.from('# 演示资料\n\n这是一段足够生成演示文稿的测试内容。', 'utf8'),
-    { jobId: 'presentation-assets-1234', now: new Date('2026-08-24T00:00:00.000Z') },
+    { presentationId: 'presentation-assets-1234', now: new Date('2026-08-24T00:00:00.000Z') },
   )
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSAAAAAASUVORK5CYII=', 'base64')
-  const uploaded = await uploadPresentationAsset(cwd, job.jobId, 'machine.png', png, new Date('2026-08-24T01:00:00.000Z'))
+  const uploaded = await uploadPresentationAsset(cwd, presentation.presentationId, 'machine.png', png, new Date('2026-08-24T01:00:00.000Z'))
   assert.equal(uploaded.assets.length, 1)
   assert.equal(uploaded.assets[0].width, 1)
   assert.equal(uploaded.assets[0].height, 1)
   assert.equal(uploaded.assets[0].mimeType, 'image/png')
 
-  const duplicate = await uploadPresentationAsset(cwd, job.jobId, 'same-image.png', png)
+  const duplicate = await uploadPresentationAsset(cwd, presentation.presentationId, 'same-image.png', png)
   assert.equal(duplicate.assets.length, 1)
   const assetId = duplicate.assets[0].id
-  const bound = await bindPresentationAsset(cwd, job.jobId, 'slide-02-main-visual', {
+  const bound = await bindPresentationAsset(cwd, presentation.presentationId, 'slide-02-main-visual', {
     assetId,
     fit: 'contain',
     focalPoint: { x: 2, y: -1 },
@@ -607,16 +677,16 @@ test('presentation assets are deduplicated, bound to slots, restored, and deleti
     focalPoint: { x: 1, y: 0 },
     updatedAt: bound.bindings[0].updatedAt,
   })
-  const stored = await readPresentationAsset(cwd, job.jobId, assetId)
+  const stored = await readPresentationAsset(cwd, presentation.presentationId, assetId)
   assert.deepEqual(stored.body, png)
-  await assert.rejects(() => deletePresentationAsset(cwd, job.jobId, assetId), /仍被幻灯片使用/)
+  await assert.rejects(() => deletePresentationAsset(cwd, presentation.presentationId, assetId), /仍被幻灯片使用/)
 
-  await bindPresentationAsset(cwd, job.jobId, 'slide-02-main-visual', { assetId: null })
-  const removed = await deletePresentationAsset(cwd, job.jobId, assetId)
+  await bindPresentationAsset(cwd, presentation.presentationId, 'slide-02-main-visual', { assetId: null })
+  const removed = await deletePresentationAsset(cwd, presentation.presentationId, assetId)
   assert.equal(removed.assets.length, 0)
-  assert.equal((await readPresentationAssets(cwd, job.jobId)).bindings.length, 0)
-  await assert.rejects(() => uploadPresentationAsset(cwd, job.jobId, 'fake.png', Buffer.from('not an image')), /仅支持/)
-  await assert.rejects(() => bindPresentationAsset(cwd, job.jobId, '../escape', { assetId: null }), /槽位 ID 无效/)
+  assert.equal((await readPresentationAssets(cwd, presentation.presentationId)).bindings.length, 0)
+  await assert.rejects(() => uploadPresentationAsset(cwd, presentation.presentationId, 'fake.png', Buffer.from('not an image')), /仅支持/)
+  await assert.rejects(() => bindPresentationAsset(cwd, presentation.presentationId, '../escape', { assetId: null }), /槽位 ID 无效/)
 })
 
 test('presentation workspace paths and manifests reject unsafe project access', () => {
@@ -625,7 +695,9 @@ test('presentation workspace paths and manifests reject unsafe project access', 
   assert.equal(normalizePresentationProjectPath('D:\\secret.txt'), null)
   assert.equal(normalizePresentationProjectPath('/etc/passwd'), null)
   assert.equal(normalizePresentationProjectManifest({
+    presentationId: 'presentation-test-1234',
     name: 'Deck',
+    entry: 'src/presentation/render.html',
     sourceRoot: 'src/presentation',
     deck: 'src/presentation/deck.json',
     theme: 'src/presentation/theme.css',
@@ -634,7 +706,9 @@ test('presentation workspace paths and manifests reject unsafe project access', 
     editableFiles: ['src/presentation/deck.json', 'src/presentation/theme.css', '../secret.txt'],
   })?.editableFiles.length, 2)
   assert.equal(normalizePresentationProjectManifest({
+    presentationId: 'presentation-test-1234',
     name: 'Deck',
+    entry: 'src/presentation/render.html',
     sourceRoot: 'src/presentation',
     deck: 'deck.json',
     theme: 'src/presentation/theme.css',
@@ -647,49 +721,50 @@ test('presentation workspace paths and manifests reject unsafe project access', 
 test('presentation source workspace saves with conflicts, history, and restricted file operations', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-workspace-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  await createPresentationWorkspace(cwd)
+  const presentationId = await createPresentationWorkspace(cwd)
 
-  const summary = await readPresentationWorkspaceSummary(cwd)
+  const summary = await readPresentationWorkspaceSummary(cwd, presentationId)
   assert.equal(summary.available, true)
-  assert.equal(summary.manifest?.deck, 'src/presentation/deck.json')
-  const tree = await readPresentationWorkspaceTree(cwd)
-  assert.equal(tree[0].path, 'pagecraft-presentation.json')
-  assert.equal(tree[1].path, 'src/presentation')
-  assert.equal(tree[2].path, 'public/pagecraft-assets')
+  assert.equal(summary.manifest?.presentationId, presentationId)
+  assert.equal(summary.manifest?.deck, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`)
+  const tree = await readPresentationWorkspaceTree(cwd, presentationId)
+  assert.equal(tree[0].path, `${WORKSPACE_PRESENTATION_ROOT}/pagecraft.json`)
+  assert.equal(tree[1].path, WORKSPACE_PRESENTATION_ROOT)
+  assert.equal(tree[2].path, `${WORKSPACE_PRESENTATION_ROOT}/assets`)
 
-  const original = await readPresentationSourceFile(cwd, 'src/presentation/deck.json')
+  const original = await readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`)
   const nextContent = original.content.replace('核心模块', '持久化源码模块')
-  const saved = await savePresentationSourceFile(cwd, original.path, nextContent, original.hash)
+  const saved = await savePresentationSourceFile(cwd, presentationId, original.path, nextContent, original.hash)
   assert.match(saved.content, /持久化源码模块/)
   await assert.rejects(
-    () => savePresentationSourceFile(cwd, original.path, original.content, original.hash),
+    () => savePresentationSourceFile(cwd, presentationId, original.path, original.content, original.hash),
     (error: unknown) => error instanceof Error && 'code' in error && error.code === 'PRESENTATION_FILE_CONFLICT',
   )
-  const history = await readPresentationFileHistory(cwd, original.path)
+  const history = await readPresentationFileHistory(cwd, presentationId, original.path)
   assert.equal(history.length, 1)
   assert.equal(history[0].hash, original.hash)
 
-  await createPresentationEntry(cwd, { path: 'src/presentation/notes.md', kind: 'file', content: '# Notes\n' })
-  assert.equal((await readPresentationSourceFile(cwd, 'src/presentation/notes.md')).content, '# Notes\n')
-  await renamePresentationEntry(cwd, 'src/presentation/notes.md', 'src/presentation/speaker-notes.md')
-  assert.equal((await readPresentationSourceFile(cwd, 'src/presentation/speaker-notes.md')).content, '# Notes\n')
-  await deletePresentationEntry(cwd, 'src/presentation/speaker-notes.md')
-  await assert.rejects(() => readPresentationSourceFile(cwd, 'src/presentation/speaker-notes.md'), /可编辑清单/)
-  await assert.rejects(() => deletePresentationEntry(cwd, 'src/presentation/deck.json'), /受保护文件/)
-  const withDirectory = await createPresentationEntry(cwd, { path: 'src/presentation/sections', kind: 'directory' })
-  const sourceRoot = withDirectory.find(entry => entry.path === 'src/presentation')
-  assert.equal(sourceRoot?.children?.some(entry => entry.path === 'src/presentation/sections' && entry.kind === 'directory'), true)
-  await createPresentationEntry(cwd, { path: 'src/presentation/sections/intro.md', kind: 'file', content: '# Intro\n' })
+  await createPresentationEntry(cwd, presentationId, { path: `${WORKSPACE_PRESENTATION_ROOT}/notes.md`, kind: 'file', content: '# Notes\n' })
+  assert.equal((await readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/notes.md`)).content, '# Notes\n')
+  await renamePresentationEntry(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/notes.md`, `${WORKSPACE_PRESENTATION_ROOT}/speaker-notes.md`)
+  assert.equal((await readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/speaker-notes.md`)).content, '# Notes\n')
+  await deletePresentationEntry(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/speaker-notes.md`)
+  await assert.rejects(() => readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/speaker-notes.md`), /可编辑清单/)
+  await assert.rejects(() => deletePresentationEntry(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`), /受保护文件/)
+  const withDirectory = await createPresentationEntry(cwd, presentationId, { path: `${WORKSPACE_PRESENTATION_ROOT}/sections`, kind: 'directory' })
+  const sourceRoot = withDirectory.find(entry => entry.path === WORKSPACE_PRESENTATION_ROOT)
+  assert.equal(sourceRoot?.children?.some(entry => entry.path === `${WORKSPACE_PRESENTATION_ROOT}/sections` && entry.kind === 'directory'), true)
+  await createPresentationEntry(cwd, presentationId, { path: `${WORKSPACE_PRESENTATION_ROOT}/sections/intro.md`, kind: 'file', content: '# Intro\n' })
   await assert.rejects(
-    () => renamePresentationEntry(cwd, 'src/presentation/sections/intro.md', 'src/presentation/sections/intro.png'),
+    () => renamePresentationEntry(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/sections/intro.md`, `${WORKSPACE_PRESENTATION_ROOT}/sections/intro.png`),
     /支持的文本类型/,
   )
   await assert.rejects(
-    () => renamePresentationEntry(cwd, 'src/presentation/sections/intro.md', 'src/presentation/deck.json'),
+    () => renamePresentationEntry(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/sections/intro.md`, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`),
     /已经存在/,
   )
   await assert.rejects(
-    () => createPresentationEntry(cwd, { path: 'src/escape.ts', kind: 'file', content: '' }),
+    () => createPresentationEntry(cwd, presentationId, { path: 'src/escape.ts', kind: 'file', content: '' }),
     /只能在演示文稿源码目录/,
   )
 })
@@ -697,14 +772,14 @@ test('presentation source workspace saves with conflicts, history, and restricte
 test('project image binding writes deck.json and protects referenced files', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-project-assets-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  await createPresentationWorkspace(cwd)
+  const presentationId = await createPresentationWorkspace(cwd)
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSAAAAAASUVORK5CYII=', 'base64')
 
-  const uploaded = await uploadPresentationProjectAsset(cwd, 'machine.png', png)
+  const uploaded = await uploadPresentationProjectAsset(cwd, presentationId, 'machine.png', png)
   assert.equal(uploaded.assets.length, 1)
-  assert.equal(uploaded.assets[0].publicUrl.startsWith('/pagecraft-assets/'), true)
-  const deck = await readPresentationSourceFile(cwd, 'src/presentation/deck.json')
-  const bound = await bindPresentationProjectAsset(cwd, {
+  assert.equal(uploaded.assets[0].publicUrl.startsWith('/assets/'), true)
+  const deck = await readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`)
+  const bound = await bindPresentationProjectAsset(cwd, presentationId, {
     imageKey: 'slide-02.visual',
     assetPath: uploaded.assets[0].path,
     alt: '五轴机床主视图',
@@ -721,8 +796,8 @@ test('project image binding writes deck.json and protects referenced files', asy
     position: '25% 75%',
   })
   assert.deepEqual(bound.assets[0].references, ['slide-02'])
-  await assert.rejects(() => deletePresentationProjectAsset(cwd, uploaded.assets[0].path), /仍被幻灯片使用/)
-  await assert.rejects(() => bindPresentationProjectAsset(cwd, {
+  await assert.rejects(() => deletePresentationProjectAsset(cwd, presentationId, uploaded.assets[0].path), /仍被幻灯片使用/)
+  await assert.rejects(() => bindPresentationProjectAsset(cwd, presentationId, {
     imageKey: '../escape.visual',
     assetPath: uploaded.assets[0].path,
     baseHash: bound.file.hash,
@@ -732,8 +807,8 @@ test('project image binding writes deck.json and protects referenced files', asy
 test('project image binding updates the exact inline slot and supports multiple slots per slide', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-inline-assets-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  await createPresentationWorkspace(cwd)
-  const deckPath = join(cwd, 'src', 'presentation', 'deck.json')
+  const presentationId = await createPresentationWorkspace(cwd)
+  const deckPath = join(cwd, '.pagecraft', 'presentations', presentationId, 'deck.json')
   const document = JSON.parse(await readFile(deckPath, 'utf8'))
   document.slides[1].content = [
     '<div class="two-images">',
@@ -743,10 +818,10 @@ test('project image binding updates the exact inline slot and supports multiple 
   ].join('')
   await writeFile(deckPath, `${JSON.stringify(document, null, 2)}\n`)
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSAAAAAASUVORK5CYII=', 'base64')
-  const uploaded = await uploadPresentationProjectAsset(cwd, 'machine.png', png)
+  const uploaded = await uploadPresentationProjectAsset(cwd, presentationId, 'machine.png', png)
 
-  const initial = await readPresentationSourceFile(cwd, 'src/presentation/deck.json')
-  const machine = await bindPresentationProjectAsset(cwd, {
+  const initial = await readPresentationSourceFile(cwd, presentationId, `${WORKSPACE_PRESENTATION_ROOT}/deck.json`)
+  const machine = await bindPresentationProjectAsset(cwd, presentationId, {
     slotId: 'slide-02-machine',
     slideId: 'slide-02',
     assetPath: uploaded.assets[0].path,
@@ -755,7 +830,7 @@ test('project image binding updates the exact inline slot and supports multiple 
     focalPoint: { x: 0.25, y: 0.75 },
     baseHash: initial.hash,
   })
-  const chart = await bindPresentationProjectAsset(cwd, {
+  const chart = await bindPresentationProjectAsset(cwd, presentationId, {
     slotId: 'slide-02-chart',
     slideId: 'slide-02',
     assetPath: uploaded.assets[0].path,
@@ -766,15 +841,15 @@ test('project image binding updates the exact inline slot and supports multiple 
   })
   const updated = JSON.parse(chart.file.content)
 
-  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-machine"[^>]*><img src="\/pagecraft-assets\//)
+  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-machine"[^>]*><img src="\/assets\//)
   assert.match(updated.slides[1].content, /alt="五轴机床主视图"/)
   assert.match(updated.slides[1].content, /object-fit: contain/)
   assert.match(updated.slides[1].content, /object-position: 25% 75%/)
-  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-chart"[^>]*><img class="chart"[^>]*src="\/pagecraft-assets\//)
+  assert.match(updated.slides[1].content, /data-pagecraft-image-slot="slide-02-chart"[^>]*><img class="chart"[^>]*src="\/assets\//)
   assert.match(updated.slides[1].content, /alt="实验数据图"/)
   assert.match(updated.slides[1].content, /width: 100%/)
   assert.deepEqual(chart.assets[0].references, ['slide-02'])
-  await assert.rejects(() => deletePresentationProjectAsset(cwd, uploaded.assets[0].path), /仍被幻灯片使用/)
+  await assert.rejects(() => deletePresentationProjectAsset(cwd, presentationId, uploaded.assets[0].path), /仍被幻灯片使用/)
 })
 
 test('presentation skill describes slot-level source persistence for multi-image slides', async () => {
@@ -793,48 +868,74 @@ test('presentation skill defines asset routing and live reload for direct previe
   assert.match(skill, /preserve the current slide/i)
 })
 
-test('legacy deck migration only accepts one unambiguous presentation source', async (t) => {
+test('presentation migration binds each ID to its own directory when multiple decks coexist', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-migration-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  await mkdir(join(cwd, 'legacy', 'slides'), { recursive: true })
-  await writeFile(join(cwd, 'legacy', 'slides', 'deck.json'), `${JSON.stringify({
-    title: 'Legacy deck',
-    slides: [
-      { id: 'slide-01', title: 'One' },
-      { id: 'slide-02', title: 'Two' },
-      { id: 'slide-03', title: 'Three' },
-    ],
-  })}\n`)
-  await writeFile(join(cwd, 'legacy', 'slides', 'render.tsx'), 'export const deck = true\n')
-
-  const migrated = await migratePresentationWorkspace(cwd)
-  assert.equal(migrated.available, true)
-  assert.equal(migrated.manifest?.sourceRoot, 'legacy/slides')
-  assert.equal(migrated.manifest?.deck, 'legacy/slides/deck.json')
-  assert.equal(migrated.manifest?.theme, 'legacy/slides/theme.css')
-  assert.equal((await readPresentationWorkspaceSummary(cwd)).available, true)
-
-  const ambiguousCwd = await mkdtemp(join(tmpdir(), 'pagecraft-migration-ambiguous-'))
-  t.after(() => rm(ambiguousCwd, { recursive: true, force: true }))
-  for (const directory of ['deck-a', 'deck-b']) {
-    await mkdir(join(ambiguousCwd, directory), { recursive: true })
-    await writeFile(join(ambiguousCwd, directory, 'deck.json'), JSON.stringify({ slides: [
+  const presentationIds = ['presentation-first-1234', 'presentation-second-5678']
+  for (const [index, presentationId] of presentationIds.entries()) {
+    const directory = join(cwd, '.pagecraft', 'presentations', presentationId)
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'deck.json'), JSON.stringify({
+      title: `Deck ${index + 1}`,
+      slides: [
       { id: 'slide-01' }, { id: 'slide-02' }, { id: 'slide-03' },
-    ] }))
+      ],
+    }))
+    await writeFile(join(directory, 'render.html'), `<!doctype html><title>Deck ${index + 1}</title>`)
   }
-  await assert.rejects(() => migratePresentationWorkspace(ambiguousCwd), /找到多个可能/)
+
+  const first = await migratePresentationWorkspace(cwd, presentationIds[0])
+  const second = await migratePresentationWorkspace(cwd, presentationIds[1])
+  assert.equal(first.manifest?.presentationId, presentationIds[0])
+  assert.equal(first.manifest?.sourceRoot, `.pagecraft/presentations/${presentationIds[0]}`)
+  assert.equal(second.manifest?.presentationId, presentationIds[1])
+  assert.equal(second.manifest?.sourceRoot, `.pagecraft/presentations/${presentationIds[1]}`)
+  assert.notEqual(first.manifest?.deck, second.manifest?.deck)
+  assert.equal((await readPresentationWorkspaceSummary(cwd, presentationIds[0])).manifest?.name, 'Deck 1')
+  assert.equal((await readPresentationWorkspaceSummary(cwd, presentationIds[1])).manifest?.name, 'Deck 2')
+})
+
+test('old generated preview servers retain their original public image route during ID migration', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-legacy-assets-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const oldActiveId = 'presentation-old-active-1234'
+  const selectedId = 'presentation-old-selected-5678'
+  const selectedRoot = `.pagecraft/presentations/${selectedId}`
+  const directory = join(cwd, '.pagecraft', 'presentations', selectedId)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'deck.json'), JSON.stringify({ title: 'Selected deck', slides: [] }))
+  await writeFile(join(directory, 'render.html'), '<!doctype html><title>Selected deck</title>')
+  await writeFile(join(directory, 'server.js'), "const manifest = 'pagecraft-presentation.json'\n")
+  await writeFile(join(cwd, 'pagecraft-presentation.json'), JSON.stringify({
+    name: 'Previously active deck',
+    sourceRoot: `.pagecraft/presentations/${oldActiveId}`,
+    deck: `.pagecraft/presentations/${oldActiveId}/deck.json`,
+    theme: `.pagecraft/presentations/${oldActiveId}/theme.css`,
+    assets: 'public/pagecraft-assets',
+    publicAssetBase: '/pagecraft-assets',
+    editableFiles: [
+      `.pagecraft/presentations/${oldActiveId}/deck.json`,
+      `.pagecraft/presentations/${oldActiveId}/theme.css`,
+    ],
+  }))
+
+  const migrated = await migratePresentationWorkspace(cwd, selectedId)
+  assert.equal(migrated.manifest?.presentationId, selectedId)
+  assert.equal(migrated.manifest?.sourceRoot, selectedRoot)
+  assert.equal(migrated.manifest?.assets, 'public/pagecraft-assets')
+  assert.equal(migrated.manifest?.publicAssetBase, '/pagecraft-assets')
 })
 
 test('source workspace follows the exact PageCraft document task directory', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'pagecraft-task-workspace-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
-  const job = await createPresentationSource(
+  const presentation = await createPresentationSource(
     cwd,
     'brief.md',
     Buffer.from('# Brief\n\nEnough source text for a generated presentation.', 'utf8'),
-    { jobId: 'presentation-source-sync-1234' },
+    { presentationId: 'presentation-source-sync-1234' },
   )
-  await writeFile(join(cwd, job.source.deckPath), JSON.stringify({
+  await writeFile(join(cwd, presentation.source.deckPath), JSON.stringify({
     title: 'Task deck',
     slides: [
       { id: 'slide-01', title: 'One' },
@@ -842,13 +943,14 @@ test('source workspace follows the exact PageCraft document task directory', asy
       { id: 'slide-03', title: 'Three' },
     ],
   }))
+  await writeFile(join(cwd, '.pagecraft', 'presentations', presentation.presentationId, 'render.html'), '<!doctype html><title>Task deck</title>')
 
-  const migrated = await migratePresentationWorkspace(cwd, job.jobId)
+  const migrated = await migratePresentationWorkspace(cwd, presentation.presentationId)
   assert.equal(migrated.available, true)
-  assert.equal(migrated.workspacePath, cwd)
-  assert.equal(migrated.manifest?.sourceRoot, `.pagecraft/presentations/${job.jobId}`)
-  assert.equal(migrated.manifest?.deck, job.source.deckPath.replaceAll('\\', '/'))
-  const tree = await readPresentationWorkspaceTree(cwd)
+  assert.equal(migrated.workspacePath, join(cwd, '.pagecraft', 'presentations', presentation.presentationId))
+  assert.equal(migrated.manifest?.sourceRoot, `.pagecraft/presentations/${presentation.presentationId}`)
+  assert.equal(migrated.manifest?.deck, presentation.source.deckPath.replaceAll('\\', '/'))
+  const tree = await readPresentationWorkspaceTree(cwd, presentation.presentationId)
   const sourceRoot = tree.find(entry => entry.path === migrated.manifest?.sourceRoot)
   assert.equal(sourceRoot?.children?.some(entry => entry.name === 'source.md'), true)
   assert.equal(sourceRoot?.children?.some(entry => entry.name === 'deck.json'), true)
@@ -1074,7 +1176,7 @@ test('plugin registers the host route and both builder skills', () => {
     effect(register: () => () => void) { register() },
   }
   apply(ctx)
-  assert.equal(registrations.length, 28)
+  assert.equal(registrations.length, 29)
   assert.deepEqual(registrations.map((route: any) => route.path), [
     '/api/frontend-feedback/preview',
     '/api/frontend-feedback/resource',
@@ -1090,7 +1192,8 @@ test('plugin registers the host route and both builder skills', () => {
     '/api/frontend-feedback/workspace/text-edit',
     '/api/frontend-feedback/workspace/text-verify',
     '/api/frontend-feedback/presentation/source',
-    '/api/frontend-feedback/presentation/job',
+    '/api/frontend-feedback/presentation',
+    '/api/frontend-feedback/presentation/resolve',
     '/api/frontend-feedback/presentation/plan',
     '/api/frontend-feedback/presentation/assets',
     '/api/frontend-feedback/presentation/asset',
@@ -1118,7 +1221,7 @@ test('plugin registers the host route and both builder skills', () => {
   assert.match(skills[1]?.content, /## Build from an approved outline/)
   assert.match(skills[1]?.content, /sourceRefs/)
   assert.match(skills[1]?.content, /data-pagecraft-image-slot/)
-  assert.match(skills[1]?.content, /pagecraft-presentation\.json/)
+  assert.match(skills[1]?.content, /pagecraft\.json/)
   assert.match(skills[1]?.content, /data-pagecraft-text-key/)
   assert.doesNotMatch(skills[1]?.content, /^---/)
 })

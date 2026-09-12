@@ -2,18 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import {
   DEFAULT_PRESENTATION_DOCUMENT_BRIEF,
-  PRESENTATION_JOB_PATH,
+  PRESENTATION_PATH,
   PRESENTATION_PLAN_PATH,
   PRESENTATION_SOURCE_PATH,
   isPresentationRequestSettled,
-  normalizePresentationJobSnapshot,
+  legacyPresentationJobStorageKey,
+  normalizePresentationSnapshot,
   normalizePresentationPlan,
-  presentationJobStorageKey,
+  presentationStorageKey,
 } from '../presentation.ts'
 import type {
   PresentationDocumentBrief,
   PresentationGenerationSlide,
-  PresentationJobSnapshot,
+  PresentationSnapshot,
   PresentationPlan,
   PresentationPlanSlide,
   PresentationSlideSummary,
@@ -27,7 +28,7 @@ interface PresentationDocumentDialogProps {
   onRequestOutline(source: PresentationSourceSummary, brief: PresentationDocumentBrief): Promise<void>
   onRequestGeneration(source: PresentationSourceSummary): Promise<void>
   onPreviewReady(url: string): void
-  onJobChange(jobId: string | null): void
+  onPresentationChange(presentationId: string | null): void
 }
 
 interface SlideRailProps {
@@ -125,20 +126,22 @@ function responseErrorMessage(value: unknown, status: number): string {
   return error.message
 }
 
-function persistedJobId(sessionId: string): string | null {
+function persistedPresentationId(sessionId: string): string | null {
   try {
-    return window.localStorage.getItem(presentationJobStorageKey(sessionId))
+    return window.localStorage.getItem(presentationStorageKey(sessionId))
+      ?? window.localStorage.getItem(legacyPresentationJobStorageKey(sessionId))
   } catch {
     return null
   }
 }
 
-function persistJobId(sessionId: string, jobId: string | null): void {
+function persistPresentationId(sessionId: string, presentationId: string | null): void {
   try {
-    if (jobId === null) window.localStorage.removeItem(presentationJobStorageKey(sessionId))
-    else window.localStorage.setItem(presentationJobStorageKey(sessionId), jobId)
+    if (presentationId === null) window.localStorage.removeItem(presentationStorageKey(sessionId))
+    else window.localStorage.setItem(presentationStorageKey(sessionId), presentationId)
+    window.localStorage.removeItem(legacyPresentationJobStorageKey(sessionId))
   } catch {
-    // Job files remain durable in the workspace even when browser storage is unavailable.
+    // Presentation files remain durable in the workspace even when browser storage is unavailable.
   }
 }
 
@@ -197,12 +200,12 @@ export function PresentationDocumentDialog({
   onRequestOutline,
   onRequestGeneration,
   onPreviewReady,
-  onJobChange,
+  onPresentationChange,
 }: PresentationDocumentDialogProps): ReactElement {
   const [brief, setBrief] = useState<PresentationDocumentBrief>({ ...DEFAULT_PRESENTATION_DOCUMENT_BRIEF })
   const [file, setFile] = useState<File | null>(null)
   const [pastedText, setPastedText] = useState('')
-  const [snapshot, setSnapshot] = useState<PresentationJobSnapshot | null>(null)
+  const [snapshot, setSnapshot] = useState<PresentationSnapshot | null>(null)
   const [plan, setPlan] = useState<PresentationPlan | null>(null)
   const [busy, setBusy] = useState(false)
   const [sourceProcessing, setSourceProcessing] = useState(false)
@@ -211,7 +214,7 @@ export function PresentationDocumentDialog({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const previewOpenedRef = useRef<string | null>(null)
-  const planLoadedForJobRef = useRef<string | null>(null)
+  const planLoadedForPresentationRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const uploadAbortControllerRef = useRef<AbortController | null>(null)
   const generationSubmissionRef = useRef(false)
@@ -220,15 +223,16 @@ export function PresentationDocumentDialog({
     setBrief(current => ({ ...current, [key]: value }))
   }
 
-  async function loadJob(jobId: string): Promise<PresentationJobSnapshot> {
-    const query = new URLSearchParams({ sessionId, jobId })
-    const value = await responseJson(await fetch(`${PRESENTATION_JOB_PATH}?${query}`, { cache: 'no-store' }))
-    const next = normalizePresentationJobSnapshot(value)
-    if (next === null) throw new Error('服务器返回了无法识别的演示任务状态')
+  async function loadPresentation(presentationId: string): Promise<PresentationSnapshot> {
+    const query = new URLSearchParams({ sessionId, presentationId })
+    const value = await responseJson(await fetch(`${PRESENTATION_PATH}?${query}`, { cache: 'no-store' }))
+    const next = normalizePresentationSnapshot(value)
+    if (next === null) throw new Error('服务器返回了无法识别的演示文稿状态')
     setSnapshot(next)
-    onJobChange(next.jobId)
-    if (next.plan !== undefined && planLoadedForJobRef.current !== next.jobId) {
-      planLoadedForJobRef.current = next.jobId
+    persistPresentationId(sessionId, next.presentationId)
+    onPresentationChange(next.presentationId)
+    if (next.plan !== undefined && planLoadedForPresentationRef.current !== next.presentationId) {
+      planLoadedForPresentationRef.current = next.presentationId
       setPlan(clonePlan(next.plan))
     }
     if (next.previewUrl !== undefined && previewOpenedRef.current !== next.previewUrl) {
@@ -239,11 +243,11 @@ export function PresentationDocumentDialog({
   }
 
   useEffect(() => {
-    const jobId = persistedJobId(sessionId)
-    if (jobId === null) return
-    void loadJob(jobId).catch((loadError) => {
-      persistJobId(sessionId, null)
-      onJobChange(null)
+    const presentationId = persistedPresentationId(sessionId)
+    if (presentationId === null) return
+    void loadPresentation(presentationId).catch((loadError) => {
+      persistPresentationId(sessionId, null)
+      onPresentationChange(null)
       setError(`恢复上次任务失败：${describeError(loadError)}`)
     })
   }, [sessionId])
@@ -255,14 +259,14 @@ export function PresentationDocumentDialog({
     const active = snapshot.phase === 'planning' || snapshot.phase === 'generating' || waitingForOutline || waitingForGeneration
     if (!active) return
     const timer = window.setInterval(() => {
-      void loadJob(snapshot.jobId).then((next) => {
+      void loadPresentation(snapshot.presentationId).then((next) => {
         if (requestedPhase !== null && isPresentationRequestSettled(requestedPhase, next.phase)) {
           setRequestedPhase(null)
         }
       }).catch(pollError => setError(`读取生成进度失败：${describeError(pollError)}`))
     }, 1600)
     return () => window.clearInterval(timer)
-  }, [requestedPhase, snapshot?.jobId, snapshot?.phase])
+  }, [requestedPhase, snapshot?.presentationId, snapshot?.phase])
 
   useEffect(() => {
     return () => uploadAbortControllerRef.current?.abort()
@@ -279,9 +283,9 @@ export function PresentationDocumentDialog({
   const progress = total === 0 ? 0 : Math.round(completed / total * 100)
 
   function reset(): void {
-    persistJobId(sessionId, null)
-    onJobChange(null)
-    planLoadedForJobRef.current = null
+    persistPresentationId(sessionId, null)
+    onPresentationChange(null)
+    planLoadedForPresentationRef.current = null
     previewOpenedRef.current = null
     setSnapshot(null)
     setPlan(null)
@@ -326,12 +330,12 @@ export function PresentationDocumentDialog({
         body,
         signal: controller.signal,
       }))
-      const next = normalizePresentationJobSnapshot(value)
+      const next = normalizePresentationSnapshot(value)
       if (next === null) throw new Error('服务器返回了无法识别的文档解析结果')
       uploadAbortControllerRef.current = null
       setSourceProcessing(false)
-      persistJobId(sessionId, next.jobId)
-      onJobChange(next.jobId)
+      persistPresentationId(sessionId, next.presentationId)
+      onPresentationChange(next.presentationId)
       setSnapshot(next)
       setRequestedPhase('planning')
       await onRequestOutline(next.source, brief)
@@ -417,13 +421,13 @@ export function PresentationDocumentDialog({
     setRequestedPhase('generating')
     setError('')
     try {
-      const query = new URLSearchParams({ sessionId, jobId: snapshot.jobId })
+      const query = new URLSearchParams({ sessionId, presentationId: snapshot.presentationId })
       const value = await responseJson(await fetch(`${PRESENTATION_PLAN_PATH}?${query}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(normalized),
       }))
-      const saved = normalizePresentationJobSnapshot(value)
+      const saved = normalizePresentationSnapshot(value)
       if (saved === null) throw new Error('服务器没有正确保存目录')
       setSnapshot(saved)
       setPlan(clonePlan(normalized))

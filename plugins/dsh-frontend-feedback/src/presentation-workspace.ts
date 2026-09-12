@@ -1,3 +1,5 @@
+import { isPresentationId } from './presentation.ts'
+
 export const PRESENTATION_WORKSPACE_PATH = '/api/frontend-feedback/presentation-workspace'
 export const PRESENTATION_WORKSPACE_TREE_PATH = '/api/frontend-feedback/presentation-workspace/tree'
 export const PRESENTATION_WORKSPACE_FILE_PATH = '/api/frontend-feedback/presentation-workspace/file'
@@ -8,10 +10,13 @@ export const PRESENTATION_WORKSPACE_ASSET_PATH = '/api/frontend-feedback/present
 export const PRESENTATION_WORKSPACE_BIND_ASSET_PATH = '/api/frontend-feedback/presentation-workspace/bind-asset'
 export const PRESENTATION_WORKSPACE_MIGRATE_PATH = '/api/frontend-feedback/presentation-workspace/migrate'
 
-export const PRESENTATION_PROJECT_MANIFEST = 'pagecraft-presentation.json'
+export const PRESENTATION_MANIFEST_NAME = 'pagecraft.json'
+export const LEGACY_PRESENTATION_PROJECT_MANIFEST = 'pagecraft-presentation.json'
 
 export interface PresentationProjectManifest {
+  presentationId: string
   name: string
+  entry: string
   sourceRoot: string
   deck: string
   theme: string
@@ -22,6 +27,7 @@ export interface PresentationProjectManifest {
 
 export interface PresentationWorkspaceSummary {
   available: boolean
+  presentationId: string
   workspacePath: string
   manifest?: PresentationProjectManifest
   reason?: string
@@ -110,24 +116,44 @@ export function presentationSourceLanguage(path: string): string {
   return 'text'
 }
 
-export function normalizePresentationProjectManifest(value: unknown): PresentationProjectManifest | null {
+export function normalizePresentationProjectManifest(
+  value: unknown,
+  expectedPresentationId?: string,
+): PresentationProjectManifest | null {
   if (!isRecord(value)) return null
+  const presentationId = isPresentationId(value.presentationId)
+    ? value.presentationId
+    : expectedPresentationId
+  if (!isPresentationId(presentationId)) return null
+  if (expectedPresentationId !== undefined && presentationId !== expectedPresentationId) return null
   const name = stringValue(value.name, 200)
   const sourceRoot = normalizePresentationProjectPath(value.sourceRoot)
   const deck = normalizePresentationProjectPath(value.deck)
   const theme = normalizePresentationProjectPath(value.theme)
   const assets = normalizePresentationProjectPath(value.assets)
+  const defaultEntry = sourceRoot === null ? null : `${sourceRoot}/render.html`
+  const entry = normalizePresentationProjectPath(value.entry) ?? defaultEntry
   const publicAssetBase = stringValue(value.publicAssetBase, 300)
-  if (!name || sourceRoot === null || deck === null || theme === null || assets === null) return null
+  if (!name || sourceRoot === null || entry === null || deck === null || theme === null || assets === null) return null
   if (!publicAssetBase.startsWith('/') || publicAssetBase.includes('..') || publicAssetBase.includes('?') || publicAssetBase.includes('#')) return null
-  if (!deck.startsWith(`${sourceRoot}/`) || !theme.startsWith(`${sourceRoot}/`)) return null
+  if (!entry.startsWith(`${sourceRoot}/`) || !deck.startsWith(`${sourceRoot}/`) || !theme.startsWith(`${sourceRoot}/`)) return null
   if (!Array.isArray(value.editableFiles)) return null
   const editableFiles = Array.from(new Set(value.editableFiles
     .map(normalizePresentationProjectPath)
     .filter((path): path is string => path !== null && path.startsWith(`${sourceRoot}/`) && isPresentationTextFile(path))))
     .slice(0, 500)
   if (!editableFiles.includes(deck) || !editableFiles.includes(theme)) return null
-  return { name, sourceRoot, deck, theme, assets, publicAssetBase: publicAssetBase.replace(/\/$/, ''), editableFiles }
+  return {
+    presentationId,
+    name,
+    entry,
+    sourceRoot,
+    deck,
+    theme,
+    assets,
+    publicAssetBase: publicAssetBase.replace(/\/$/, ''),
+    editableFiles,
+  }
 }
 
 export function presentationWorkspaceLayoutStorageKey(sessionId: string): string {

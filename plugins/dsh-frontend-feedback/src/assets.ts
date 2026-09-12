@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { basename, resolve, sep } from 'node:path'
-import { PresentationDocumentError, readPresentationJob, resolvePresentationJobDirectory } from './document.ts'
+import { PresentationDocumentError, readPresentation, resolvePresentationDirectory } from './document.ts'
 import { isPresentationImageSlotId } from './presentation.ts'
 import type {
   PresentationAsset,
@@ -125,17 +125,17 @@ export function inspectPresentationImage(bytes: Buffer): PresentationImageInfo {
   return info
 }
 
-function manifestPath(cwd: string, jobId: string): string {
-  return resolve(resolvePresentationJobDirectory(cwd, jobId), 'assets.json')
+function manifestPath(cwd: string, presentationId: string): string {
+  return resolve(resolvePresentationDirectory(cwd, presentationId), 'assets.json')
 }
 
-function assetDirectory(cwd: string, jobId: string): string {
-  return resolve(resolvePresentationJobDirectory(cwd, jobId), 'assets')
+function assetDirectory(cwd: string, presentationId: string): string {
+  return resolve(resolvePresentationDirectory(cwd, presentationId), 'assets')
 }
 
-function assetFilePath(cwd: string, jobId: string, file: string): string {
-  const directory = assetDirectory(cwd, jobId)
-  const path = resolve(resolvePresentationJobDirectory(cwd, jobId), file)
+function assetFilePath(cwd: string, presentationId: string, file: string): string {
+  const directory = assetDirectory(cwd, presentationId)
+  const path = resolve(resolvePresentationDirectory(cwd, presentationId), file)
   if (!path.startsWith(`${directory}${sep}`)) {
     throw new PresentationDocumentError('素材路径越界', 400, 'ASSET_PATH_ESCAPE')
   }
@@ -185,9 +185,9 @@ function isBinding(value: unknown): value is PresentationAssetBinding {
     && typeof binding.updatedAt === 'string'
 }
 
-async function readManifestFile(cwd: string, jobId: string): Promise<PresentationAssetManifest> {
+async function readManifestFile(cwd: string, presentationId: string): Promise<PresentationAssetManifest> {
   try {
-    const value = JSON.parse(await readFile(manifestPath(cwd, jobId), 'utf8'))
+    const value = JSON.parse(await readFile(manifestPath(cwd, presentationId), 'utf8'))
     return normalizeManifest(value)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyManifest()
@@ -198,8 +198,8 @@ async function readManifestFile(cwd: string, jobId: string): Promise<Presentatio
   }
 }
 
-async function writeManifest(cwd: string, jobId: string, manifest: PresentationAssetManifest): Promise<void> {
-  const path = manifestPath(cwd, jobId)
+async function writeManifest(cwd: string, presentationId: string, manifest: PresentationAssetManifest): Promise<void> {
+  const path = manifestPath(cwd, presentationId)
   const temporary = `${path}.${randomUUID()}.tmp`
   await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
   await rename(temporary, path)
@@ -225,31 +225,31 @@ function clampUnit(value: number | undefined, fallback: number): number {
   return Math.min(1, Math.max(0, Number(value)))
 }
 
-export async function readPresentationAssets(cwd: string, jobId: string): Promise<PresentationAssetManifest> {
-  await readPresentationJob(cwd, jobId)
-  return readManifestFile(cwd, jobId)
+export async function readPresentationAssets(cwd: string, presentationId: string): Promise<PresentationAssetManifest> {
+  await readPresentation(cwd, presentationId)
+  return readManifestFile(cwd, presentationId)
 }
 
 export async function uploadPresentationAsset(
   cwd: string,
-  jobId: string,
+  presentationId: string,
   fileName: string,
   bytes: Buffer,
   now = new Date(),
 ): Promise<PresentationAssetManifest> {
-  await readPresentationJob(cwd, jobId)
+  await readPresentation(cwd, presentationId)
   if (bytes.length === 0) throw new PresentationDocumentError('上传的图片是空文件', 400, 'EMPTY_ASSET')
   const name = safeAssetName(fileName)
   const image = inspectPresentationImage(bytes)
   const digest = createHash('sha256').update(bytes).digest('hex')
   const id = `asset-${digest.slice(0, 16)}`
 
-  return withManifestLock(manifestPath(cwd, jobId), async () => {
-    const manifest = await readManifestFile(cwd, jobId)
+  return withManifestLock(manifestPath(cwd, presentationId), async () => {
+    const manifest = await readManifestFile(cwd, presentationId)
     if (manifest.assets.some(asset => asset.id === id)) return manifest
-    await mkdir(assetDirectory(cwd, jobId), { recursive: true })
+    await mkdir(assetDirectory(cwd, presentationId), { recursive: true })
     const file = `assets/${id}${image.extension}`
-    await writeFile(assetFilePath(cwd, jobId, file), bytes, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
+    await writeFile(assetFilePath(cwd, presentationId, file), bytes, { flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error
     })
     const createdAt = now.toISOString()
@@ -265,24 +265,24 @@ export async function uploadPresentationAsset(
       createdAt,
     })
     manifest.updatedAt = createdAt
-    await writeManifest(cwd, jobId, manifest)
+    await writeManifest(cwd, presentationId, manifest)
     return manifest
   })
 }
 
 export async function bindPresentationAsset(
   cwd: string,
-  jobId: string,
+  presentationId: string,
   slotId: string,
   options: BindPresentationAssetOptions,
   now = new Date(),
 ): Promise<PresentationAssetManifest> {
-  await readPresentationJob(cwd, jobId)
+  await readPresentation(cwd, presentationId)
   if (!isPresentationImageSlotId(slotId)) {
     throw new PresentationDocumentError('图片槽位 ID 无效', 400, 'INVALID_IMAGE_SLOT')
   }
-  return withManifestLock(manifestPath(cwd, jobId), async () => {
-    const manifest = await readManifestFile(cwd, jobId)
+  return withManifestLock(manifestPath(cwd, presentationId), async () => {
+    const manifest = await readManifestFile(cwd, presentationId)
     const index = manifest.bindings.findIndex(binding => binding.slotId === slotId)
     if (options.assetId === null) {
       if (index >= 0) manifest.bindings.splice(index, 1)
@@ -305,33 +305,33 @@ export async function bindPresentationAsset(
       else manifest.bindings.push(binding)
     }
     manifest.updatedAt = now.toISOString()
-    await writeManifest(cwd, jobId, manifest)
+    await writeManifest(cwd, presentationId, manifest)
     return manifest
   })
 }
 
-export async function deletePresentationAsset(cwd: string, jobId: string, assetId: string): Promise<PresentationAssetManifest> {
-  await readPresentationJob(cwd, jobId)
-  return withManifestLock(manifestPath(cwd, jobId), async () => {
-    const manifest = await readManifestFile(cwd, jobId)
+export async function deletePresentationAsset(cwd: string, presentationId: string, assetId: string): Promise<PresentationAssetManifest> {
+  await readPresentation(cwd, presentationId)
+  return withManifestLock(manifestPath(cwd, presentationId), async () => {
+    const manifest = await readManifestFile(cwd, presentationId)
     const index = manifest.assets.findIndex(asset => asset.id === assetId)
     if (index < 0) throw new PresentationDocumentError('图片素材不存在', 404, 'ASSET_NOT_FOUND')
     if (manifest.bindings.some(binding => binding.assetId === assetId)) {
       throw new PresentationDocumentError('图片仍被幻灯片使用，请先从对应槽位移除或替换', 409, 'ASSET_IN_USE')
     }
     const [asset] = manifest.assets.splice(index, 1)
-    await unlink(assetFilePath(cwd, jobId, asset.file)).catch((error: NodeJS.ErrnoException) => {
+    await unlink(assetFilePath(cwd, presentationId, asset.file)).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error
     })
     manifest.updatedAt = new Date().toISOString()
-    await writeManifest(cwd, jobId, manifest)
+    await writeManifest(cwd, presentationId, manifest)
     return manifest
   })
 }
 
-export async function readPresentationAsset(cwd: string, jobId: string, assetId: string): Promise<PresentationAssetFile> {
-  const manifest = await readPresentationAssets(cwd, jobId)
+export async function readPresentationAsset(cwd: string, presentationId: string, assetId: string): Promise<PresentationAssetFile> {
+  const manifest = await readPresentationAssets(cwd, presentationId)
   const asset = manifest.assets.find(item => item.id === assetId)
   if (asset === undefined) throw new PresentationDocumentError('图片素材不存在', 404, 'ASSET_NOT_FOUND')
-  return { asset, body: await readFile(assetFilePath(cwd, jobId, asset.file)) }
+  return { asset, body: await readFile(assetFilePath(cwd, presentationId, asset.file)) }
 }

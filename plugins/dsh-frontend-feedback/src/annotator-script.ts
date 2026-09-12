@@ -1350,6 +1350,13 @@ export const ANNOTATOR_SCRIPT = String.raw`
   renderState();
   scheduleDeckState(true);
   scheduleAssetApplication();
-  post({ type: 'dsh-frontend-feedback-ready', url: document.baseURI, modes: ['element', 'area', 'text'] });
+  post({
+    type: 'dsh-frontend-feedback-ready',
+    url: document.baseURI,
+    modes: ['element', 'area', 'text'],
+    presentationId: typeof window.__PAGECRAFT_PRESENTATION_ID__ === 'string'
+      ? window.__PAGECRAFT_PRESENTATION_ID__
+      : undefined
+  });
 })();
 `

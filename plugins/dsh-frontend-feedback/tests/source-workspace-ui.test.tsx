@@ -100,7 +100,9 @@ async function mountWorkspace(t: any, raw = 'base\n', legacy?: { content: string
 
 test('presentation workspace stays rooted at the real project and labels source and asset folders', async t => {
   const manifest: PresentationProjectManifest = {
+    presentationId: 'presentation-deck-1234',
     name: 'Deck',
+    entry: '.pagecraft/presentations/deck/render.html',
     sourceRoot: '.pagecraft/presentations/deck',
     deck: '.pagecraft/presentations/deck/deck.json',
     theme: '.pagecraft/presentations/deck/theme.css',
@@ -116,8 +118,10 @@ test('presentation workspace stays rooted at the real project and labels source 
     rememberedFolder: 'another-folder',
   })
 
-  assert.equal(f.workspaceSelections.every(selection => selection === '.'), true)
-  assert.match(f.host.textContent ?? '', /PPT 源码：\.pagecraft\/presentations\/deck/)
+  assert.equal(f.workspaceSelections.includes('another-folder'), false)
+  assert.equal(f.workspaceSelections.at(-1), manifest.sourceRoot)
+  assert.match(f.host.textContent ?? '', /ID：presentation-deck-1234/)
+  assert.match(f.host.textContent ?? '', /源码：\.pagecraft\/presentations\/deck/)
   assert.match(f.host.textContent ?? '', /图片：public\/pagecraft-assets/)
 })
 

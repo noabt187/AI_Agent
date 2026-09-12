@@ -39,7 +39,6 @@ import type {
 import {
   applyDirectoryListing,
   applyWorkspaceEvent,
-  expandWorkspacePath,
   initialWorkspaceTreeState,
   setDirectoryLoading,
   toggleDirectory,
@@ -322,29 +321,11 @@ export function WorkspaceExplorer({
     ))
     if (epoch !== scopeEpoch.current) return
     setTree(value => applyDirectoryListing(value, next.selectedFolder, entries))
-    if (presentationManifest !== undefined && next.selectedFolder === '.') {
-      await revealProjectDirectory(presentationManifest.sourceRoot, next.selectedFolder, epoch)
-      setStatus(`已打开项目：${next.rootPath}；PPT 源码和图片目录来自项目清单。`)
+    if (presentationManifest !== undefined) {
+      setStatus(`已通过 ${presentationManifest.presentationId} 绑定 PPT 源码：${next.selectedPath}`)
       return
     }
     setStatus(`已打开真实目录：${next.selectedPath}`)
-  }
-
-  async function revealProjectDirectory(path: string, root: string, epoch: number): Promise<void> {
-    const directories: string[] = []
-    let current = ''
-    for (const segment of path.split('/').filter(Boolean)) {
-      current = current.length === 0 ? segment : `${current}/${segment}`
-      directories.push(current)
-    }
-    for (const directory of directories) {
-      const entries = await apiJson<WorkspaceEntry[]>(await fetch(
-        `${PAGECRAFT_WORKSPACE_DIRECTORY_PATH}?${apiQuery(sessionId, { selectedFolder: root, path: directory })}`,
-        { cache: 'no-store' },
-      ))
-      if (epoch !== scopeEpoch.current) return
-      setTree(value => expandWorkspacePath(applyDirectoryListing(value, directory, entries), directory))
-    }
   }
 
   async function loadWorkspace(): Promise<void> {
@@ -356,7 +337,7 @@ export function WorkspaceExplorer({
         { cache: 'no-store' },
       ))
       if (epoch !== scopeEpoch.current) return
-      let remembered = '.'
+      let remembered = presentationManifest?.sourceRoot ?? '.'
       if (presentationManifest === undefined) {
         try {
           remembered = window.localStorage.getItem(workspaceFolderStorageKey(root.rootPath, sessionId)) || '.'
@@ -367,7 +348,7 @@ export function WorkspaceExplorer({
       try {
         await connectFolder(remembered, root.rootPath)
       } catch {
-        await connectFolder('.', root.rootPath)
+        await connectFolder(presentationManifest?.sourceRoot ?? '.', root.rootPath)
       }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
@@ -1045,7 +1026,7 @@ export function WorkspaceExplorer({
             <span title={summary?.selectedPath}>{selectedFolder} · 与本地目录实时同步</span>
           ) : (
             <span title={`${presentationManifest.sourceRoot} | ${presentationManifest.assets}`}>
-              PPT 源码：{presentationManifest.sourceRoot} · 图片：{presentationManifest.assets}
+              ID：{presentationManifest.presentationId} · 源码：{presentationManifest.sourceRoot} · 图片：{presentationManifest.assets}
             </span>
           )}
         </div>

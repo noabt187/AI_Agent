@@ -3,9 +3,11 @@ import { createPortal } from 'react-dom'
 import {
   buildPresentationDocumentPrompt,
   buildPresentationOutlinePrompt,
-  isPresentationJobId,
+  isPresentationId,
+  legacyPresentationJobStorageKey,
   normalizePresentationImageSlotSelection,
-  presentationJobStorageKey,
+  PRESENTATION_RESOLVE_PATH,
+  presentationStorageKey,
   resolvePresentationSlides,
 } from '../presentation.ts'
 import type {
@@ -83,6 +85,7 @@ interface FeedbackMessage {
   label?: unknown
   assetId?: unknown
   imageKey?: unknown
+  presentationId?: unknown
 }
 
 const colors = {
@@ -251,9 +254,10 @@ function FrontendFeedbackPanel({
   const [activeSlideId, setActiveSlideId] = useState<string | null>(null)
   const [showPresentationBrief, setShowPresentationBrief] = useState(false)
   const [creatingPresentation, setCreatingPresentation] = useState(false)
-  const [presentationJobId, setPresentationJobId] = useState<string | null>(() => {
-    const stored = readStoredValue(presentationJobStorageKey(sessionId))
-    return isPresentationJobId(stored) ? stored : null
+  const [presentationId, setPresentationId] = useState<string | null>(() => {
+    const stored = readStoredValue(presentationStorageKey(sessionId))
+      ?? readStoredValue(legacyPresentationJobStorageKey(sessionId))
+    return isPresentationId(stored) ? stored : null
   })
   const [presentationWorkspace, setPresentationWorkspace] = useState<PresentationWorkspaceSummary | null>(null)
   const [presentationAssetMode, setPresentationAssetMode] = useState<PresentationAssetMode | 'checking'>('checking')
@@ -263,20 +267,24 @@ function FrontendFeedbackPanel({
   const [showSourceWorkspace, setShowSourceWorkspace] = useState(false)
   const [selectedImageSlot, setSelectedImageSlot] = useState<PresentationImageSlotSelection | null>(null)
   const [openingImageSlot, setOpeningImageSlot] = useState(false)
+  const [previewPresentationId, setPreviewPresentationId] = useState<string | null>(null)
   const loadedUrl = currentPreviewUrl(navigation)
   const canGoBack = navigation.index > 0
   const canGoForward = navigation.index < navigation.entries.length - 1
 
   const previewFrame = useMemo(() => {
-    return loadedUrl === null ? null : resolvePreviewFrameLocation(loadedUrl, window.location.href, revision)
-  }, [loadedUrl, revision])
+    const boundPresentationId = workspaceMode === 'presentation' ? presentationId ?? undefined : undefined
+    return loadedUrl === null
+      ? null
+      : resolvePreviewFrameLocation(loadedUrl, window.location.href, revision, boundPresentationId)
+  }, [loadedUrl, presentationId, revision, workspaceMode])
 
   useEffect(() => {
     persistFeedbackDraft(storageId, { selection, areaOperation, comment, queued })
   }, [areaOperation, comment, queued, selection, storageId])
 
   useEffect(() => {
-    if (workspaceMode !== 'presentation') {
+    if (workspaceMode !== 'presentation' || presentationId === null) {
       setPresentationWorkspace(null)
       setPresentationAssetMode('unavailable')
       return
@@ -284,12 +292,12 @@ function FrontendFeedbackPanel({
     let cancelled = false
     setPresentationAssetMode('checking')
     void readApiJson<PresentationWorkspaceSummary>(fetch(
-      `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+      `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId, { presentationId })}`,
       { cache: 'no-store' },
     )).then((summary) => {
       if (cancelled) return
       setPresentationWorkspace(summary)
-      setPresentationAssetMode(resolvePresentationAssetMode(summary, presentationJobId))
+      setPresentationAssetMode(resolvePresentationAssetMode(summary, presentationId))
     }).catch((error) => {
       if (cancelled) return
       setPresentationWorkspace(null)
@@ -297,33 +305,53 @@ function FrontendFeedbackPanel({
       setStatus(`无法确认 PPT 项目图片目录：${describeError(error)}`)
     })
     return () => { cancelled = true }
-  }, [presentationJobId, sessionId, workspaceMode])
+  }, [presentationId, sessionId, workspaceMode])
 
   useEffect(() => {
-    if (presentationAssetMode !== 'legacy' || presentationJobId === null) {
+    if (workspaceMode !== 'presentation' || presentationId !== null || loadedUrl === null || !hasSession) return
+    let cancelled = false
+    const query = presentationQuery(sessionId, { url: loadedUrl })
+    void readApiJson<{ presentationId: string }>(fetch(
+      `${PRESENTATION_RESOLVE_PATH}?${query}`,
+      { cache: 'no-store' },
+    )).then((result) => {
+      if (cancelled || !isPresentationId(result.presentationId)) return
+      writeStoredValue(presentationStorageKey(sessionId), result.presentationId)
+      removeStoredValue(legacyPresentationJobStorageKey(sessionId))
+      setPresentationId(result.presentationId)
+      setStatus('已识别旧版 PPT，并为它补上固定 presentationId。正在重新连接预览与文件目录…')
+    }).catch(() => {
+      // Unmanaged HTML presentations remain previewable and annotatable, but
+      // direct source and image writes stay disabled without a safe identity.
+    })
+    return () => { cancelled = true }
+  }, [hasSession, loadedUrl, presentationId, sessionId, workspaceMode])
+
+  useEffect(() => {
+    if (presentationAssetMode !== 'legacy' || presentationId === null) {
       setAssetManifest(emptyPresentationAssetManifest())
       setShowAssetLibrary(false)
       return
     }
     let cancelled = false
-    void loadPresentationAssets(sessionId, presentationJobId).then((manifest) => {
+    void loadPresentationAssets(sessionId, presentationId).then((manifest) => {
       if (!cancelled) setAssetManifest(manifest)
     }).catch((assetError) => {
       if (!cancelled) setStatus(`读取图片素材库失败：${describeError(assetError)}`)
     })
     return () => { cancelled = true }
-  }, [presentationAssetMode, presentationJobId, sessionId])
+  }, [presentationAssetMode, presentationId, sessionId])
 
   const postAssetBindings = useCallback((manifest: PresentationAssetManifest) => {
-    if (workspaceMode !== 'presentation' || presentationAssetMode !== 'legacy' || presentationJobId === null) return
+    if (workspaceMode !== 'presentation' || presentationAssetMode !== 'legacy' || presentationId === null) return
     iframeRef.current?.contentWindow?.postMessage({
       type: 'dsh-pagecraft-asset-bindings',
       bindings: manifest.bindings.map(binding => ({
         ...binding,
-        url: presentationAssetUrl(sessionId, presentationJobId, binding.assetId),
+        url: presentationAssetUrl(sessionId, presentationId, binding.assetId),
       })),
     }, '*')
-  }, [presentationAssetMode, presentationJobId, sessionId, workspaceMode])
+  }, [presentationAssetMode, presentationId, sessionId, workspaceMode])
 
   useEffect(() => {
     postAssetBindings(assetManifest)
@@ -340,6 +368,7 @@ function FrontendFeedbackPanel({
     setSelectionMode(null)
     setAreaOperation('insert')
     setComment('')
+    setPreviewPresentationId(null)
     if (workspaceMode === 'presentation') {
       setSlides([])
       setActiveSlideId(null)
@@ -390,14 +419,22 @@ function FrontendFeedbackPanel({
     setStatus(`正在打开图片槽位：${nextImageSlot.label ?? nextImageSlot.slotId}…`)
 
     try {
+      if (presentationId === null) {
+        setStatus('当前预览没有绑定演示文稿 ID，无法确定图片应写入哪套 PPT。')
+        return
+      }
+      if (loadedUrl !== null && previewPresentationId !== presentationId) {
+        setStatus('预览页面的 presentationId 尚未校验或不一致，已禁止替换图片。')
+        return
+      }
       try {
         const summary = await readApiJson<PresentationWorkspaceSummary>(await fetch(
-          `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId)}`,
+          `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId, { presentationId })}`,
           { cache: 'no-store' },
         ))
         if (request !== imageSlotRequestRef.current) return
         setPresentationWorkspace(summary)
-        const nextMode = resolvePresentationAssetMode(summary, presentationJobId)
+        const nextMode = resolvePresentationAssetMode(summary, presentationId)
         setPresentationAssetMode(nextMode)
         if (nextMode === 'project') {
           setShowProjectAssetLibrary(true)
@@ -412,16 +449,16 @@ function FrontendFeedbackPanel({
         return
       }
 
-      if (presentationJobId !== null) {
+      if (presentationId !== null) {
         setShowAssetLibrary(true)
-        setStatus('当前 PPT 尚未迁移为本地项目；图片将使用兼容模式绑定到演示任务。')
+        setStatus('当前 PPT 尚未迁移为标准本地目录；图片将使用旧版兼容方式绑定。')
         return
       }
-      setStatus('当前目录不是可写入的 PageCraft PPT 项目，也没有关联的演示任务。')
+      setStatus('当前目录不是可写入的 PageCraft PPT，也没有关联的演示文稿。')
     } finally {
       if (request === imageSlotRequestRef.current) setOpeningImageSlot(false)
     }
-  }, [presentationJobId, sessionId, workspaceMode])
+  }, [loadedUrl, presentationId, previewPresentationId, sessionId, workspaceMode])
 
   useEffect(() => {
     const wasRunning = previousAgentRunningRef.current
@@ -439,6 +476,16 @@ function FrontendFeedbackPanel({
     const listener = (event: MessageEvent<FeedbackMessage>) => {
       if (event.source !== iframeRef.current?.contentWindow) return
       if (event.data?.type === 'dsh-frontend-feedback-ready') {
+        const nextPresentationId = isPresentationId(event.data.presentationId)
+          ? event.data.presentationId
+          : null
+        setPreviewPresentationId(nextPresentationId)
+        if (workspaceMode === 'presentation' && presentationId !== null && nextPresentationId !== presentationId) {
+          setShowSourceWorkspace(false)
+          setShowProjectAssetLibrary(false)
+          setStatus('预览页面和文件工作区的 presentationId 不一致，已禁止直接修改。请重新打开该 PPT。')
+          return
+        }
         if (workspaceMode === 'presentation') {
           iframeRef.current?.contentWindow?.postMessage({
             type: 'dsh-frontend-feedback-request-deck-state',
@@ -525,10 +572,75 @@ function FrontendFeedbackPanel({
     }
     window.addEventListener('message', listener)
     return () => window.removeEventListener('message', listener)
-  }, [assetManifest, navigatePreview, openImageSlot, postAssetBindings, selection, workspaceMode])
+  }, [assetManifest, navigatePreview, openImageSlot, postAssetBindings, presentationId, selection, workspaceMode])
 
   const openPreview = () => {
+    const nextUrl = normalizePreviewUrl(urlDraft)
+    if (workspaceMode === 'presentation' && nextUrl !== null && nextUrl !== loadedUrl) {
+      removeStoredValue(presentationStorageKey(sessionId))
+      removeStoredValue(legacyPresentationJobStorageKey(sessionId))
+      setPresentationId(null)
+      setPresentationWorkspace(null)
+      setPresentationAssetMode('unavailable')
+      setShowProjectAssetLibrary(false)
+      setShowSourceWorkspace(false)
+    }
     navigatePreview(urlDraft)
+  }
+
+  async function openFiles(): Promise<void> {
+    if (workspaceMode !== 'presentation') {
+      setShowSourceWorkspace(true)
+      return
+    }
+    if (presentationId === null) {
+      setStatus('当前页面没有绑定 presentationId，为避免改错文件，不能打开 PPT 源码。')
+      return
+    }
+    if (loadedUrl !== null && previewPresentationId !== presentationId) {
+      setStatus('预览页面与当前 presentationId 尚未完成身份核对，为避免改错文件，已停止打开源码。')
+      return
+    }
+    try {
+      const summary = await readApiJson<PresentationWorkspaceSummary>(await fetch(
+        `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId, { presentationId })}`,
+        { cache: 'no-store' },
+      ))
+      setPresentationWorkspace(summary)
+      if (!summary.available || summary.manifest?.presentationId !== presentationId) {
+        setStatus(summary.reason ?? '该演示文稿的源码工作区尚未就绪。')
+        return
+      }
+      setShowSourceWorkspace(true)
+    } catch (error) {
+      setStatus(`打开 PPT 源码失败：${describeError(error)}`)
+    }
+  }
+
+  async function openProjectAssets(): Promise<void> {
+    if (presentationId === null) {
+      setStatus('当前页面没有绑定 presentationId，无法确定图片应保存到哪套 PPT。')
+      return
+    }
+    if (loadedUrl !== null && previewPresentationId !== presentationId) {
+      setStatus('预览页面与当前 presentationId 尚未完成身份核对，已停止打开图片目录。')
+      return
+    }
+    try {
+      const summary = await readApiJson<PresentationWorkspaceSummary>(await fetch(
+        `${PRESENTATION_WORKSPACE_PATH}?${presentationQuery(sessionId, { presentationId })}`,
+        { cache: 'no-store' },
+      ))
+      setPresentationWorkspace(summary)
+      const mode = resolvePresentationAssetMode(summary, presentationId)
+      setPresentationAssetMode(mode)
+      setSelectedImageSlot(null)
+      if (mode === 'project') setShowProjectAssetLibrary(true)
+      else if (mode === 'legacy') setShowAssetLibrary(true)
+      else setStatus(summary.reason ?? '该演示文稿的图片目录尚未就绪。')
+    } catch (error) {
+      setStatus(`打开 PPT 图片失败：${describeError(error)}`)
+    }
   }
 
   const postAnnotatorMode = (mode: SelectionMode | null) => {
@@ -698,11 +810,8 @@ function FrontendFeedbackPanel({
               <button
                 type="button"
                 disabled={!hasSession}
-                title={hasSession ? '管理保存在 PPT 项目目录中的图片素材' : '先创建会话后才能读取当前项目目录'}
-                onClick={() => {
-                  setSelectedImageSlot(null)
-                  setShowProjectAssetLibrary(true)
-                }}
+                title={hasSession ? '管理当前 presentationId 对应的图片素材' : '先创建会话后才能读取演示文稿'}
+                onClick={() => { void openProjectAssets() }}
                 style={{ ...styles.assetLibraryButton, ...(!hasSession ? styles.iconButtonDisabled : {}) }}
               >项目图片</button>
             </>
@@ -711,7 +820,7 @@ function FrontendFeedbackPanel({
             type="button"
             disabled={!hasSession}
             title={hasSession ? '打开与本地目录同步的文件工作区' : '先创建会话后才能读取当前项目目录'}
-            onClick={() => setShowSourceWorkspace(true)}
+            onClick={() => { void openFiles() }}
             style={{ ...styles.assetLibraryButton, ...(!hasSession ? styles.iconButtonDisabled : {}) }}
           >文件</button>
           <button
@@ -906,13 +1015,13 @@ function FrontendFeedbackPanel({
           onRequestOutline={requestPresentationOutline}
           onRequestGeneration={requestPresentationGeneration}
           onPreviewReady={(url) => navigatePreview(url, '演示文稿预览地址已就绪，正在打开…')}
-          onJobChange={setPresentationJobId}
+          onPresentationChange={setPresentationId}
         />
       ) : null}
-      {showAssetLibrary && presentationJobId !== null ? (
+      {showAssetLibrary && presentationId !== null ? (
         <AssetLibraryDialog
           sessionId={sessionId}
-          jobId={presentationJobId}
+          presentationId={presentationId}
           manifest={assetManifest}
           selectedSlot={selectedImageSlot}
           onClose={() => {
@@ -957,9 +1066,10 @@ function FrontendFeedbackPanel({
           <div style={styles.imageSlotLoadingCard}>正在打开图片素材…</div>
         </div>
       ) : null}
-      {showProjectAssetLibrary ? (
+      {showProjectAssetLibrary && presentationId !== null ? (
         <ProjectAssetLibraryDialog
           sessionId={sessionId}
+          presentationId={presentationId}
           selectedSlot={selectedImageSlot}
           onClose={() => {
             setShowProjectAssetLibrary(false)

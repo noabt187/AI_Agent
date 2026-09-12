@@ -69,12 +69,14 @@ Area annotations support three explicit layout intents:
 1. Switch PageCraft to **Presentation** and choose **Generate from document**.
 2. Upload a PDF, DOCX, Markdown, or TXT file, or paste source text. Add the intended audience, target slide count, and speaking goal.
 3. PageCraft extracts the source into the workspace. The Agent creates an editable outline first; reorder, rename, add, or remove slides before approving it.
-4. After approval, the Agent generates slides in small batches. PageCraft persists the job, displays per-slide progress, and opens the preview URL as soon as it is available.
+4. After approval, the Agent generates slides in small batches. PageCraft persists the presentation, displays per-slide progress, and opens the preview URL as soon as it is available.
 5. PageCraft discovers the rendered slides and lets you refine each one with DOM or adjustable-region annotations.
 6. Open **Project images**, or click a generated image slot in the preview, to upload PNG, JPEG, WebP, or GIF files. Choose `cover` or `contain`, adjust the focal point, and save the result into the project.
 7. Open **Files** to browse the deck's real on-disk structure. Edit the canonical `deck.json`, renderer, and theme beside a live preview; save with `Ctrl+S`, resolve Agent conflicts explicitly, restore a recent version, or directly change selected slide text.
 
-Imported documents, outlines, and generation status stay under `.pagecraft/presentations/`; editable deck source normally lives under `src/presentation/`, while user-managed images live under `public/pagecraft-assets/`. A small `pagecraft-presentation.json` manifest describes the deck data and managed image locations; it does not rearrange the file Explorer. Image files remain in their physical directories, are content-deduplicated, and cannot be deleted while a slide still references them. Because the image reference is stored in the project, the PageCraft preview and a normal browser tab render the same result.
+Each deck receives one permanent `presentationId` and owns exactly one directory: `.pagecraft/presentations/<presentationId>/`. Its source document, outline, generation state, canonical `deck.json`, renderer, theme, images, and per-deck `pagecraft.json` manifest stay together in that directory. The preview, file workspace, and image library all carry the same ID and refuse to edit a different deck, so several presentations can safely coexist in one Harness workspace. For an older deck, PageCraft reuses its existing `presentation-*` directory name as the ID, can recognize it from its saved preview URL, and creates the missing per-deck manifest automatically. Existing `jobId` fields are read only for this migration; new data uses `presentationId`.
+
+Images remain real files under the deck's `assets/` directory, are content-deduplicated, and cannot be deleted while a slide still references them. Migrated decks that use the old generated preview server retain its existing public asset directory so their browser URL does not break. Since the image reference is written into the canonical `deck.json`, PageCraft and a normal browser tab render the same result.
 
 ## What the Agent receives
 
