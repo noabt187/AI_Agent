@@ -1,345 +1,144 @@
-# AI Agent — 端到端全栈开发智能体
+# AI Agent
 
-## 项目简介
+### 用自然语言开发，用真实界面迭代。
 
-本项目是一个**端到端 AI 编程 Agent 系统**，用户通过自然语言描述需求，Agent 自主完成代码分析、需求理解、方案设计、代码编写、质量验证、GitHub PR 提交等全流程，实现从需求到交付的闭环。
+AI Agent 是一个面向真实代码仓库的编程智能体。它将需求分析、方案确认、代码修改、验证与 GitHub 交付串成一条工作流，并通过 **PageCraft** 把页面、DOM 元素和网页演示文稿带入同一个开发现场。
 
-核心能力：
+你可以描述需求，也可以直接在页面上指出「改这里」；最终修改落在自己的项目文件中。
 
-- **自主决策**：Agent 通过"观察→思考→行动"循环工作，自主选择工具和技能
-- **全栈开发**：支持前后端项目的端到端开发（git clone / 提交pr / fork仓库）
-- **代码验证**：两层验证机制（静态分析：npm run build 、 npm run test 等校验 + API 契约检查）
-- **GitHub 集成**：支持 Fork、Clone、Commit、Push、Create PR 的完整 Git 工作流
-- **流式输出**：基于 SSE 的实时流式响应，前端实时展示 Agent 思考过程
-- **Web 控制台**：现代化 Web UI，支持会话管理、记忆管理、Skill 管理
-- **DSH 插件架构**：基于 Cordis 的 profile/bundle/plugin 组合，插件可注册路由、Skill、Tool、会话能力和浏览器 Slot
-- **PageCraft 可视化评注**：通过同一份 `dsh-frontend-feedback` 插件包提供页面预览、DOM/区域评注、源码工作区和演示文稿工作流
-- **记忆系统**：记忆分层设计，分为项目记忆和全局记忆，同时记忆支持模型自动生成和用户手写注入
-- **上下文压缩**：自动检测 token 用量，超阈值时压缩上下文
+[快速开始](#快速开始) · [PageCraft 使用指南](plugins/dsh-frontend-feedback/README.zh-CN.md) · [架构说明](docs/architecture.md) · [开发指南](docs/development.md)
 
-## DSH 兼容插件架构
+<!-- SCREENSHOT:workbench -->
+![AI Agent 工作台：项目会话、开发方案与任务状态](docs/screenshots/01-workbench.png)
 
-网页与 CLI 的普通新请求会建立当前任务，不继承旧方案的写权限；历史和已执行结果保留。任务等待补充信息时，回答会修订当前任务版本。确认、修改方案和继续任务均绑定任务及方案版本；旧页面确认、重复确认或已排队但目录/方案变化的请求会被拒绝。带新约束的“确认”应作为新请求或方案修改提交。
+## 让 Agent 看见你真正想改的地方
 
-网页使用停止按钮暂停当前运行，保留后继排队请求。CLI 的 Esc 同样暂停并返回输入循环。明确输入“继续”或点击“继续任务”可恢复当前任务；只有同任务、同版本、同目录的已批准方案可恢复其写权限。“取消”结束当前任务，历史保留；取消待确认方案则暂停任务。网页 Esc 只属于所在界面，不停止 Agent。“本轮运行结束”不等于“任务完成”：等待补充、等待确认、暂停和任务完成分别显示。
+「把那个卡片挪一下」不必再靠反复解释。
 
-普通 `/api/sessions/:id/stream` 的 `{ prompt }` 契约及 PageCraft `session.prompt(content, 'queue')` 不变。宿主界面可附加 `control: { kind: 'confirm' | 'revise', taskId, taskRevision, confirmationId }`，确认候选时额外传精确 `selection`；继续使用 `{ kind: 'resume', taskId, taskRevision }`。`DELETE /pending-confirm` 需提交 `{ expected: { taskId, taskRevision, confirmationId } }`。接收前的版本冲突返回 409、非法控制返回 400；已开始流式响应的排队请求若过期，则发送错误事件并将该运行持久化为 failed。
+在 PageCraft 中打开本地页面，点击真实 DOM 元素，或在空白处框选一个区域，再写下修改要求。插件会把元素选择器、容器信息、位置尺寸和布局意图组织成结构化评注，交给当前 Agent 定位源码、完成修改。
 
-AI Agent 现在使用与 DeepSeek Harness 同风格的 Cordis 插件宿主。一个 profile 由 bundle 的 `cordis.patch.yml` 与用户覆写层组成；安装包的 `dsh.bundle.patch` 会自动加入 profile，`dsh.client` 产物会由宿主生成清单并在浏览器中激活。
+- **选中已有元素**：调整标题、按钮、卡片和页面布局。
+- **框选尚不存在的内容**：明确新增区域，并区分插入、覆盖、替换。
+- **多条意见一次提交**：将多个修改点加入评注队列，减少来回描述。
+- **接着上次继续**：保留预览地址、选区、评论和未发送的队列。
 
-仓库内的 [`dsh-frontend-feedback`](plugins/dsh-frontend-feedback/README.md) 就是同一份 PageCraft 包：它既能安装到 DeepSeek Harness，也能原样安装到本 AI Agent，不需要 AI Agent 专用分支或适配代码。
+> 例如：选中统计卡片，写下「数字加大，单位放在右下角」；再框选下方空白，补充「在这里新增趋势图，与上方卡片对齐」。
 
-### 命令行安装 PageCraft
+<!-- SCREENSHOT:dom-feedback -->
+![PageCraft DOM 评注：选中 Conduit 页面标题，显示元素路径与评注输入区](docs/screenshots/02-dom-feedback.png)
 
-本地开发使用 `link:`，修改 PageCraft 后无需重新发布：
+## 从资料到演示文稿，再精修到每一页
 
-```powershell
-npm run ai-agent -- plugin --profile web add "link:D:\project\AI_Agent\plugins\dsh-frontend-feedback"
-npm run ai-agent -- plugin --profile web list
-npm run ai-agent -- --profile web --dump-config
-```
+PageCraft 不止用于改网页，也能把文档变成可继续编辑的**网页式演示文稿**。
 
-如果 PageCraft 已发布到 npm，可直接按包名和版本安装：
+上传 PDF、DOCX、Markdown、TXT，或粘贴资料，说明观众、页数和演讲目标。先得到可编辑的目录，调整标题、顺序和内容后，再确认逐页生成。
 
-```powershell
-npm run ai-agent -- plugin --profile web add dsh-frontend-feedback@0.3.0
-npm run ai-agent -- plugin --profile web update dsh-frontend-feedback
-npm run ai-agent -- plugin --profile web remove dsh-frontend-feedback
-```
+生成不是终点：
 
-插件被视为可信本地代码：安装脚本和 Node/浏览器代码可以执行，并可在授权工作目录上注册路由、Skill 与 Tool。请只安装你信任的包。profile 默认位于 `~/.ai-agent/profiles/<name>`，可用 `AI_AGENT_HOME` 改变根目录。
+- **逐页预览与评注**：在幻灯片上继续选择元素、框选区域，反馈会携带所属页面信息。
+- **图片真正写入项目**：上传配图、替换图片槽位、调整裁剪与焦点，不只是临时覆盖预览。
+- **保留可编辑源文件**：目录、生成状态、`deck.json`、渲染文件和素材持续保存在本地。
+- **多套文稿分别管理**：每套文稿使用独立 ID 与目录，预览、源码和图片绑定同一套文稿。
 
-## 依赖环境
+<!-- SCREENSHOT:presentation -->
+![PageCraft 演示文稿：五页课堂汇报的页面导航、图表与逐页元素选择](docs/screenshots/03-presentation.png)
 
-| 依赖 | 版本要求 | 说明 |
-|------|---------|------|
-| Node.js | ≥ 22.x | 运行环境 |
-| npm | ≥ 9.x | 包管理 |
-| pnpm | ≥ 9.x | profile 插件安装与更新 |
-| Git | ≥ 2.x | 版本控制（Clone / PR / Commit / Fork 功能需要） |
-| GitHub CLI (`gh`) | ≥ 2.x | GitHub 集成（Fork / PR 功能需要，需登录 `gh auth login`） |
+*演示内容为人工构造的模拟调研数据，不代表真实校园调研结果。*
 
-**额外要求**：
-- LLM API Key（OpenAI 兼容接口）
-- 现代浏览器（Chrome / Edge / Firefox，用于 Web 控制台）
+> 当前产物是 HTML/React 网页幻灯片，不是原生 `.pptx` 文件；PPTX/PDF 导出尚未提供。扫描版 PDF 需要先进行 OCR。
 
-## 启动步骤
+## 预览、源码和手动编辑，使用同一份文件
 
-### 1. 克隆项目并安装依赖
+PageCraft 的文件工作区直接打开项目的真实目录。你在这里、外部编辑器或 Agent 中修改的，是同一份代码。
+
+一侧看文件与源码，另一侧看页面结果；保存时检查磁盘版本，遇到并发修改明确提示冲突。未保存草稿可恢复，近期文件版本可回看。
+
+简单的文案调整也不必发起一轮模型对话：选择页面文字并输入新内容，PageCraft 会尝试定位唯一、可信的本地源码位置，写入后刷新验证。无法明确定位的动态内容或歧义文本会被拒绝，不会猜测修改。
+
+<!-- SCREENSHOT:source-workspace -->
+![PageCraft 文件工作区：真实目录、源码编辑器与实时预览](docs/screenshots/04-source-workspace.png)
+
+## 自动推进开发，把关键决定留给你
+
+AI Agent 的工作流覆盖需求分析、方案设计、代码修改、验证与 PR 提交。Agent 可以调用文件检索、代码验证、仓库操作等工具，并按任务加载对应 Skill。
+
+你始终可以看见任务所处阶段，并决定下一步：
+
+- **先看方案，再授权执行**：确认绑定当前任务及方案版本，旧确认不能直接授权新方案。
+- **插件里也能处理确认**：PageCraft 打开时，宿主的确认和补充信息面板仍可在上层展示，不必退出插件寻找消息。
+- **暂停与完成分开表达**：停止当前运行不会清空历史，也不会自动回滚文件；需要时可以明确继续原任务。
+- **保留项目上下文**：项目记忆、全局记忆与上下文压缩共同支持持续迭代，工具调用和响应以流式方式展示。
+
+GitHub 交付支持 Fork、Clone、提交改动和创建 PR；使用相关能力前，需要配置仓库并登录 GitHub CLI。
+
+## 同一个 PageCraft，两个插件宿主
+
+AI Agent 采用与 **DeepSeek Harness（DSH）** 同风格的 Cordis 插件架构。仓库内的 `dsh-frontend-feedback` 就是 PageCraft 插件包，可以原样装入 DSH 或本项目，无需维护 AI Agent 专用的插件分支。
+
+宿主负责会话、运行队列、任务授权与交互；插件通过标准扩展点提供工具、Skill、服务端路由和浏览器界面。PageCraft 的预览与评注能力因此可以独立迭代。
+
+插件通过命令行管理，不需要安装管理页面。参见 [架构说明](docs/architecture.md)。
+
+## 快速开始
+
+需要 **Node.js 22+、npm 9+、Git**，以及支持工具调用的 OpenAI 兼容模型接口。安装插件还需要 **pnpm 9+**；Fork/PR 功能需要 **GitHub CLI（`gh`）**。
+
+### 1. 安装与配置
 
 ```bash
-git clone https://github.com/noabt187/AI_Agent
-cd <project-dir>
+git clone https://github.com/noabt187/AI_Agent.git
+cd AI_Agent
 npm install
 ```
 
-### 2. 配置 API Key
-
-```bash
-cp config/model.example.json config/model.json
-```
-
-编辑 `config/model.json`，填入你的 API Key（详见 [配置说明](#配置说明)）。
-
-### 3. 安装 PageCraft（可选）
-
-执行上面的 `plugin --profile web add ...` 命令。不安装 PageCraft 时，对话、记忆、监控、仓库和 Skill 管理仍可正常使用。
-
-### 4. 启动开发环境
-
-```bash
-# 同时启动后端服务和前端开发服务器
-npm run dev
-```
-
-- 后端服务：`http://localhost:3001`
-- 前端页面：`http://localhost:5173`
-
-在浏览器打开 `http://localhost:5173`，即可开始使用。
-
-### 5. 命令行模式（可选）
-
-```bash
-npm run orchestrator
-```
-
-进入交互式命令行模式，直接输入需求与 Agent 对话。按 `ESC` 终止当前操作，输入 `/exit` 退出。如需直接启动指定 profile 的 Web 宿主：
-
-```powershell
-npm run ai-agent -- --profile web
-```
-
-## 目录结构
-
-```
-project_code/
-├── config/                         # 配置文件目录
-│   ├── model.json                  # [需手动创建] LLM 模型与 API Key 配置
-│   └── app.json                    # [可选] 服务端口配置
-├── src/                            # 后端源码（TypeScript）
-│   ├── config/                     # 配置加载模块
-│   │   ├── appConfig.ts            # 应用配置（端口等）
-│   │   └── modelConfig.ts          # 模型配置加载
-│   ├── context/                    # 上下文管理
-│   │   ├── contextCompressor.ts    # 上下文压缩
-│   │   ├── modelConfig.ts          # 模型配置
-│   │   └── monitor.ts              # 监控与指标统计
-│   ├── llm/                        # LLM 客户端层
-│   │   ├── index.ts                # 客户端工厂
-│   │   ├── types.ts                # 类型定义
-│   │   ├── openaiClient.ts         # OpenAI 兼容客户端（含 token 统计）
-│   │   ├── anthropicClient.ts      # Anthropic 客户端
-│   │   ├── monitoredClient.ts      # 监控包装器（记录 token / 延迟）
-│   │   └── sse.ts                  # SSE 流式解析
-│   ├── memory/                     # 记忆系统
-│   │   └── projectMemory.ts        # 项目记忆存储与召回
-│   ├── orchestrator/               # 核心编排层
-│   │   ├── agent.ts                # Agent 主循环（system prompt + 工具调用）
-│   │   ├── orchestrator.ts         # 顶层编排器（状态管理 + 记忆 + 压缩）
-│   │   └── types.ts                # 世界状态类型
-│   ├── server/                     # Web 后端
-│   │   ├── server.ts               # HTTP 服务入口
-│   │   ├── coreRoutes.ts           # 内置 API 的 Cordis 路由插件
-│   │   ├── sessionApi.ts           # 会话管理 API
-│   │   ├── promptQueue.ts          # 按会话隔离的 FIFO 输入队列
-│   │   ├── stream.ts               # SSE 流式输出
-│   │   ├── fileBrowser.ts          # 文件系统浏览 API
-│   │   └── metrics.ts              # 指标统计 API
-│   ├── plugins/                    # DSH 兼容插件宿主
-│   │   ├── profile.ts              # profile/bundle 组合
-│   │   ├── manager.ts              # pnpm 命令行管理
-│   │   ├── host.ts                 # Cordis Loader 启动与生命周期
-│   │   ├── clientModules.ts        # dsh.client 清单与产物分发
-│   │   └── services/               # Skill、Tool、Session 宿主服务
-│   ├── skills/                     # Agent 技能库（Markdown 格式）
-│   │   ├── index.ts                # 技能加载器
-│   │   ├── registry.ts             # 技能注册
-│   │   ├── requirement-analysis.md # 需求分析技能
-│   │   ├── solution-design.md      # 方案设计技能
-│   │   ├── code-generation.md      # 代码生成与验证技能
-│   │   ├── pull-request.md         # PR 提交技能
-│   │   ├── repository-tools.md     # 仓库工具技能（Fork / Clone）
-│   │   └── auto-memory.md          # 自动记忆技能
-│   ├── state/                      # 状态持久化
-│   │   └── sessionStore.ts         # 会话消息存储
-│   ├── tools/                      # Agent 工具集
-│   │   ├── index.ts                # 工具注册表 + 权限控制
-│   │   ├── fileRead.ts             # 文件读取工具（readTextFile, listDirectory, searchFiles, searchContent）
-│   │   ├── fileWrite.ts            # 文件写入工具（writeFile, deleteFile）
-│   │   ├── verifyCode.ts           # 代码验证工具（静态分析 + API 契约检查）
-│   │   ├── createPullRequest.ts    # GitHub PR 创建工具
-│   │   ├── repositoryTools.ts      # Fork / Clone 仓库工具
-│   │   ├── compressContext.ts      # 上下文压缩工具
-│   │   └── writeMemory.ts          # 记忆写入工具
-│   ├── types/                      # 共享类型
-│   │   └── index.ts
-│   ├── utils/                      # 工具函数
-│   │   ├── index.ts                # UUID、URL 拼接、文本处理
-│   │   ├── command.ts              # 命令执行器（execFile 封装）
-│   │   ├── git.ts                  # Git 操作库（runGit, commit, push, clone, 分支管理等）
-│   │   ├── gh.ts                   # GitHub CLI 操作库（runGh, forkRepo, createPR, parseRepoUrl 等）
-│   │   ├── pathUtils.ts            # 路径校验
-│   │   └── fileUtils.ts            # 文件工具
-│   └── QueryEngine.ts              # 查询引擎（LLM 调用 + 重试 + 流式输出）
-├── web/                            # 前端源码（React + Vite + TypeScript）
-│   ├── src/
-│   │   ├── App.tsx                 # 主应用组件（会话管理、流式交互、确认栏）
-│   │   ├── api.ts                  # 后端 API 客户端
-│   │   ├── messageContent.ts       # 消息内容渲染
-│   │   ├── plugins/                # 浏览器模块、Slot、Session 兼容层
-│   │   ├── styles.css              # 全局样式
-│   │   └── main.tsx                # 入口
-│   ├── index.html
-│   ├── package.json
-│   └── tsconfig.json
-├── scripts/                        # 辅助脚本
-│   ├── ai-agent.ts                 # profile 启动与插件命令行
-│   ├── orchestrator-chat.ts        # 命令行 Agent 入口
-│   └── cleanup-dev-ports.mjs       # 开发端口清理
-├── bundles/                        # 内置 DSH profile bundle
-├── plugins/                        # 本地插件（包含 PageCraft）
-├── state/                          # [运行时] 会话状态持久化目录
-├── package.json                    # 根 package.json（npm workspace）
-└── tsconfig.json                   # TypeScript 配置
-```
-
-## 配置说明
-
-### API Key 配置（config/model.json）
-
-在项目根目录下创建 `config/model.json`：
-
-**OpenAI 兼容接口**（推荐，支持 DeepSeek、豆包、OpenAI 等）：
+将 [`config/model.example.json`](config/model.example.json) 复制为 `config/model.json`，填写自己的模型配置：
 
 ```json
 {
   "provider": "openai",
   "base_url": "https://api.deepseek.com/v1",
-  "api_key": "sk-your-api-key-here",
+  "api_key": "你的 API Key",
   "model": "deepseek-chat"
 }
 ```
 
-**Anthropic 接口**：
+以上地址与模型名仅为配置示例，请以你所用服务实际支持的值为准。`config/model.json` 已加入 Git 忽略规则，请勿公开密钥。当前建议使用 OpenAI 兼容协议；Anthropic 原生工具调用适配尚未完成。
 
-暂且最好不要使用Anthropic接口，没有Anthropic接口的tool calls适配，用Anthropic接口可能会存在问题。
+### 2. 安装 PageCraft
 
-当前只是提供了Anthropic接口，方便之后扩展使用，并没有真正兼容适配。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `provider` | `"openai"` | LLM 提供商类型 |
-| `base_url` | `string` | API 端点地址 |
-| `api_key` | `string` | API 密钥，**请勿提交到 Git** |
-| `model` | `string` | 模型名称 |
-
-### 端口配置（config/app.json，可选）
-
-```json
-{
-  "serverPort": 3001,
-  "webPort": 5173
-}
-```
-
-也可通过环境变量配置：
+在项目根目录执行；仓库已包含插件构建产物：
 
 ```bash
-# Windows PowerShell
-$env:AGENT_SERVER_PORT=4000
-$env:AGENT_WEB_PORT=8080
-
-# Linux / macOS
-export AGENT_SERVER_PORT=4000
-export AGENT_WEB_PORT=8080
+npm run ai-agent -- plugin --profile web add "link:./plugins/dsh-frontend-feedback"
+npm run ai-agent -- plugin --profile web list
 ```
 
-### GitHub CLI 配置（Fork / PR 功能需要）
+不安装 PageCraft 也可以使用 Agent 对话、仓库、记忆与 Skill 管理。
 
-若要使用Fork/PR/clone等功能必须要安装Github CLI
+### 3. 启动
 
 ```bash
-# 安装 GitHub CLI（Windows）
-winget install --id GitHub.cli
-
-# 登录
-gh auth login
+npm run dev
 ```
 
-如果 `gh` 不在 PATH 中，可先验证安装路径（以 PowerShell 为例）：
-```powershell
-Get-Command gh | Format-List Source
-```
-或检查常见安装目录：
-- `%USERPROFILE%\bin\gh.exe`
-- `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe`
-- `%ProgramFiles%\GitHub CLI\gh.exe`
+默认打开 [http://localhost:5173](http://localhost:5173)，后端端口为 `3001`。在界面中选择要操作的项目目录，新建会话，即可提出第一个需求：
 
-### npm 工作区
+> 先分析这个项目的结构，找出首页和主要组件。不要修改文件，给我一个可以确认的优化方案。
 
-项目使用 npm workspace 管理前后端依赖：
+进入 PageCraft 后，请填写**目标项目自己的预览地址**，不要填 AI Agent 控制台的地址。开发脚本会清理其使用的端口，建议目标项目使用不同端口。
 
-```bash
-npm install          # 安装所有依赖（根 + web 工作区）
-```
+模型配置、端口调整、GitHub 登录与开发命令见 [开发指南](docs/development.md)。
 
-## Agent 工具清单
+## 使用边界
 
-| 工具 | 权限 | 说明 |
-|------|------|------|
-| `readTextFile` | read | 读取文件内容 |
-| `listDirectory` | read | 列出目录结构 |
-| `searchFiles` | read | 按文件名模式搜索 |
-| `searchContent` | read | 按关键词搜索代码内容 |
-| `verifyCode` | read | 代码验证（tsc / lint / build / test + API 契约检查） |
-| `compressContext` | read | 压缩会话上下文 |
-| `writeFile` | write | 创建或覆盖文件（需用户确认） |
-| `deleteFile` | write | 删除文件（需用户确认） |
-| `createPullRequest` | write | 提交改动并创建 GitHub PR（需用户确认） |
-| `forkRepository` | write | Fork GitHub 仓库（需用户确认） |
-| `cloneRepository` | write | Clone Git 仓库到本地（需用户确认） |
-| `writeMemory` | memory | 写入持久化记忆（需先加载 auto-memory 技能） |
+- 面向本地开发及可信项目。插件是有文件系统和网络访问能力的本地代码，不是安全沙箱；只安装可信插件、预览可信地址，不要直接将开发服务暴露到公网。
+- DOM 评注依赖可加载的真实页面，不是单靠截图推断元素。登录状态、严格 CSP、跨域资源等可能限制代理预览。
+- 代码和演示内容由模型生成，质量依赖模型、上下文与目标项目；构建或测试通过不能替代人工审阅。建议在独立 Git 仓库或分支中操作，并检查改动范围。
+- PageCraft 的更多功能说明与限制见 [中文指南](plugins/dsh-frontend-feedback/README.zh-CN.md)。
 
-**写权限机制**：所有 `write` scope 的工具在执行前必须经过 `action: confirm, confirmType: allow_write` 流程，用户确认后才会执行。
+## 进一步了解
 
-## Agent 技能清单
-
-此为当前Agent内置的skill，用户也可在前端点击上传skill上传自己书写的skill
-
-| 技能 | 说明 |
-|------|------|
-| `requirement-analysis` | 需求分析指引 |
-| `solution-design` | 方案设计指引 |
-| `code-generation` | 代码生成与验证指引 |
-| `pull-request` | GitHub PR 提交流程 |
-| `repository-tools` | Fork / Clone 仓库流程 |
-| `auto-memory` | 自动记忆写入流程 |
-
-Agent 根据当前任务自动调用 `use_skill(skillName)` 加载对应技能的完整指引。
-
-## 开发命令
-
-```bash
-npm test              # 运行测试
-npm run build         # 编译 TypeScript
-npm run dev           # 启动开发环境（后端 + 前端）
-npm run dev:server    # 仅启动后端
-npm run dev:web       # 仅启动前端
-npm run ai-agent -- plugin --profile web list  # 查看 profile 插件
-npm run test:pagecraft-plugin                 # PageCraft 真实包兼容门
-npm run orchestrator  # 启动命令行 Agent
-```
-
-## 架构概览
-
-```
-用户输入 → Web 控制台 (React + 浏览器 Cordis)
-       → dsh.client 模块系统 → Slots / Browser Sessions → PageCraft
-       → Cordis WebServer → 内置 API + 插件路由
-       → Orchestrator (状态管理 + 记忆 + 压缩 + 会话 FIFO)
-         → Agent (system prompt + 工具调用循环)
-           → QueryEngine (LLM 调用 + 重试 + 流式输出)
-             → LLM Client (OpenAI / Anthropic)
-           → Cordis Tool Registry (内置 + 插件 + 权限检查)
-           → Cordis Skill Registry (内置 + 插件)
-```
+- [架构与任务交互](docs/architecture.md)：宿主与插件的职责、确认与运行状态。
+- [配置与开发](docs/development.md)：模型、端口、插件管理和验证命令。
+- [PageCraft](plugins/dsh-frontend-feedback/README.zh-CN.md)：DOM 评注、演示文稿、图片与文件工作区。
+- [截图准备说明](docs/screenshots/README.md)：为本项目首页补充真实界面截图。
