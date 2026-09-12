@@ -19,24 +19,24 @@ export const ANNOTATOR_SCRIPT = String.raw`
     return node;
   }
 
-  const elementOverlay = ui('div', 'element-overlay', 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #77b98b;background:rgba(119,185,139,.14);border-radius:5px;display:none;box-sizing:border-box');
+  const elementOverlay = ui('div', 'element-overlay', 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #8f8874;background:rgba(143,136,116,.16);border-radius:4px;display:none;box-sizing:border-box');
   const areaCapture = ui('div', 'area-capture', 'position:fixed;inset:0;z-index:2147483643;display:none;cursor:crosshair;touch-action:none;user-select:none;background:transparent');
-  const areaOverlay = ui('div', 'area-overlay', 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #73a9ff;background:rgba(78,135,230,.18);display:none;box-sizing:border-box;box-shadow:0 0 0 1px rgba(255,255,255,.72) inset;cursor:move;touch-action:none');
-  const guideX = ui('div', 'guide-x', 'position:fixed;top:0;bottom:0;z-index:2147483645;pointer-events:none;width:1px;background:#ffcb6b;display:none;box-shadow:0 0 0 1px rgba(0,0,0,.18)');
-  const guideY = ui('div', 'guide-y', 'position:fixed;left:0;right:0;z-index:2147483645;pointer-events:none;height:1px;background:#ffcb6b;display:none;box-shadow:0 0 0 1px rgba(0,0,0,.18)');
-  const measure = ui('div', 'measure', 'position:fixed;z-index:2147483646;pointer-events:none;display:none;padding:5px 7px;border-radius:6px;background:rgba(15,24,20,.92);color:#eef7f0;font:600 11px/1.3 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.28);white-space:nowrap');
-  const imageSlotOverlay = ui('div', 'image-slot-overlay', 'position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px dashed #88c99a;border-radius:7px;box-sizing:border-box;background:rgba(136,201,154,.08)');
-  const imageSlotBadge = ui('div', 'image-slot-badge', 'position:fixed;z-index:2147483645;pointer-events:none;display:none;padding:5px 8px;border-radius:6px;background:#eff9f1;color:#173d24;font:700 11px/1.2 system-ui,sans-serif;box-shadow:0 3px 12px rgba(0,0,0,.22);white-space:nowrap');
-  const areaActions = ui('div', 'area-actions', 'position:fixed;z-index:2147483647;display:none;align-items:center;gap:6px;padding:5px;border:1px solid rgba(255,255,255,.45);border-radius:9px;background:rgba(20,28,39,.94);box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 12px/1.2 system-ui,sans-serif;pointer-events:auto');
+  const areaOverlay = ui('div', 'area-overlay', 'position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #66788b;background:rgba(102,120,139,.16);display:none;box-sizing:border-box;box-shadow:0 0 0 1px rgba(255,255,255,.72) inset;cursor:move;touch-action:none');
+  const guideX = ui('div', 'guide-x', 'position:fixed;top:0;bottom:0;z-index:2147483645;pointer-events:none;width:1px;background:#a4433e;display:none;box-shadow:0 0 0 1px rgba(255,255,255,.55)');
+  const guideY = ui('div', 'guide-y', 'position:fixed;left:0;right:0;z-index:2147483645;pointer-events:none;height:1px;background:#a4433e;display:none;box-shadow:0 0 0 1px rgba(255,255,255,.55)');
+  const measure = ui('div', 'measure', 'position:fixed;z-index:2147483646;pointer-events:none;display:none;padding:5px 7px;border-radius:4px;background:rgba(44,43,39,.94);color:#fffef9;font:600 11px/1.3 system-ui,sans-serif;box-shadow:0 4px 16px rgba(48,43,33,.24);white-space:nowrap');
+  const imageSlotOverlay = ui('div', 'image-slot-overlay', 'position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px dashed #8f8874;border-radius:5px;box-sizing:border-box;background:rgba(143,136,116,.09)');
+  const imageSlotBadge = ui('div', 'image-slot-badge', 'position:fixed;z-index:2147483645;pointer-events:none;display:none;padding:5px 8px;border:1px solid #d8d3c6;border-radius:4px;background:#fffef9;color:#2c2b27;font:700 11px/1.2 system-ui,sans-serif;box-shadow:0 3px 12px rgba(48,43,33,.18);white-space:nowrap');
+  const areaActions = ui('div', 'area-actions', 'position:fixed;z-index:2147483647;display:none;align-items:center;gap:6px;padding:5px;border:1px solid #aaa28e;border-radius:6px;background:rgba(255,254,249,.96);box-shadow:0 8px 24px rgba(48,43,33,.2);font:600 12px/1.2 system-ui,sans-serif;pointer-events:auto');
   const confirmAreaButton = document.createElement('button');
   confirmAreaButton.type = 'button';
   confirmAreaButton.textContent = '确认选区';
-  confirmAreaButton.style.cssText = 'border:0;border-radius:6px;padding:7px 10px;background:#73a9ff;color:#10213b;font:700 12px/1 system-ui,sans-serif;cursor:pointer';
+  confirmAreaButton.style.cssText = 'border:0;border-radius:4px;padding:7px 10px;background:#3f423b;color:#fffef9;font:700 12px/1 system-ui,sans-serif;cursor:pointer';
   areaActions.appendChild(confirmAreaButton);
   const cancelAreaButton = document.createElement('button');
   cancelAreaButton.type = 'button';
   cancelAreaButton.textContent = '取消';
-  cancelAreaButton.style.cssText = 'border:1px solid rgba(255,255,255,.24);border-radius:6px;padding:6px 9px;background:transparent;color:#eef4ff;font:600 12px/1 system-ui,sans-serif;cursor:pointer';
+  cancelAreaButton.style.cssText = 'border:1px solid #d8d3c6;border-radius:4px;padding:6px 9px;background:transparent;color:#5f5b52;font:600 12px/1 system-ui,sans-serif;cursor:pointer';
   areaActions.appendChild(cancelAreaButton);
 
   const handleStyles = {
@@ -53,7 +53,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
     const node = document.createElement('span');
     node.dataset.dshResizeHandle = handle;
     node.setAttribute('aria-hidden', 'true');
-    node.style.cssText = 'position:absolute;z-index:2;width:11px;height:11px;border:2px solid #4f82d3;border-radius:3px;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3);transform:translate(-50%,-50%);touch-action:none;' + position;
+    node.style.cssText = 'position:absolute;z-index:2;width:11px;height:11px;border:2px solid #66788b;border-radius:2px;background:#fffef9;box-shadow:0 1px 4px rgba(48,43,33,.25);transform:translate(-50%,-50%);touch-action:none;' + position;
     areaOverlay.appendChild(node);
   }
   let mode = null;
@@ -248,7 +248,7 @@ export const ANNOTATOR_SCRIPT = String.raw`
       if (image instanceof HTMLImageElement) restoreImage(image);
       slot.removeAttribute('data-pagecraft-asset-id');
       slot.setAttribute('data-pagecraft-slot-state', 'empty');
-      slot.style.outline = '2px dashed rgba(136, 201, 154, .72)';
+      slot.style.outline = '2px dashed rgba(143, 136, 116, .78)';
       slot.style.outlineOffset = '-2px';
       slot.style.cursor = 'pointer';
       if (slotState.title === null) slot.setAttribute('title', '点击选择图片素材');

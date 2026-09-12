@@ -6,9 +6,9 @@ import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
-import { oneDark } from '@codemirror/theme-one-dark'
 import { useLayoutEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
+import { inkTheme, inkTypography } from './theme.ts'
 
 const externalChange = Annotation.define<boolean>()
 function language(path: string) {
@@ -39,7 +39,7 @@ export function CodeEditor(props: CodeEditorProps): ReactElement {
   const reset = useRef(props.resetRevision)
   const editable = useRef(new Compartment())
   const extensions = () => [
-    basicSetup, language(current.current.path), oneDark,
+    basicSetup, language(current.current.path),
     editable.current.of([EditorState.readOnly.of(current.current.readOnly), EditorView.editable.of(!current.current.readOnly)]),
     keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => { if (!current.current.readOnly) current.current.onSave(); return true } }]),
     EditorView.updateListener.of(update => {
@@ -47,7 +47,15 @@ export function CodeEditor(props: CodeEditorProps): ReactElement {
         current.current.onChange(update.state.doc.toString())
       }
     }),
-    EditorView.theme({ '&': { height: '100%', fontSize: '12px' }, '.cm-scroller': { overflow: 'auto', fontFamily: 'JetBrains Mono, Consolas, ui-monospace, monospace' }, '.cm-content': { padding: '12px 0' } }),
+    EditorView.theme({
+      '&': { height: '100%', color: inkTheme.text, backgroundColor: inkTheme.surface, fontSize: '12px' },
+      '.cm-scroller': { overflow: 'auto', fontFamily: inkTypography.mono },
+      '.cm-content': { padding: '12px 0', caretColor: inkTheme.cinnabar },
+      '.cm-gutters': { color: inkTheme.muted, backgroundColor: inkTheme.surfaceSoft, borderRight: `1px solid ${inkTheme.line}` },
+      '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: inkTheme.accentSoft },
+      '&.cm-focused .cm-cursor': { borderLeftColor: inkTheme.cinnabar },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: inkTheme.surfaceMuted },
+    }),
   ]
   useLayoutEffect(() => {
     if (host.current === null) return

@@ -20,6 +20,7 @@ import type {
   PresentationSlideSummary,
   PresentationSourceSummary,
 } from '../presentation.ts'
+import { inkTheme, inkTypography } from './theme.ts'
 
 interface PresentationDocumentDialogProps {
   sessionId: string
@@ -39,58 +40,58 @@ interface SlideRailProps {
 }
 
 const styles: Record<string, CSSProperties> = {
-  rail: { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid #2c3d34', background: '#121816' },
-  railHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '13px 11px', borderBottom: '1px solid #2c3d34' },
-  railTitle: { color: '#edf5ef', fontSize: 12 },
-  addButton: { height: 28, padding: '0 9px', border: '1px solid #2c3d34', borderRadius: 7, color: '#102016', background: '#a9e2b7', cursor: 'pointer', fontSize: 11, fontWeight: 800 },
+  rail: { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${inkTheme.line}`, background: inkTheme.surfaceSoft },
+  railHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '13px 11px', borderBottom: `1px solid ${inkTheme.line}` },
+  railTitle: { color: inkTheme.text, fontFamily: inkTypography.serif, fontSize: 13, letterSpacing: '.04em' },
+  addButton: { height: 28, padding: '0 9px', border: `1px solid ${inkTheme.inkFill}`, borderRadius: 5, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontSize: 11, fontWeight: 800 },
   railScroller: { flex: 1, minHeight: 0, overflowY: 'auto', padding: 9 },
-  empty: { padding: '28px 10px', color: '#9aac9f', fontSize: 11, lineHeight: 1.55, textAlign: 'center' },
-  slideButton: { width: '100%', display: 'grid', gridTemplateColumns: '24px minmax(0, 1fr)', gap: 7, alignItems: 'center', marginBottom: 7, padding: '9px 8px', border: '1px solid #2c3d34', borderRadius: 8, color: '#c9d5cc', background: '#19211e', cursor: 'pointer', textAlign: 'left' },
-  slideButtonActive: { borderColor: '#88c99a', color: '#edf5ef', background: '#23352b', boxShadow: '0 0 0 1px rgba(136, 201, 154, .18)' },
-  slideNumber: { color: '#88c99a', fontSize: 10, fontWeight: 800 },
+  empty: { padding: '28px 10px', color: inkTheme.muted, fontSize: 11, lineHeight: 1.55, textAlign: 'center' },
+  slideButton: { width: '100%', display: 'grid', gridTemplateColumns: '24px minmax(0, 1fr)', gap: 7, alignItems: 'center', marginBottom: 7, padding: '9px 8px', border: `1px solid ${inkTheme.line}`, borderRadius: 6, color: inkTheme.textSoft, background: inkTheme.surface, cursor: 'pointer', textAlign: 'left' },
+  slideButtonActive: { borderColor: inkTheme.lineStrong, color: inkTheme.text, background: inkTheme.accentSoft, boxShadow: `inset 3px 0 0 ${inkTheme.cinnabar}` },
+  slideNumber: { color: inkTheme.cinnabar, fontSize: 10, fontWeight: 800 },
   slideTitle: { overflow: 'hidden', fontSize: 11, fontWeight: 700, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  overlay: { position: 'absolute', inset: 0, zIndex: 5, display: 'grid', placeItems: 'center', padding: 24, background: 'rgba(4, 7, 6, .82)', backdropFilter: 'blur(5px)' },
-  dialog: { width: 'min(760px, 100%)', maxHeight: '100%', overflowY: 'auto', padding: 22, border: '1px solid #365045', borderRadius: 14, color: '#edf5ef', background: '#121816', boxShadow: '0 28px 90px rgba(0,0,0,.55)' },
-  heading: { margin: 0, fontSize: 20 },
-  intro: { margin: '8px 0 18px', color: '#9aac9f', fontSize: 12, lineHeight: 1.6 },
+  overlay: { position: 'absolute', inset: 0, zIndex: 5, display: 'grid', placeItems: 'center', padding: 24, background: inkTheme.overlayStrong, backdropFilter: 'blur(4px)' },
+  dialog: { width: 'min(760px, 100%)', maxHeight: '100%', overflowY: 'auto', padding: 22, border: `1px solid ${inkTheme.lineStrong}`, borderTop: `3px solid ${inkTheme.accent}`, borderRadius: 10, color: inkTheme.text, background: inkTheme.surface, boxShadow: inkTheme.shadow },
+  heading: { margin: 0, fontFamily: inkTypography.serif, fontSize: 22, fontWeight: 600, letterSpacing: '.04em' },
+  intro: { margin: '8px 0 18px', color: inkTheme.muted, fontSize: 12, lineHeight: 1.6 },
   form: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 },
   field: { display: 'flex', flexDirection: 'column', gap: 6 },
   fullField: { gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6 },
-  label: { color: '#c9d5cc', fontSize: 11, fontWeight: 700 },
-  input: { width: '100%', height: 36, boxSizing: 'border-box', padding: '0 10px', border: '1px solid #2c3d34', borderRadius: 8, color: '#edf5ef', background: '#0a0f0d', outline: 'none' },
-  textarea: { width: '100%', minHeight: 94, resize: 'vertical', boxSizing: 'border-box', padding: 10, border: '1px solid #2c3d34', borderRadius: 8, color: '#edf5ef', background: '#0a0f0d', font: '12px/1.55 inherit', outline: 'none' },
-  uploadBox: { gridColumn: '1 / -1', display: 'grid', gap: 10, padding: 14, border: '1px dashed #466053', borderRadius: 10, background: '#0f1512' },
+  label: { color: inkTheme.textSoft, fontSize: 11, fontWeight: 700 },
+  input: { width: '100%', height: 36, boxSizing: 'border-box', padding: '0 10px', border: `1px solid ${inkTheme.line}`, borderRadius: 6, color: inkTheme.text, background: inkTheme.surfaceRaised, outline: 'none' },
+  textarea: { width: '100%', minHeight: 94, resize: 'vertical', boxSizing: 'border-box', padding: 10, border: `1px solid ${inkTheme.line}`, borderRadius: 6, color: inkTheme.text, background: inkTheme.surfaceRaised, font: '12px/1.55 inherit', outline: 'none' },
+  uploadBox: { gridColumn: '1 / -1', display: 'grid', gap: 10, padding: 14, border: `1px dashed ${inkTheme.lineStrong}`, borderRadius: 7, background: inkTheme.surfaceSoft },
   fileRow: { display: 'flex', alignItems: 'center', gap: 10 },
-  fileButton: { height: 34, padding: '0 13px', border: 0, borderRadius: 8, color: '#102016', background: '#a9e2b7', cursor: 'pointer', fontWeight: 800 },
-  fileName: { minWidth: 0, flex: 1, overflow: 'hidden', color: '#c9d5cc', fontSize: 12, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  removeFile: { flex: 'none', height: 28, padding: '0 9px', border: '1px solid #5f3939', borderRadius: 7, color: '#e8aaaa', background: '#261717', cursor: 'pointer', fontSize: 11 },
-  divider: { display: 'flex', alignItems: 'center', gap: 10, color: '#718079', fontSize: 10 },
-  dividerLine: { height: 1, flex: 1, background: '#28362f' },
-  infoBox: { padding: 12, border: '1px solid #2c3d34', borderRadius: 9, background: '#17201c', color: '#b8c8bd', fontSize: 12, lineHeight: 1.6 },
-  warning: { marginTop: 7, color: '#e0bd7c', fontSize: 11 },
-  error: { marginTop: 12, padding: 10, border: '1px solid #6c3737', borderRadius: 8, color: '#ffb6b6', background: '#2a1717', fontSize: 12, lineHeight: 1.5 },
-  notice: { marginTop: 12, padding: 10, border: '1px solid #3e6150', borderRadius: 8, color: '#b9ddc3', background: '#14231b', fontSize: 12, lineHeight: 1.5 },
+  fileButton: { height: 34, padding: '0 13px', border: 0, borderRadius: 5, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontWeight: 800 },
+  fileName: { minWidth: 0, flex: 1, overflow: 'hidden', color: inkTheme.textSoft, fontSize: 12, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  removeFile: { flex: 'none', height: 28, padding: '0 9px', border: `1px solid ${inkTheme.cinnabarLine}`, borderRadius: 5, color: inkTheme.cinnabar, background: inkTheme.cinnabarSoft, cursor: 'pointer', fontSize: 11 },
+  divider: { display: 'flex', alignItems: 'center', gap: 10, color: inkTheme.muted, fontSize: 10 },
+  dividerLine: { height: 1, flex: 1, background: inkTheme.line },
+  infoBox: { padding: 12, border: `1px solid ${inkTheme.line}`, borderRadius: 6, background: inkTheme.surfaceSoft, color: inkTheme.textSoft, fontSize: 12, lineHeight: 1.6 },
+  warning: { marginTop: 7, color: inkTheme.warning, fontSize: 11 },
+  error: { marginTop: 12, padding: 10, border: `1px solid ${inkTheme.cinnabarLine}`, borderRadius: 6, color: inkTheme.cinnabar, background: inkTheme.cinnabarSoft, fontSize: 12, lineHeight: 1.5 },
+  notice: { marginTop: 12, padding: 10, border: `1px solid ${inkTheme.lineStrong}`, borderRadius: 6, color: inkTheme.textSoft, background: inkTheme.accentSoft, fontSize: 12, lineHeight: 1.5 },
   actions: { display: 'flex', justifyContent: 'space-between', gap: 9, marginTop: 18 },
   actionGroup: { display: 'flex', justifyContent: 'flex-end', gap: 9 },
-  cancel: { height: 34, padding: '0 13px', border: '1px solid #2c3d34', borderRadius: 8, color: '#c9d5cc', background: 'transparent', cursor: 'pointer' },
-  submit: { height: 34, padding: '0 14px', border: 0, borderRadius: 8, color: '#102016', background: '#a9e2b7', cursor: 'pointer', fontWeight: 800 },
+  cancel: { height: 34, padding: '0 13px', border: `1px solid ${inkTheme.line}`, borderRadius: 5, color: inkTheme.textSoft, background: 'transparent', cursor: 'pointer' },
+  submit: { height: 34, padding: '0 14px', border: 0, borderRadius: 5, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontWeight: 800 },
   disabled: { opacity: 0.48, cursor: 'not-allowed' },
   outlineHeader: { display: 'grid', gap: 10, marginBottom: 14 },
   outlineList: { display: 'grid', gap: 8 },
-  outlineItem: { display: 'grid', gridTemplateColumns: '28px minmax(0, 1fr) auto', gap: 8, alignItems: 'start', padding: 9, border: '1px solid #2c3d34', borderRadius: 9, background: '#17201c' },
-  outlineIndex: { display: 'grid', placeItems: 'center', width: 24, height: 24, borderRadius: 6, color: '#102016', background: '#88c99a', fontSize: 10, fontWeight: 900 },
+  outlineItem: { display: 'grid', gridTemplateColumns: '28px minmax(0, 1fr) auto', gap: 8, alignItems: 'start', padding: 9, border: `1px solid ${inkTheme.line}`, borderRadius: 6, background: inkTheme.surfaceSoft },
+  outlineIndex: { display: 'grid', placeItems: 'center', width: 24, height: 24, borderRadius: 3, color: '#fff', background: inkTheme.cinnabar, fontSize: 10, fontWeight: 900 },
   outlineFields: { display: 'grid', gap: 6 },
-  smallInput: { width: '100%', height: 31, boxSizing: 'border-box', padding: '0 8px', border: '1px solid #34473e', borderRadius: 6, color: '#edf5ef', background: '#0d1310', outline: 'none', fontSize: 12 },
-  smallTextarea: { width: '100%', minHeight: 48, resize: 'vertical', boxSizing: 'border-box', padding: 8, border: '1px solid #34473e', borderRadius: 6, color: '#b8c8bd', background: '#0d1310', outline: 'none', font: '11px/1.45 inherit' },
+  smallInput: { width: '100%', height: 31, boxSizing: 'border-box', padding: '0 8px', border: `1px solid ${inkTheme.line}`, borderRadius: 5, color: inkTheme.text, background: inkTheme.surfaceRaised, outline: 'none', fontSize: 12 },
+  smallTextarea: { width: '100%', minHeight: 48, resize: 'vertical', boxSizing: 'border-box', padding: 8, border: `1px solid ${inkTheme.line}`, borderRadius: 5, color: inkTheme.textSoft, background: inkTheme.surfaceRaised, outline: 'none', font: '11px/1.45 inherit' },
   itemActions: { display: 'grid', gridTemplateColumns: 'repeat(2, 26px)', gap: 4 },
-  tinyButton: { width: 26, height: 26, padding: 0, border: '1px solid #34473e', borderRadius: 6, color: '#c9d5cc', background: '#111815', cursor: 'pointer' },
-  removeButton: { gridColumn: '1 / -1', width: 56, height: 25, border: '1px solid #5f3939', borderRadius: 6, color: '#e8aaaa', background: '#261717', cursor: 'pointer', fontSize: 10 },
-  addSlide: { height: 34, marginTop: 10, border: '1px dashed #466053', borderRadius: 8, color: '#a9e2b7', background: 'transparent', cursor: 'pointer', fontWeight: 700 },
-  progressTrack: { height: 8, overflow: 'hidden', margin: '14px 0 18px', borderRadius: 999, background: '#26332d' },
-  progressFill: { height: '100%', borderRadius: 999, background: '#88c99a', transition: 'width .25s ease' },
+  tinyButton: { width: 26, height: 26, padding: 0, border: `1px solid ${inkTheme.line}`, borderRadius: 4, color: inkTheme.textSoft, background: inkTheme.surface, cursor: 'pointer' },
+  removeButton: { gridColumn: '1 / -1', width: 56, height: 25, border: `1px solid ${inkTheme.cinnabarLine}`, borderRadius: 4, color: inkTheme.cinnabar, background: inkTheme.cinnabarSoft, cursor: 'pointer', fontSize: 10 },
+  addSlide: { height: 34, marginTop: 10, border: `1px dashed ${inkTheme.lineStrong}`, borderRadius: 5, color: inkTheme.textSoft, background: 'transparent', cursor: 'pointer', fontWeight: 700 },
+  progressTrack: { height: 8, overflow: 'hidden', margin: '14px 0 18px', borderRadius: 999, background: inkTheme.surfaceMuted },
+  progressFill: { height: '100%', borderRadius: 999, background: inkTheme.accent, transition: 'width .25s ease' },
   progressList: { display: 'grid', gap: 7 },
-  progressItem: { display: 'grid', gridTemplateColumns: '22px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '9px 10px', border: '1px solid #2c3d34', borderRadius: 8, background: '#17201c' },
-  progressState: { fontSize: 11, color: '#9aac9f' },
+  progressItem: { display: 'grid', gridTemplateColumns: '22px minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '9px 10px', border: `1px solid ${inkTheme.line}`, borderRadius: 6, background: inkTheme.surfaceSoft },
+  progressState: { fontSize: 11, color: inkTheme.muted },
 }
 
 function describeError(error: unknown): string {
@@ -537,7 +538,7 @@ export function PresentationDocumentDialog({
             {snapshot.source.warnings.map((warning, index) => <div key={index} style={styles.warning}>注意：{warning}</div>)}
           </div>
           <div style={{ ...styles.empty, padding: '48px 12px' }}>
-            <strong style={{ color: '#edf5ef' }}>Agent 正在阅读文档并规划目录…</strong><br />
+            <strong style={{ color: inkTheme.text }}>Agent 正在阅读文档并规划目录…</strong><br />
             这里只生成目录，不会立即创建页面。目录完成后可以调整顺序和标题。
           </div>
         </div>

@@ -51,6 +51,8 @@ import { resolvePresentationAssetMode } from './presentation-asset-mode.ts'
 import type { PresentationAssetMode } from './presentation-asset-mode.ts'
 import { WorkspaceExplorer } from './source-workspace.tsx'
 import { ProjectAssetLibraryDialog } from './project-assets.tsx'
+import inkLandscape from './ink-landscape.png'
+import { inkTheme, inkTypography } from './theme.ts'
 
 export const inject = ['slots', 'sessions']
 
@@ -89,20 +91,21 @@ interface FeedbackMessage {
 }
 
 const colors = {
-  panel: '#121816',
-  panel2: '#19211e',
-  border: '#2c3d34',
-  text: '#edf5ef',
-  muted: '#9aac9f',
-  accent: '#88c99a',
-  accentStrong: '#a9e2b7',
+  panel: inkTheme.surfaceSoft,
+  panel2: inkTheme.surface,
+  border: inkTheme.line,
+  text: inkTheme.text,
+  muted: inkTheme.muted,
+  accent: inkTheme.accent,
+  accentStrong: inkTheme.accentSoft,
 }
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function readApiJson<T>(response: Response): Promise<T> {
+async function readApiJson<T>(request: Response | Promise<Response>): Promise<T> {
+  const response = await request
   const value = await response.json().catch(() => null) as T & { error?: { message?: string } } | null
   if (!response.ok) throw new Error(value?.error?.message ?? `请求失败（HTTP ${response.status}）`)
   return value as T
@@ -315,14 +318,16 @@ function FrontendFeedbackPanel({
       `${PRESENTATION_RESOLVE_PATH}?${query}`,
       { cache: 'no-store' },
     )).then((result) => {
-      if (cancelled || !isPresentationId(result.presentationId)) return
+      if (cancelled) return
+      if (!isPresentationId(result?.presentationId)) throw new Error('服务端未返回有效的 presentationId')
       writeStoredValue(presentationStorageKey(sessionId), result.presentationId)
       removeStoredValue(legacyPresentationJobStorageKey(sessionId))
       setPresentationId(result.presentationId)
       setStatus('已识别旧版 PPT，并为它补上固定 presentationId。正在重新连接预览与文件目录…')
-    }).catch(() => {
-      // Unmanaged HTML presentations remain previewable and annotatable, but
-      // direct source and image writes stay disabled without a safe identity.
+    }).catch((error) => {
+      if (cancelled) return
+      // Keep source/image writes blocked, but expose why identification failed.
+      setStatus(`无法自动绑定 PPT：${describeError(error)}`)
     })
     return () => { cancelled = true }
   }, [hasSession, loadedUrl, presentationId, sessionId, workspaceMode])
@@ -1150,27 +1155,27 @@ export function apply(ctx: any): void {
 }
 
 const styles: Record<string, any> = {
-  root: { position: 'relative', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', color: colors.text, background: '#0e1311', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif' },
-  toolbar: { display: 'flex', gap: 18, alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, background: colors.panel, flexWrap: 'wrap' },
+  root: { position: 'relative', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', color: colors.text, background: inkTheme.canvas, fontFamily: inkTypography.sans },
+  toolbar: { display: 'flex', gap: 18, alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, background: inkTheme.surfaceRaised, flexWrap: 'wrap', boxShadow: '0 1px 0 rgba(90, 82, 64, .04)' },
   brand: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 135 },
-  brandDot: { width: 12, height: 12, borderRadius: 99, background: colors.accent, boxShadow: `0 0 18px ${colors.accent}` },
-  title: { display: 'block', fontSize: 14, letterSpacing: '.02em' },
+  brandDot: { width: 13, height: 13, borderRadius: '48% 52% 45% 55%', background: inkTheme.inkFill, transform: 'rotate(-22deg)', opacity: .88 },
+  title: { display: 'block', fontFamily: inkTypography.serif, fontSize: 16, fontWeight: 600, letterSpacing: '.06em' },
   subtitle: { display: 'block', marginTop: 3, color: colors.muted, fontSize: 11 },
-  workspaceModeGroup: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3, border: `1px solid ${colors.border}`, borderRadius: 9, background: '#0a0f0d' },
+  workspaceModeGroup: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3, border: `1px solid ${colors.border}`, borderRadius: 7, background: inkTheme.surfaceSoft },
   workspaceModeButton: { height: 30, padding: '0 11px', border: 0, borderRadius: 6, color: colors.muted, background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 700 },
-  workspaceModeButtonActive: { color: '#102016', background: colors.accentStrong },
+  workspaceModeButtonActive: { color: '#fff', background: inkTheme.inkFill, boxShadow: '0 2px 7px rgba(48, 43, 33, .12)' },
   addressBar: { display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 620px', justifyContent: 'flex-end' },
-  input: { minWidth: 180, maxWidth: 620, flex: 1, height: 36, padding: '0 12px', border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: '#0a0f0d', outline: 'none' },
-  secondaryButton: { height: 36, padding: '0 14px', border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: colors.panel2, cursor: 'pointer' },
-  createPresentationButton: { height: 36, padding: '0 13px', border: `1px solid ${colors.accent}`, borderRadius: 8, color: '#102016', background: colors.accentStrong, cursor: 'pointer', fontWeight: 800, whiteSpace: 'nowrap' },
-  assetLibraryButton: { height: 36, padding: '0 13px', border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: colors.panel2, cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' },
-  iconButton: { width: 36, height: 36, border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: colors.panel2, cursor: 'pointer', fontSize: 18 },
+  input: { minWidth: 180, maxWidth: 620, flex: 1, height: 36, padding: '0 12px', border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: inkTheme.surface, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(48, 43, 33, .04)' },
+  secondaryButton: { height: 36, padding: '0 14px', border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: colors.panel2, cursor: 'pointer' },
+  createPresentationButton: { height: 36, padding: '0 13px', border: `1px solid ${inkTheme.inkFill}`, borderRadius: 6, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontWeight: 800, whiteSpace: 'nowrap' },
+  assetLibraryButton: { height: 36, padding: '0 13px', border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: colors.panel2, cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' },
+  iconButton: { width: 36, height: 36, border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: colors.panel2, cursor: 'pointer', fontSize: 18 },
   iconButtonDisabled: { opacity: .35, cursor: 'not-allowed' },
-  modeGroup: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: 3, border: `1px solid ${colors.border}`, borderRadius: 10, background: '#0a0f0d' },
-  modeButton: { height: 36, padding: '0 15px', border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: colors.panel2, cursor: 'pointer', fontWeight: 700 },
-  modeButtonActive: { color: '#122217', borderColor: colors.accent, background: colors.accentStrong },
-  areaModeButtonActive: { color: '#111d34', borderColor: '#8eb6ff', background: '#b9d0ff' },
-  closeButton: { width: 36, height: 36, border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: '#2a211f', cursor: 'pointer', fontSize: 22, lineHeight: 1 },
+  modeGroup: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: 3, border: `1px solid ${colors.border}`, borderRadius: 8, background: inkTheme.surfaceSoft },
+  modeButton: { height: 36, padding: '0 15px', border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: colors.panel2, cursor: 'pointer', fontWeight: 700 },
+  modeButtonActive: { color: inkTheme.text, borderColor: inkTheme.lineStrong, background: colors.accentStrong },
+  areaModeButtonActive: { color: inkTheme.text, borderColor: inkTheme.area, background: inkTheme.areaSoft },
+  closeButton: { width: 36, height: 36, border: `1px solid ${inkTheme.cinnabarLine}`, borderRadius: 5, color: inkTheme.cinnabar, background: inkTheme.cinnabarSoft, cursor: 'pointer', fontSize: 22, lineHeight: 1 },
   workspace: {
     flex: 1,
     minHeight: 0,
@@ -1180,19 +1185,19 @@ const styles: Record<string, any> = {
     overflow: 'hidden',
   },
   presentationWorkspace: { gridTemplateColumns: 'minmax(170px, 220px) minmax(0, 1fr) minmax(280px, 340px)' },
-  previewShell: { minWidth: 0, minHeight: 0, padding: 12, background: '#090d0b' },
-  emptyPreview: { width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, border: `1px dashed ${colors.border}`, borderRadius: 10, color: colors.muted, textAlign: 'center' },
-  iframe: { display: 'block', width: '100%', height: '100%', border: `1px solid ${colors.border}`, borderRadius: 10, background: 'white' },
+  previewShell: { minWidth: 0, minHeight: 0, padding: 12, background: 'rgba(247, 246, 241, .90)' },
+  emptyPreview: { width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, border: `1px dashed ${colors.border}`, borderRadius: 8, color: colors.muted, textAlign: 'center', backgroundColor: 'rgba(255, 254, 249, .72)', backgroundImage: `linear-gradient(rgba(255, 254, 249, .72), rgba(255, 254, 249, .72)), url(${inkLandscape})`, backgroundPosition: 'center, right bottom', backgroundRepeat: 'no-repeat', backgroundSize: 'auto, auto min(82%, 760px)' },
+  iframe: { display: 'block', width: '100%', height: '100%', border: `1px solid ${colors.border}`, borderRadius: 8, background: 'white', boxShadow: inkTheme.shadowSoft },
   sidebar: { minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${colors.border}`, background: colors.panel },
   sidebarHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 14px 12px', borderBottom: `1px solid ${colors.border}`, fontSize: 13 },
   sidebarHeaderActions: { display: 'flex', alignItems: 'center', gap: 7 },
   clearDraftButton: { padding: '4px 7px', border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.muted, background: 'transparent', cursor: 'pointer', fontSize: 10 },
-  count: { display: 'inline-flex', marginLeft: 7, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 99, color: '#112117', background: colors.accent, fontSize: 11 },
-  statePill: { padding: '5px 8px', borderRadius: 99, color: colors.muted, background: '#222b27', fontSize: 10 },
-  statePillActive: { color: '#122217', background: colors.accentStrong },
+  count: { display: 'inline-flex', marginLeft: 7, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 4, color: '#fff', background: inkTheme.inkFill, fontSize: 11 },
+  statePill: { padding: '5px 8px', borderRadius: 4, color: colors.muted, background: inkTheme.surfaceMuted, fontSize: 10 },
+  statePillActive: { color: inkTheme.text, background: colors.accentStrong },
   sidebarScroller: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflowX: 'hidden', overflowY: 'scroll', overscrollBehavior: 'contain', scrollbarGutter: 'stable', scrollbarColor: `${colors.accent} ${colors.panel}` },
   scrollArea: { flex: '1 0 auto', minHeight: 0, padding: 12 },
-  commentCard: { display: 'flex', gap: 9, padding: 10, marginBottom: 8, border: `1px solid ${colors.border}`, borderRadius: 9, background: colors.panel2 },
+  commentCard: { display: 'flex', gap: 9, padding: 10, marginBottom: 8, border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.panel2, boxShadow: '0 2px 8px rgba(48, 43, 33, .04)' },
   cardIndex: { color: colors.accent, fontSize: 11, fontWeight: 800 },
   cardBody: { minWidth: 0, flex: 1 },
   cardTitle: { display: 'block', overflow: 'hidden', color: colors.text, fontSize: 11, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -1202,28 +1207,28 @@ const styles: Record<string, any> = {
   emptyIcon: { color: colors.accent, fontSize: 30 },
   composer: { padding: 12, borderTop: `1px solid ${colors.border}`, background: colors.panel2 },
   selectedMeta: { display: 'flex', gap: 7, alignItems: 'center', minWidth: 0 },
-  tag: { padding: '3px 6px', borderRadius: 5, color: '#112117', background: colors.accent, fontSize: 10, fontWeight: 800, textTransform: 'uppercase' },
-  areaTag: { color: '#111d34', background: '#b9d0ff' },
+  tag: { padding: '3px 6px', borderRadius: 3, color: '#fff', background: inkTheme.inkFill, fontSize: 10, fontWeight: 800, textTransform: 'uppercase' },
+  areaTag: { color: inkTheme.text, background: inkTheme.areaSoft },
   selector: { minWidth: 0, overflow: 'hidden', color: colors.muted, fontSize: 10, textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   selectedText: { maxHeight: 42, overflow: 'hidden', margin: '9px 0', color: colors.muted, fontSize: 11, lineHeight: 1.45 },
   operationField: { display: 'flex', flexDirection: 'column', gap: 6, margin: '10px 0' },
   operationLabel: { color: colors.text, fontSize: 11, fontWeight: 700 },
   operationGroup: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 5 },
-  operationButton: { height: 30, border: `1px solid ${colors.border}`, borderRadius: 7, color: colors.muted, background: '#0c1210', cursor: 'pointer', fontSize: 11 },
-  operationButtonActive: { borderColor: '#8eb6ff', color: '#111d34', background: '#b9d0ff', fontWeight: 800 },
+  operationButton: { height: 30, border: `1px solid ${colors.border}`, borderRadius: 5, color: colors.muted, background: inkTheme.surface, cursor: 'pointer', fontSize: 11 },
+  operationButtonActive: { borderColor: inkTheme.area, color: inkTheme.text, background: inkTheme.areaSoft, fontWeight: 800 },
   operationHelp: { color: colors.muted, fontSize: 10, lineHeight: 1.4 },
-  textarea: { width: '100%', minHeight: 84, resize: 'vertical', boxSizing: 'border-box', padding: 10, border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: '#0c1210', font: '12px/1.5 inherit', outline: 'none' },
+  textarea: { width: '100%', minHeight: 84, resize: 'vertical', boxSizing: 'border-box', padding: 10, border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.text, background: inkTheme.surface, font: '12px/1.5 inherit', outline: 'none' },
   composerActions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 },
   ghostButton: { height: 32, padding: '0 11px', border: 0, color: colors.muted, background: 'transparent', cursor: 'pointer' },
-  primaryButton: { height: 32, padding: '0 12px', border: 0, borderRadius: 7, color: '#102016', background: colors.accentStrong, cursor: 'pointer', fontWeight: 700 },
+  primaryButton: { height: 32, padding: '0 12px', border: 0, borderRadius: 5, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontWeight: 700 },
   footer: { padding: 12, borderTop: `1px solid ${colors.border}` },
   status: { display: 'block', minHeight: 32, color: colors.muted, fontSize: 10, lineHeight: 1.4 },
-  sessionHint: { width: '100%', fontSize: 11, marginTop: 8, padding: '6px 10px', borderRadius: 6, color: colors.accentStrong, background: '#1a2b23', border: `1px solid ${colors.border}` },
-  sendButton: { width: '100%', height: 38, marginTop: 8, border: `1px solid ${colors.accent}`, borderRadius: 8, color: '#102016', background: colors.accentStrong, cursor: 'pointer', fontWeight: 800 },
+  sessionHint: { width: '100%', fontSize: 11, marginTop: 8, padding: '6px 10px', borderRadius: 5, color: inkTheme.warning, background: inkTheme.warningSoft, border: `1px solid ${colors.border}` },
+  sendButton: { width: '100%', height: 38, marginTop: 8, border: `1px solid ${inkTheme.inkFill}`, borderRadius: 6, color: '#fff', background: inkTheme.inkFill, cursor: 'pointer', fontWeight: 800 },
   launcherButton: { height: 30, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '0 9px', border: 0, borderRadius: 7, color: 'var(--dsw-alias-label-secondary, #c2cbc5)', background: 'transparent', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap' },
-  imageSlotLoadingOverlay: { position: 'absolute', inset: 0, zIndex: 49, display: 'grid', placeItems: 'center', background: 'rgba(3,8,6,.58)', backdropFilter: 'blur(2px)' },
-  imageSlotLoadingCard: { padding: '12px 18px', border: `1px solid ${colors.border}`, borderRadius: 10, color: colors.text, background: colors.panel2, boxShadow: '0 12px 36px rgba(0,0,0,.32)', fontSize: 13, fontWeight: 700 },
+  imageSlotLoadingOverlay: { position: 'absolute', inset: 0, zIndex: 49, display: 'grid', placeItems: 'center', background: inkTheme.overlay, backdropFilter: 'blur(2px)' },
+  imageSlotLoadingCard: { padding: '12px 18px', border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text, background: colors.panel2, boxShadow: inkTheme.shadowSoft, fontSize: 13, fontWeight: 700 },
   launcherIcon: { color: colors.accent, fontSize: 14, lineHeight: 1 },
-  launcherOverlay: { position: 'fixed', inset: 0, zIndex: 10000, padding: 16, boxSizing: 'border-box', background: 'rgba(4, 7, 6, .72)', backdropFilter: 'blur(4px)' },
-  launcherPanel: { width: '100%', height: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden', border: `1px solid ${colors.border}`, borderRadius: 14, background: '#0e1311', boxShadow: '0 24px 80px rgba(0, 0, 0, .55)' },
+  launcherOverlay: { position: 'fixed', inset: 0, zIndex: 10000, padding: 16, boxSizing: 'border-box', background: inkTheme.overlayStrong, backdropFilter: 'blur(4px)' },
+  launcherPanel: { width: '100%', height: '100%', minWidth: 0, minHeight: 0, overflow: 'hidden', border: `1px solid ${colors.border}`, borderRadius: 10, background: inkTheme.canvas, boxShadow: inkTheme.shadow },
 }

@@ -179,12 +179,12 @@ export function buildPreviewErrorHtml(status: number, message: string): string {
   <title>预览加载失败</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f8f7; color: #17231b; }
-    main { width: min(560px, calc(100% - 48px)); padding: 28px; border: 1px solid #cbd8cf; border-radius: 14px; background: white; box-shadow: 0 18px 50px rgba(30, 60, 40, .12); }
-    strong { display: block; color: #a33a3a; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7f6f1; color: #2c2b27; }
+    main { width: min(560px, calc(100% - 48px)); padding: 28px; border: 1px solid #d8d3c6; border-top: 3px solid #8f8874; border-radius: 10px; background: #fffef9; box-shadow: 0 18px 50px rgba(48, 43, 33, .12); }
+    strong { display: block; color: #a4433e; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
     h1 { margin: 10px 0 12px; font-size: 22px; }
-    p { margin: 0; color: #536259; line-height: 1.65; word-break: break-word; }
-    code { display: inline-block; margin-top: 16px; padding: 5px 8px; border-radius: 6px; background: #edf2ee; color: #405047; }
+    p { margin: 0; color: #5f5b52; line-height: 1.65; word-break: break-word; }
+    code { display: inline-block; margin-top: 16px; padding: 5px 8px; border-radius: 5px; background: #f2f0e9; color: #5f5b52; }
   </style>
 </head>
 <body>
